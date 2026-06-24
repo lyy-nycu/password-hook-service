@@ -15,16 +15,20 @@ NYCU's on-prem portal currently authenticates users against OpenLDAP. The goal i
 
 ### 1.2 Phase 1 Goal (Deadline: 2026-07-14)
 
-Passively collect cleartext credentials from successful logins and silently sync them to Entra ID. This approach:
+Passively collect cleartext credentials from successful logins for **internal workforce accounts only** and silently sync them to Entra ID. Phase 1 includes accounts whose LDAP `cn` is a student ID or employee ID.
+
+This approach:
 
 - Does **not** disrupt existing portal login UX or performance (async, fire-and-forget)
-- Covers all active users naturally over time as they log in
+- Covers active students and employees naturally over time as they log in
 - Is the minimum required step before switching authentication to Entra ID
 
 ### 1.3 Out of Scope (Phase 1)
 
 - Migrating inactive accounts that never log in (Phase 2)
+- Migrating `cn` values that are external email addresses (alumni, guests, external collaborators)
 - Switching the portal to authenticate against Entra ID (Phase 3)
+- External identity migration using B2B, Entra External ID, social login, email OTP, or custom OIDC
 - MFA enforcement, Conditional Access policies (Phase 4+)
 
 ---
@@ -182,22 +186,22 @@ X-Hook-Signature: sha256={hmac_sha256_hex}
 
 | Field | Required | Description |
 |-------|----------|-------------|
-| `cn` | ✅ | LDAP Common Name (login identifier: student ID / employee ID / email) |
+| `cn` | ✅ | LDAP Common Name (login identifier). Phase 1 only migrates student ID / employee ID values; external email values are skipped before enqueue. |
 | `password` | ✅ | Cleartext password (TLS-protected in transit) |
 | `displayName` | ✅ | User's display name from LDAP `givenName` or `cn` |
-| `mail` | ✅ | LDAP `mail` attribute — used to derive UPN |
+| `mail` | ✅ | LDAP `mail` attribute — preserved as contact metadata for migrated internal accounts |
 
 **Responses:**
 
 | Status | Meaning |
 |--------|---------|
-| `202 Accepted` | Enqueued successfully |
+| `202 Accepted` | Request accepted. Eligible internal accounts are enqueued; external email identities are skipped without enqueue. |
 | `400 Bad Request` | Missing/invalid fields (RFC 9457 body) |
 | `401 Unauthorized` | HMAC validation failed |
 | `429 Too Many Requests` | Anomalous traffic rate limit triggered |
 | `500 Internal Server Error` | Service error (RFC 9457 body) |
 
-> ⚠️ `202` means "accepted for processing" — **not** "successfully migrated to Entra ID". The portal must not interpret a non-202 as a login failure.
+> ⚠️ `202` means "accepted by the hook service" — **not** "successfully migrated to Entra ID". External email identities also return `202` but are intentionally skipped without enqueue. The portal must not interpret a non-202 as a login failure.
 
 ### 4.2 Health & Build Info
 
@@ -239,8 +243,10 @@ Implemented in `pkg/problem/` for reuse across services.
 
 [Background, simultaneously]
 6. Hook Service: validate HMAC signature → OK
-7. Hook Service: build Service Bus message {cn, password, displayName, mail, ttl=300s}
-8. Hook Service: enqueue → Service Bus → respond 202
+7. Hook Service: classify cn
+   → student ID / employee ID: build Service Bus message {cn, password, displayName, mail, ttl=300s}
+   → external email: do not enqueue; log/metric skipped_external_identity; respond 202
+8. Hook Service: enqueue eligible message → Service Bus → respond 202
 9. Worker: dequeue message
 10. Worker: resolve UPN (see §6)
 11. Worker: GET /v1.0/users/{upn} → Graph API
@@ -272,42 +278,64 @@ DLQ entry:
 
 ---
 
-## 6. UPN Resolution Strategy
+## 6. Identity Classification and UPN Resolution Strategy
 
 ### 6.1 Logic
 
 ```
-Input: mail = "wang@nycu.edu.tw", cn = "311551001"
+Input: cn = "311551001", mail = "wang@nycu.edu.tw"
 
-Step 1: Extract domain from mail → "nycu.edu.tw"
-Step 2: Check if domain is in ENTRA_VERIFIED_DOMAINS whitelist
-  → YES: UPN = mail = "wang@nycu.edu.tw"
-  → NO:  sanitize cn (strip @ and everything after if present)
-          UPN = sanitized_cn + "@" + ENTRA_FALLBACK_DOMAIN
-                = "311551001@yourschool.onmicrosoft.com"
+Step 1: Classify cn
+  → student_id: eligible for Phase 1 migration
+  → employee_id: eligible for Phase 1 migration
+  → email: external identity; skip Phase 1 migration before enqueue
 
-Also: Set otherMails = [original_mail] to preserve contact email
+Step 2: For eligible internal accounts only
+  → UPN = normalized_cn + "@" + ENTRA_PRIMARY_DOMAIN
+        = "311551001@nycu.edu.tw"
+
+Step 3: Preserve LDAP mail as contact metadata
+  → mail = original LDAP mail
+  → otherMails = [original LDAP mail] only when it is useful and valid
 ```
 
 ### 6.2 Configuration
 
 ```env
-# Replace with your actual Entra ID tenant's verified domains
-ENTRA_VERIFIED_DOMAINS=nycu.edu.tw,cs.nycu.edu.tw,ccs.nycu.edu.tw,nctu.edu.tw
-# Replace with your actual Entra ID default domain (e.g., nycu.onmicrosoft.com)
-ENTRA_FALLBACK_DOMAIN=yourschool.onmicrosoft.com
+# Primary verified domain used for internal student/employee UPNs
+ENTRA_PRIMARY_DOMAIN=nycu.edu.tw
+
+# Optional fallback for non-production or tenant bootstrap scenarios.
+# Do not use this to silently migrate external email identities.
+ENTRA_FALLBACK_DOMAIN=nycu.onmicrosoft.com
 ```
 
 ### 6.3 Examples
 
-| LDAP mail | Domain in whitelist? | UPN | otherMails |
-|-----------|---------------------|-----|------------|
-| `wang@nycu.edu.tw` | ✅ | `wang@nycu.edu.tw` | — |
-| `smith@cs.nycu.edu.tw` | ✅ | `smith@cs.nycu.edu.tw` | — |
-| `abc@gmail.com` | ❌ | `311551001@yourschool.onmicrosoft.com` | `["abc@gmail.com"]` |
-| `old@nctu.edu.tw` | ✅ (if added) | `old@nctu.edu.tw` | — |
+| LDAP `cn` | Classification | Action | UPN | Queue |
+|-----------|----------------|--------|-----|-------|
+| `311551001` | student ID | migrate | `311551001@nycu.edu.tw` | enqueue |
+| `A12345` | employee ID | migrate | `A12345@nycu.edu.tw` | enqueue |
+| `abc@gmail.com` | external email | skip; handle via External ID/B2B/OIDC in a later phase | — | do not enqueue |
+| `person@yahoo.com` | external email | skip; handle via External ID/B2B/OIDC in a later phase | — | do not enqueue |
 
-> **UPN Stability:** Once a UPN is assigned to an account, it should not be changed. UPN changes in Entra ID affect tokens, Conditional Access, and audit logs. Phase 1 treats UPN as immutable after first account creation.
+> **UPN Stability:** Phase 1 derives UPN from a stable institutional identifier, not from external email. Once a UPN is assigned to an account, it should not be changed. UPN changes in Entra ID affect tokens, Conditional Access, and audit logs. Phase 1 treats UPN as immutable after first account creation.
+
+### 6.4 External Email Accounts
+
+Accounts whose LDAP `cn` is an email address represent alumni, guests, or external collaborators. These accounts are not migrated by the password hook in Phase 1 because arbitrary external email domains cannot be used as normal Entra member UPN domains, and silently generating a fallback UPN would create a login name the user does not know.
+
+For these requests, the hook service returns `202 Accepted` to avoid impacting portal login, but it does not enqueue the password. It records a structured skipped event and metric without the password:
+
+```json
+{
+  "action": "skipped_external_identity",
+  "cn": "abc@gmail.com",
+  "reason": "cn_is_external_email"
+}
+```
+
+External email identities are handled in a later phase using B2B, Entra External ID, social login, email OTP, or custom OIDC, with portal account-linking based on email or provider subject.
 
 ---
 
@@ -324,7 +352,7 @@ password-hook-service/
 │   ├── httpserver/
 │   │   └── server.go            ← http.Server lifecycle + route registration
 │   ├── handler/
-│   │   └── hook.go              ← HTTP handler for POST /api/v1/hook/password
+│   │   └── hook.go              ← HTTP adapter for POST /api/v1/hook/password; delegates migration decisions
 │   ├── middleware/
 │   │   ├── hmac.go              ← HMAC-SHA256 request signature validation
 │   │   ├── ratelimit.go         ← IP-based anomaly rate limiting
@@ -334,12 +362,15 @@ password-hook-service/
 │   │   └── requestid.go         ← Generate / store / retrieve request ID from context
 │   ├── buildinfo/
 │   │   └── buildinfo.go         ← Version, Commit, BuildTime (injected via ldflags)
+│   ├── migration/
+│   │   ├── service.go           ← Core migration policy: enqueue internal accounts, skip external email identities
+│   │   ├── classifier.go        ← Classify cn as student_id, employee_id, or external_email
+│   │   ├── upn.go               ← Build stable internal UPNs from student/employee IDs
+│   │   └── message.go           ← Service Bus message schema for eligible password sync jobs
 │   ├── worker/
-│   │   └── worker.go            ← Service Bus consumer; drives Graph API calls
+│   │   └── worker.go            ← Service Bus consumer; processes eligible migration jobs and drives Graph API calls
 │   ├── graphclient/
 │   │   └── client.go            ← Microsoft Graph API client (create/update user)
-│   ├── upnbuilder/
-│   │   └── builder.go           ← UPN resolution logic (domain whitelist + fallback)
 │   └── config/
 │       └── config.go            ← Load config from environment + Azure Key Vault
 ├── pkg/
@@ -384,7 +415,7 @@ password-hook-service/
 | Network timeout | — | Exponential backoff: 1s → 2s → 4s |
 | Bad request | 400 | No retry → DLQ immediately |
 | Forbidden | 403 | No retry → DLQ immediately |
-| Domain not verified | 400 | No retry → DLQ immediately |
+| External email `cn` | — | Skip before enqueue; record `skipped_external_identity`; no DLQ |
 
 After 3 failed retries for transient errors → DLQ.
 
@@ -415,7 +446,7 @@ All log entries are JSON with these fields:
   "traceId":   "a3b9c2...",
   "action":    "migrated",
   "cn":        "311551001",
-  "upn":       "wang@nycu.edu.tw",
+  "upn":       "311551001@nycu.edu.tw",
   "durationMs": 142
 }
 ```
@@ -429,6 +460,7 @@ All log entries are JSON with these fields:
 | `hook_requests_total{status}` | API requests by response status |
 | `migration_success_total` | Successfully migrated accounts |
 | `migration_failed_total{reason}` | Failed migrations by reason |
+| `migration_skipped_total{reason}` | Skipped accounts, including external email identities that are not enqueued |
 | `queue_depth` | Service Bus active message count |
 | `dlq_depth` | Dead-letter queue depth |
 | `graph_api_latency_p99` | Graph API latency percentile |
@@ -561,6 +593,34 @@ curl_close($ch);
 |------|-------|-------|
 | Inactive accounts (never login) | Phase 2 | Requires LDAP dump + admin-initiated password reset flow |
 | Switch portal auth to Entra ID | Phase 3 | After sufficient accounts migrated |
-| UPN change handling | Phase 2+ | If user updates email, UPN update policy needs definition |
+| External email identities | Phase 2+ | Deferred decision; see §13.1 |
+| UPN change handling | Phase 2+ | Phase 1 UPNs are stable ID based; policy still needed for rare student/employee ID corrections |
 | MFA rollout | Phase 4+ | After full migration to Entra ID auth |
 | Audit report for ISO 27001 | Ongoing | Monthly DLQ review + migration completeness report |
+
+### 13.1 Deferred Decision: External Email Identities
+
+Phase 1 intentionally excludes LDAP accounts whose `cn` is an external email address, including alumni, guests, and external collaborators. The hook service returns `202 Accepted` for these requests but does not enqueue the password or create/update an Entra member user.
+
+**Rationale:**
+
+- External email domains such as `gmail.com`, `yahoo.com`, or partner organization domains cannot be used as normal Entra member UPN domains in NYCU's tenant.
+- Silently generating fallback UPNs such as `generated-id@nycu.onmicrosoft.com` would create login names users do not know, breaking cutover UX.
+- Alumni and external collaborators have different identity lifecycle, access review, MFA, account recovery, and account removal requirements from students and employees.
+- Preserving existing OpenLDAP passwords for external email users may be unnecessary if the future model delegates authentication to an external identity provider.
+
+**Deferred options:**
+
+| Option | Description | Trade-off |
+|--------|-------------|-----------|
+| Entra B2B guest accounts | Invite external users and let them authenticate with their own identity provider or email OTP | Good for collaborators; less suitable if the portal needs consumer-style account management |
+| Entra External ID | Use a customer/external identity tenant model for alumni, guests, and public-facing users | Cleaner lifecycle separation; requires separate design and integration work |
+| Social login / custom OIDC | Let users sign in with Google, Microsoft account, or another configured OIDC provider | Avoids password migration; requires account-linking and provider governance |
+| Portal-side alias mapping | Keep external email as the portal login identifier and map it to an internal Entra UPN | Preserves UX, but keeps identity translation logic in the portal |
+
+**Decision needed before Phase 3:**
+
+- Which external identity model will be used for alumni, guests, and external collaborators?
+- Should existing OpenLDAP passwords for external email users be discarded, reset, or migrated into a separate identity store?
+- How will existing portal accounts be linked to the new external identity (`email`, provider `sub`, or another stable key)?
+- What access review, MFA, account recovery, and deprovisioning policies apply to these users?
