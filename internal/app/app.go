@@ -9,6 +9,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/httpserver"
 	"github.com/nycu/password-hook-service/internal/middleware"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/requestid"
 )
 
 type App struct {
@@ -26,7 +27,7 @@ func New(cfg config.Config) (*App, error) {
 	hmacMiddleware := middleware.NewHMAC(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew)
 
 	server := httpserver.New(cfg.HTTPAddr, httpserver.Routes{
-		Hook: hmacMiddleware.Wrap(hook),
+		Hook: requestid.Middleware(hmacMiddleware.Wrap(hook)),
 	}, buildinfo.Current())
 
 	return &App{server: server}, nil

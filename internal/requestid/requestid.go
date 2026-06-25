@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net/http"
+	"strings"
 )
+
+const Header = "X-Request-ID"
 
 type contextKey struct{}
 
@@ -23,4 +27,16 @@ func With(ctx context.Context, id string) context.Context {
 func From(ctx context.Context) string {
 	id, _ := ctx.Value(contextKey{}).(string)
 	return id
+}
+
+func Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.Header.Get(Header))
+		if id == "" {
+			id = New()
+		}
+
+		w.Header().Set(Header, id)
+		next.ServeHTTP(w, r.WithContext(With(r.Context(), id)))
+	})
 }
