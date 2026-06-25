@@ -1,7 +1,9 @@
 package logger
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -29,5 +31,23 @@ func TestMaskAttrsMasksSensitiveKeys(t *testing.T) {
 		if values[key] != "****" {
 			t.Fatalf("%s = %q, want masked value", key, values[key])
 		}
+	}
+}
+
+func TestMaskingHandlerMasksSensitiveAttrs(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	handler := NewMaskingHandler(slog.NewJSONHandler(&buf, nil))
+	log := slog.New(handler)
+
+	log.Info("event", slog.String("password", "cleartext"), slog.String("cn", "311551001"))
+
+	output := buf.String()
+	if strings.Contains(output, "cleartext") {
+		t.Fatalf("log output leaked password: %s", output)
+	}
+	if !strings.Contains(output, `"password":"****"`) {
+		t.Fatalf("log output did not include masked password: %s", output)
 	}
 }
