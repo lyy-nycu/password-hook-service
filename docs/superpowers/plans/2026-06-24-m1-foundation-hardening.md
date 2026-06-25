@@ -46,7 +46,7 @@
 - Modify: `cmd/server/main.go`
 - Modify: `internal/app/app.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `internal/config/config_test.go`:
 
@@ -92,7 +92,7 @@ func TestValidateAcceptsCompleteConfig(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -102,7 +102,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/config
 
 Expected: FAIL with `cfg.Validate undefined`.
 
-- [ ] **Step 3: Implement config validation**
+- [x] **Step 3: Implement config validation**
 
 Add `Validate() error` to `internal/config/config.go`. Validate:
 - `HTTPAddr` is not empty.
@@ -113,7 +113,7 @@ Add `Validate() error` to `internal/config/config.go`. Validate:
 
 Change `app.New(cfg config.Config)` to `app.New(cfg config.Config) (*App, error)` and call `cfg.Validate()` before wiring dependencies. Change `cmd/server/main.go` to exit with a logged error if `app.New` returns an error.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -123,7 +123,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/config .
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go internal/app/app.go cmd/server/main.go
@@ -139,7 +139,7 @@ git commit -m "feat: validate foundation configuration"
 - Create: `internal/requestid/requestid_test.go`
 - Modify: `internal/app/app.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `internal/requestid/requestid_test.go`:
 
@@ -192,7 +192,7 @@ func TestMiddlewareGeneratesMissingRequestID(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -202,7 +202,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/requesti
 
 Expected: FAIL with `undefined: Middleware`.
 
-- [ ] **Step 3: Implement middleware**
+- [x] **Step 3: Implement middleware**
 
 Add `Middleware(next http.Handler) http.Handler` to `internal/requestid/requestid.go`. It should:
 - Read `X-Request-ID`.
@@ -212,7 +212,7 @@ Add `Middleware(next http.Handler) http.Handler` to `internal/requestid/requesti
 
 Wire it as the outermost middleware in `internal/app/app.go`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -222,7 +222,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/requesti
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/requestid/requestid.go internal/requestid/requestid_test.go internal/app/app.go
@@ -240,7 +240,7 @@ git commit -m "feat: add request id middleware"
 - Modify: `internal/middleware/hmac.go`
 - Modify: `internal/middleware/recovery.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Extend `pkg/problem/problem_test.go`:
 
@@ -275,7 +275,7 @@ func TestValidationHelper(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -285,7 +285,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./pkg/problem
 
 Expected: FAIL with `undefined: Unauthorized` and `undefined: Validation`.
 
-- [ ] **Step 3: Implement common helpers**
+- [x] **Step 3: Implement common helpers**
 
 Add helpers to `pkg/problem/problem.go`:
 - `Validation(baseURL, instance, traceID, detail string) Problem`
@@ -295,7 +295,7 @@ Add helpers to `pkg/problem/problem.go`:
 
 Update handler and middleware code to use these helpers and pass `requestid.From(r.Context())`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -305,7 +305,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./pkg/problem ./int
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pkg/problem/problem.go pkg/problem/problem_test.go internal/handler/hook.go internal/middleware/hmac.go internal/middleware/recovery.go
@@ -320,7 +320,7 @@ git commit -m "feat: standardize problem responses"
 - Modify: `internal/middleware/hmac.go`
 - Modify: `internal/middleware/hmac_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Extend `internal/middleware/hmac_test.go` with tests for:
 - Stale timestamp returns `401`.
@@ -365,7 +365,7 @@ func TestHMACRejectsReplayedNonce(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -375,7 +375,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/middlewa
 
 Expected: FAIL because `NewHMAC` currently does not return `(*HMAC, error)` and does not use the configured nonce TTL.
 
-- [ ] **Step 3: Implement HMAC changes**
+- [x] **Step 3: Implement HMAC changes**
 
 Change `NewHMAC` signature to:
 
@@ -385,7 +385,7 @@ func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error
 
 Store `nonceTTL` on `HMAC` or on the nonce store so `Wrap` uses the configured TTL instead of hard-coded `60*time.Second`. Reject empty secret with an error. Update `internal/app/app.go` wiring to handle the constructor error.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -395,7 +395,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/middlewa
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/middleware/hmac.go internal/middleware/hmac_test.go internal/app/app.go
@@ -411,7 +411,7 @@ git commit -m "feat: harden hmac request validation"
 - Modify: `internal/handler/hook_test.go`
 - Modify: `internal/migration/service.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Extend `internal/handler/hook_test.go`:
 - Internal student ID request returns `202` and enqueues exactly one message.
@@ -442,7 +442,7 @@ func TestHookRejectsUnknownCNAsBadRequest(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -452,11 +452,11 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/handler
 
 Expected: FAIL because unknown identity currently maps to a generic `500`.
 
-- [ ] **Step 3: Implement error mapping**
+- [x] **Step 3: Implement error mapping**
 
 In `internal/handler/hook.go`, use `errors.Is(err, migration.ErrUnknownIdentity)` and `errors.Is(err, migration.ErrExternalIdentity)` to return validation-style `400` only for invalid client input. Keep queue failures as `500`.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -466,7 +466,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/handler 
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/handler/hook.go internal/handler/hook_test.go internal/migration/service.go
@@ -483,7 +483,7 @@ git commit -m "feat: tighten hook handler error semantics"
 - Modify: `internal/config/config.go`
 - Modify: `internal/app/app.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Create `internal/middleware/ratelimit_test.go`:
 
@@ -521,7 +521,7 @@ func TestRateLimiterRejectsNonAllowlistedIP(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -531,7 +531,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/middlewa
 
 Expected: FAIL because `RateLimitConfig` does not exist and `NewRateLimiter` has no config.
 
-- [ ] **Step 3: Implement rate limiter**
+- [x] **Step 3: Implement rate limiter**
 
 Implement:
 - CIDR allowlist from config; if list is non-empty and remote IP is outside the list, return `401`.
@@ -543,7 +543,7 @@ Add config fields:
 - `RateLimitPerIP int`
 - `RateLimitWindow time.Duration`
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -553,7 +553,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/middlewa
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/middleware/ratelimit.go internal/middleware/ratelimit_test.go internal/config/config.go internal/app/app.go
@@ -570,7 +570,7 @@ git commit -m "feat: add source allowlist and anomaly limit"
 - Modify: `internal/middleware/accesslog.go`
 - Create: `internal/middleware/accesslog_test.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Extend `pkg/logger/logger_test.go`:
 
@@ -594,7 +594,7 @@ func TestMaskingHandlerMasksSensitiveAttrs(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -604,7 +604,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./pkg/logger
 
 Expected: FAIL with `undefined: NewMaskingHandler`.
 
-- [ ] **Step 3: Implement masking handler**
+- [x] **Step 3: Implement masking handler**
 
 Add a `slog.Handler` wrapper that masks attrs in `Handle`, `WithAttrs`, and nested groups. Update access log middleware to include:
 - `traceId`
@@ -614,7 +614,7 @@ Add a `slog.Handler` wrapper that masks attrs in `Handle`, `WithAttrs`, and nest
 - `durationMs`
 - no request body fields
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -624,7 +624,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./pkg/logger ./inte
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add pkg/logger/logger.go pkg/logger/logger_test.go internal/middleware/accesslog.go internal/middleware/accesslog_test.go
@@ -640,7 +640,7 @@ git commit -m "feat: enforce structured log masking"
 - Modify: `internal/httpserver/server_test.go`
 - Modify: `internal/buildinfo/buildinfo.go`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Extend `internal/httpserver/server_test.go`:
 - `GET /version` returns configured version, commit, and build time.
@@ -669,7 +669,7 @@ func TestVersionRoute(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -679,11 +679,11 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/httpserv
 
 Expected: FAIL if route behavior or imports are incomplete.
 
-- [ ] **Step 3: Implement route behavior**
+- [x] **Step 3: Implement route behavior**
 
 Keep `http.ServeMux` method patterns and add tests around existing behavior. If unsupported methods currently produce `405`, preserve it. Add JSON helper only if it removes duplicated header/encoder code.
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -693,7 +693,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/httpserv
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/httpserver/server.go internal/httpserver/server_test.go internal/buildinfo/buildinfo.go
@@ -708,7 +708,7 @@ git commit -m "test: cover foundation http routes"
 - Modify: `README.md`
 - Create: `docs/examples/sign-hook-request.php`
 
-- [ ] **Step 1: Write docs update**
+- [x] **Step 1: Write docs update**
 
 Update `README.md` with:
 - Required env vars for running locally.
@@ -739,7 +739,7 @@ echo "X-Hook-Signature: sha256={$signature}\n";
 echo "{$payload}\n";
 ```
 
-- [ ] **Step 2: Verify no docs placeholders**
+- [x] **Step 2: Verify no docs placeholders**
 
 Run:
 
@@ -749,7 +749,7 @@ rg "TBD|TODO|fill in|placeholder" README.md docs/examples/sign-hook-request.php
 
 Expected: no output.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md docs/examples/sign-hook-request.php
@@ -763,7 +763,7 @@ git commit -m "docs: add m1 local usage guide"
 **Files:**
 - Modify only files touched by earlier tasks if verification reveals issues.
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
 
 Run:
 
@@ -773,7 +773,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go tes
 
 Expected: PASS with exit code 0.
 
-- [ ] **Step 2: Verify M1 design coverage**
+- [x] **Step 2: Verify M1 design coverage**
 
 Check:
 - `/healthz` tested.
@@ -786,7 +786,7 @@ Check:
 - Config rejects missing HMAC secret.
 - Rate limiter covers source allowlist and anomalous request rate.
 
-- [ ] **Step 3: Commit any verification fixes**
+- [x] **Step 3: Commit any verification fixes**
 
 If fixes were needed:
 
