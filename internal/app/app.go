@@ -28,9 +28,15 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	rateLimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
+		AllowedCIDRs: cfg.PortalAllowedCIDRs,
+		LimitPerIP:   cfg.RateLimitPerIP,
+		Window:       cfg.RateLimitWindow,
+		ProblemBase:  cfg.ProblemBaseURL,
+	})
 
 	server := httpserver.New(cfg.HTTPAddr, httpserver.Routes{
-		Hook: requestid.Middleware(hmacMiddleware.Wrap(hook)),
+		Hook: requestid.Middleware(rateLimiter.Wrap(hmacMiddleware.Wrap(hook))),
 	}, buildinfo.Current())
 
 	return &App{server: server}, nil

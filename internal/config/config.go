@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -15,6 +16,9 @@ type Config struct {
 	ProblemBaseURL     string
 	HMACClockSkew      time.Duration
 	NonceTTL           time.Duration
+	PortalAllowedCIDRs []string
+	RateLimitPerIP     int
+	RateLimitWindow    time.Duration
 }
 
 func Load() Config {
@@ -25,6 +29,9 @@ func Load() Config {
 		ProblemBaseURL:     strings.TrimRight(env("PROBLEM_BASE_URL", "https://nycu.edu.tw/problems"), "/"),
 		HMACClockSkew:      30 * time.Second,
 		NonceTTL:           60 * time.Second,
+		PortalAllowedCIDRs: csvEnv("PORTAL_ALLOWED_CIDRS"),
+		RateLimitPerIP:     intEnv("RATE_LIMIT_PER_IP", 500),
+		RateLimitWindow:    time.Second,
 	}
 }
 
@@ -44,6 +51,10 @@ func (c Config) Validate() error {
 		return errors.New("HMACClockSkew must be positive")
 	case c.NonceTTL <= 0:
 		return errors.New("NonceTTL must be positive")
+	case c.RateLimitPerIP < 0:
+		return errors.New("RateLimitPerIP must not be negative")
+	case c.RateLimitWindow < 0:
+		return errors.New("RateLimitWindow must not be negative")
 	default:
 		return nil
 	}
@@ -52,6 +63,34 @@ func (c Config) Validate() error {
 func env(key string, fallback string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func csvEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	values := strings.Split(raw, ",")
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func intEnv(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
 		return fallback
 	}
 	return value
