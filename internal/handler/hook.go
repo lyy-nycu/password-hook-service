@@ -30,11 +30,11 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var body passwordHookRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		h.writeProblem(w, r, http.StatusBadRequest, "Validation Error", "request body must be valid json")
+		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be valid json"))
 		return
 	}
 	if detail := body.validate(); detail != "" {
-		h.writeProblem(w, r, http.StatusBadRequest, "Validation Error", detail)
+		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), detail))
 		return
 	}
 
@@ -45,26 +45,15 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Mail:        body.Mail,
 	})
 	if err != nil {
-		h.writeProblem(w, r, http.StatusInternalServerError, "Internal Server Error", "failed to accept password sync request")
+		h.writeProblem(w, r, problem.Internal(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "failed to accept password sync request"))
 		return
 	}
 
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Hook) writeProblem(w http.ResponseWriter, r *http.Request, status int, title string, detail string) {
-	slug := "validation-error"
-	if status >= 500 {
-		slug = "internal-error"
-	}
-	problem.Write(w, problem.New(
-		h.problemBaseURL+"/"+slug,
-		title,
-		status,
-		detail,
-		r.URL.Path,
-		requestid.From(r.Context()),
-	))
+func (h *Hook) writeProblem(w http.ResponseWriter, _ *http.Request, p problem.Problem) {
+	problem.Write(w, p)
 }
 
 type passwordHookRequest struct {

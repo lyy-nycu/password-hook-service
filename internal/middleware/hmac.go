@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
 
@@ -89,14 +90,7 @@ func (m HMAC) validSignature(timestamp string, nonce string, body []byte, header
 }
 
 func writeUnauthorized(w http.ResponseWriter, r *http.Request, detail string) {
-	problem.Write(w, problem.New(
-		"https://nycu.edu.tw/problems/unauthorized",
-		"Unauthorized",
-		http.StatusUnauthorized,
-		detail,
-		r.URL.Path,
-		"",
-	))
+	problem.Write(w, problem.Unauthorized(problem.DefaultBaseURL, r.URL.Path, requestid.From(r.Context()), detail))
 }
 
 func absDuration(d time.Duration) time.Duration {

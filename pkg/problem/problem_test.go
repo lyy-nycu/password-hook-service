@@ -37,3 +37,32 @@ func TestWriteProblemDetails(t *testing.T) {
 		t.Fatalf("traceId = %q, want trace-123", body.TraceID)
 	}
 }
+
+func TestUnauthorizedHelperIncludesTraceID(t *testing.T) {
+	t.Parallel()
+
+	p := Unauthorized("https://nycu.edu.tw/problems", "/api/v1/hook/password", "trace-123", "signature mismatch")
+
+	if p.Type != "https://nycu.edu.tw/problems/unauthorized" {
+		t.Fatalf("type = %q", p.Type)
+	}
+	if p.Status != http.StatusUnauthorized {
+		t.Fatalf("status = %d", p.Status)
+	}
+	if p.TraceID != "trace-123" {
+		t.Fatalf("traceId = %q", p.TraceID)
+	}
+}
+
+func TestValidationHelper(t *testing.T) {
+	t.Parallel()
+
+	p := Validation("https://nycu.edu.tw/problems", "/api/v1/hook/password", "trace-123", "Field 'cn' is required")
+
+	if p.Title != "Validation Error" {
+		t.Fatalf("title = %q", p.Title)
+	}
+	if p.Status != http.StatusBadRequest {
+		t.Fatalf("status = %d", p.Status)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
 
@@ -15,14 +16,7 @@ func Recovery(log *slog.Logger) func(http.Handler) http.Handler {
 					if log != nil {
 						log.Error("panic recovered", slog.Any("panic", recovered))
 					}
-					problem.Write(w, problem.New(
-						"https://nycu.edu.tw/problems/internal-error",
-						"Internal Server Error",
-						http.StatusInternalServerError,
-						"unexpected server error",
-						r.URL.Path,
-						"",
-					))
+					problem.Write(w, problem.Internal(problem.DefaultBaseURL, r.URL.Path, requestid.From(r.Context()), "unexpected server error"))
 				}
 			}()
 			next.ServeHTTP(w, r)

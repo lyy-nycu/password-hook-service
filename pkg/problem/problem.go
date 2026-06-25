@@ -3,7 +3,10 @@ package problem
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
+
+const DefaultBaseURL = "https://nycu.edu.tw/problems"
 
 type Problem struct {
 	Type     string `json:"type"`
@@ -23,6 +26,30 @@ func New(problemType string, title string, status int, detail string, instance s
 		Instance: instance,
 		TraceID:  traceID,
 	}
+}
+
+func Validation(baseURL, instance, traceID, detail string) Problem {
+	return New(typeURL(baseURL, "validation-error"), "Validation Error", http.StatusBadRequest, detail, instance, traceID)
+}
+
+func Unauthorized(baseURL, instance, traceID, detail string) Problem {
+	return New(typeURL(baseURL, "unauthorized"), "Unauthorized", http.StatusUnauthorized, detail, instance, traceID)
+}
+
+func TooManyRequests(baseURL, instance, traceID, detail string) Problem {
+	return New(typeURL(baseURL, "too-many-requests"), "Too Many Requests", http.StatusTooManyRequests, detail, instance, traceID)
+}
+
+func Internal(baseURL, instance, traceID, detail string) Problem {
+	return New(typeURL(baseURL, "internal-error"), "Internal Server Error", http.StatusInternalServerError, detail, instance, traceID)
+}
+
+func typeURL(baseURL, slug string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		baseURL = DefaultBaseURL
+	}
+	return baseURL + "/" + slug
 }
 
 func Write(w http.ResponseWriter, p Problem) {
