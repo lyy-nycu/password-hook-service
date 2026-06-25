@@ -24,7 +24,10 @@ func New(cfg config.Config) (*App, error) {
 	queue := discardQueue{}
 	service := migration.NewService(cfg.EntraPrimaryDomain, queue)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
-	hmacMiddleware := middleware.NewHMAC(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew)
+	hmacMiddleware, err := middleware.NewHMAC(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew)
+	if err != nil {
+		return nil, err
+	}
 
 	server := httpserver.New(cfg.HTTPAddr, httpserver.Routes{
 		Hook: requestid.Middleware(hmacMiddleware.Wrap(hook)),

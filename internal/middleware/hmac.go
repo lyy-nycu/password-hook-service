@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,17 +23,25 @@ type NonceStore interface {
 }
 
 type HMAC struct {
-	secret []byte
-	nonces NonceStore
-	skew   time.Duration
+	secret   []byte
+	nonces   NonceStore
+	skew     time.Duration
+	nonceTTL time.Duration
 }
 
-func NewHMAC(secret string, nonces NonceStore, skew time.Duration) HMAC {
-	return HMAC{
-		secret: []byte(secret),
-		nonces: nonces,
-		skew:   skew,
+func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error) {
+	if strings.TrimSpace(secret) == "" {
+		return nil, errors.New("hmac secret is required")
 	}
+	if skew <= 0 {
+		return nil, errors.New("hmac clock skew must be positive")
+	}
+	return &HMAC{
+		secret:   []byte(secret),
+		nonces:   nonces,
+		skew:     skew,
+		nonceTTL: nonceTTL(nonces),
+	}, nil
 }
 
 func (m HMAC) Wrap(next http.Handler) http.Handler {
@@ -57,7 +66,7 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 			writeUnauthorized(w, r, "signature timestamp is outside allowed skew")
 			return
 		}
-		if m.nonces != nil && !m.nonces.Use(nonce, 60*time.Second) {
+		if m.nonces != nil && !m.nonces.Use(nonce, m.nonceTTL) {
 			writeUnauthorized(w, r, "nonce has already been used")
 			return
 		}
@@ -101,12 +110,20 @@ func absDuration(d time.Duration) time.Duration {
 }
 
 type MemoryNonceStore struct {
+	ttl    time.Duration
 	mu     sync.Mutex
 	seenAt map[string]time.Time
 }
 
-func NewMemoryNonceStore(_ time.Duration) *MemoryNonceStore {
-	return &MemoryNonceStore{seenAt: map[string]time.Time{}}
+func NewMemoryNonceStore(ttl time.Duration) *MemoryNonceStore {
+	if ttl <= 0 {
+		ttl = 60 * time.Second
+	}
+	return &MemoryNonceStore{ttl: ttl, seenAt: map[string]time.Time{}}
+}
+
+func (s *MemoryNonceStore) TTL() time.Duration {
+	return s.ttl
 }
 
 func (s *MemoryNonceStore) Use(nonce string, ttl time.Duration) bool {
@@ -125,4 +142,11 @@ func (s *MemoryNonceStore) Use(nonce string, ttl time.Duration) bool {
 	}
 	s.seenAt[nonce] = now
 	return true
+}
+
+func nonceTTL(nonces NonceStore) time.Duration {
+	if store, ok := nonces.(interface{ TTL() time.Duration }); ok && store.TTL() > 0 {
+		return store.TTL()
+	}
+	return 60 * time.Second
 }
