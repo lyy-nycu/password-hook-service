@@ -15,7 +15,11 @@ type App struct {
 	server *httpserver.Server
 }
 
-func New(cfg config.Config) *App {
+func New(cfg config.Config) (*App, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	queue := discardQueue{}
 	service := migration.NewService(cfg.EntraPrimaryDomain, queue)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
@@ -25,7 +29,7 @@ func New(cfg config.Config) *App {
 		Hook: hmacMiddleware.Wrap(hook),
 	}, buildinfo.Current())
 
-	return &App{server: server}
+	return &App{server: server}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
