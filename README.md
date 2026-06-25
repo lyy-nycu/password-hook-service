@@ -23,13 +23,13 @@ Azure Service Bus, Microsoft Graph, Key Vault, and Terraform resources are repre
 
 ## Local Verification
 
-The workspace currently relies on Docker for the Go toolchain:
+Run the standard local verification:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./...
+make verify
 ```
 
-Run the full formatting and static verification command:
+The Makefile wraps the Dockerized Go toolchain. The equivalent raw command is:
 
 ```bash
 docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go test ./... && go vet ./..."
