@@ -11,28 +11,34 @@ import (
 )
 
 type Config struct {
-	HTTPAddr           string
-	HMACSecret         string
-	EntraPrimaryDomain string
-	ProblemBaseURL     string
-	HMACClockSkew      time.Duration
-	NonceTTL           time.Duration
-	PortalAllowedCIDRs []string
-	RateLimitPerIP     int
-	RateLimitWindow    time.Duration
+	HTTPAddr                   string
+	HMACSecret                 string
+	EntraPrimaryDomain         string
+	ProblemBaseURL             string
+	HMACClockSkew              time.Duration
+	NonceTTL                   time.Duration
+	PortalAllowedCIDRs         []string
+	RateLimitPerIP             int
+	RateLimitWindow            time.Duration
+	ServiceBusConnectionString string
+	ServiceBusQueueName        string
+	PasswordMessageTTL         time.Duration
 }
 
 func Load() Config {
 	return Config{
-		HTTPAddr:           env("HTTP_ADDR", ":8080"),
-		HMACSecret:         os.Getenv("HOOK_HMAC_SECRET"),
-		EntraPrimaryDomain: env("ENTRA_PRIMARY_DOMAIN", "nycu.edu.tw"),
-		ProblemBaseURL:     strings.TrimRight(env("PROBLEM_BASE_URL", "https://nycu.edu.tw/problems"), "/"),
-		HMACClockSkew:      30 * time.Second,
-		NonceTTL:           60 * time.Second,
-		PortalAllowedCIDRs: csvEnv("PORTAL_ALLOWED_CIDRS"),
-		RateLimitPerIP:     intEnv("RATE_LIMIT_PER_IP", 500),
-		RateLimitWindow:    time.Second,
+		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
+		HMACSecret:                 os.Getenv("HOOK_HMAC_SECRET"),
+		EntraPrimaryDomain:         env("ENTRA_PRIMARY_DOMAIN", "nycu.edu.tw"),
+		ProblemBaseURL:             strings.TrimRight(env("PROBLEM_BASE_URL", "https://nycu.edu.tw/problems"), "/"),
+		HMACClockSkew:              30 * time.Second,
+		NonceTTL:                   60 * time.Second,
+		PortalAllowedCIDRs:         csvEnv("PORTAL_ALLOWED_CIDRS"),
+		RateLimitPerIP:             intEnv("RATE_LIMIT_PER_IP", 500),
+		RateLimitWindow:            time.Second,
+		ServiceBusConnectionString: strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
+		ServiceBusQueueName:        env("SERVICEBUS_QUEUE_NAME", "password-sync"),
+		PasswordMessageTTL:         300 * time.Second,
 	}
 }
 
@@ -56,6 +62,12 @@ func (c Config) Validate() error {
 		return errors.New("RateLimitPerIP must not be negative")
 	case c.RateLimitWindow < 0:
 		return errors.New("RateLimitWindow must not be negative")
+	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
+		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
+	case strings.TrimSpace(c.ServiceBusQueueName) == "":
+		return errors.New("SERVICEBUS_QUEUE_NAME is required")
+	case c.PasswordMessageTTL <= 0:
+		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return validateCIDRs(c.PortalAllowedCIDRs)
 	}

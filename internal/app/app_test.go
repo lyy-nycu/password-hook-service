@@ -24,14 +24,17 @@ func TestAppHookRouteWritesAccessLog(t *testing.T) {
 	})
 
 	cfg := config.Config{
-		HTTPAddr:           ":8080",
-		HMACSecret:         "shared-secret",
-		EntraPrimaryDomain: "nycu.edu.tw",
-		ProblemBaseURL:     "https://nycu.edu.tw/problems",
-		HMACClockSkew:      30 * time.Second,
-		NonceTTL:           60 * time.Second,
-		RateLimitPerIP:     500,
-		RateLimitWindow:    time.Second,
+		HTTPAddr:                   ":8080",
+		HMACSecret:                 "shared-secret",
+		EntraPrimaryDomain:         "nycu.edu.tw",
+		ProblemBaseURL:             "https://nycu.edu.tw/problems",
+		HMACClockSkew:              30 * time.Second,
+		NonceTTL:                   60 * time.Second,
+		RateLimitPerIP:             500,
+		RateLimitWindow:            time.Second,
+		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusQueueName:        "password-sync",
+		PasswordMessageTTL:         300 * time.Second,
 	}
 	application, err := New(cfg)
 	if err != nil {
