@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -45,6 +46,10 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Mail:        body.Mail,
 	})
 	if err != nil {
+		if errors.Is(err, migration.ErrUnknownIdentity) || errors.Is(err, migration.ErrExternalIdentity) {
+			h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), err.Error()))
+			return
+		}
 		h.writeProblem(w, r, problem.Internal(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "failed to accept password sync request"))
 		return
 	}
