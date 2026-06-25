@@ -6,6 +6,8 @@
 /dist/
 /coverage.out
 
+.worktrees/
+
 .terraform/
 *.tfstate
 *.tfstate.*
