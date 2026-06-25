@@ -65,3 +65,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 }
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.server.Handler.ServeHTTP(w, r)
+}

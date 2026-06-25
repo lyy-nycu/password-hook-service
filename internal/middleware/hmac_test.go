@@ -121,6 +121,53 @@ func TestHMACRejectsBadSignature(t *testing.T) {
 	}
 }
 
+func TestHMACDoesNotConsumeNonceForBadSignature(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	timestamp := time.Now().Unix()
+	nonce := "00112233445566778899aabbccddeeff"
+	store := NewMemoryNonceStore(60 * time.Second)
+	middleware, err := NewHMAC("shared-secret", store, 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewHMAC returned error: %v", err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	bad := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(bad, signedRequest(body, timestamp, nonce, sign("wrong-secret", timestamp, nonce, body)))
+	if bad.Code != http.StatusUnauthorized {
+		t.Fatalf("bad signature status = %d, want %d", bad.Code, http.StatusUnauthorized)
+	}
+
+	good := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(good, signedRequest(body, timestamp, nonce, sign("shared-secret", timestamp, nonce, body)))
+	if good.Code != http.StatusAccepted {
+		t.Fatalf("valid retry status = %d, want %d", good.Code, http.StatusAccepted)
+	}
+}
+
+func TestHMACUsesConfiguredProblemBaseURL(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewHMACWithProblemBase("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, "https://example.edu/problems")
+	if err != nil {
+		t.Fatalf("NewHMACWithProblemBase returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rec, req)
+
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"type":"https://example.edu/problems/unauthorized"`)) {
+		t.Fatalf("problem body = %s", rec.Body.String())
+	}
+}
+
 func TestNewHMACRejectsEmptySecret(t *testing.T) {
 	t.Parallel()
 

@@ -31,7 +31,7 @@
 
 Current active slice:
 
-- Slice 1: `docs/superpowers/plans/2026-06-24-m1-foundation-hardening.md`
+- None. Slice 1 is complete; prepare Slice 2 detailed plan next.
 
 Next detailed plan to create after Slice 1 is complete:
 
@@ -58,7 +58,7 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 | Slice | Status | Detailed Plan | Commit/Notes |
 |---|---|---|---|
 | Project Structure Scaffold | Done | `2026-06-24-password-hook-service-project-structure.md` | `92ba9aa feat: scaffold password hook service foundation` |
-| 1. M1 Foundation Hardening | Planned | `2026-06-24-m1-foundation-hardening.md` | Not started |
+| 1. M1 Foundation Hardening | Done | `2026-06-24-m1-foundation-hardening.md` | Review fixes applied locally; full `go test ./... && go vet ./...` passed |
 | 2. Producer to Service Bus | Not planned | Not created |  |
 | 3. Secret Loading | Not planned | Not created |  |
 | 4. Worker Queue Consumption | Not planned | Not created |  |

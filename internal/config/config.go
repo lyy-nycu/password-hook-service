@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -56,8 +57,21 @@ func (c Config) Validate() error {
 	case c.RateLimitWindow < 0:
 		return errors.New("RateLimitWindow must not be negative")
 	default:
-		return nil
+		return validateCIDRs(c.PortalAllowedCIDRs)
 	}
+}
+
+func validateCIDRs(values []string) error {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(value); err != nil {
+			return fmt.Errorf("PORTAL_ALLOWED_CIDRS contains invalid CIDR %q", value)
+		}
+	}
+	return nil
 }
 
 func env(key string, fallback string) string {

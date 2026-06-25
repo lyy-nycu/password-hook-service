@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
 
 	"github.com/nycu/password-hook-service/internal/buildinfo"
 	"github.com/nycu/password-hook-service/internal/config"
@@ -24,7 +26,7 @@ func New(cfg config.Config) (*App, error) {
 	queue := discardQueue{}
 	service := migration.NewService(cfg.EntraPrimaryDomain, queue)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
-	hmacMiddleware, err := middleware.NewHMAC(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew)
+	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -35,8 +37,14 @@ func New(cfg config.Config) (*App, error) {
 		ProblemBase:  cfg.ProblemBaseURL,
 	})
 
+	hookHandler := hmacMiddleware.Wrap(hook)
+	hookHandler = rateLimiter.Wrap(hookHandler)
+	hookHandler = middleware.RecoveryWithProblemBase(slog.Default(), cfg.ProblemBaseURL)(hookHandler)
+	hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
+	hookHandler = requestid.Middleware(hookHandler)
+
 	server := httpserver.New(cfg.HTTPAddr, httpserver.Routes{
-		Hook: requestid.Middleware(rateLimiter.Wrap(hmacMiddleware.Wrap(hook))),
+		Hook: hookHandler,
 	}, buildinfo.Current())
 
 	return &App{server: server}, nil
@@ -44,6 +52,10 @@ func New(cfg config.Config) (*App, error) {
 
 func (a *App) Run(ctx context.Context) error {
 	return a.server.Run(ctx)
+}
+
+func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.server.ServeHTTP(w, r)
 }
 
 type discardQueue struct{}

@@ -23,13 +23,18 @@ type NonceStore interface {
 }
 
 type HMAC struct {
-	secret   []byte
-	nonces   NonceStore
-	skew     time.Duration
-	nonceTTL time.Duration
+	secret      []byte
+	nonces      NonceStore
+	skew        time.Duration
+	nonceTTL    time.Duration
+	problemBase string
 }
 
 func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error) {
+	return NewHMACWithProblemBase(secret, nonces, skew, problem.DefaultBaseURL)
+}
+
+func NewHMACWithProblemBase(secret string, nonces NonceStore, skew time.Duration, problemBase string) (*HMAC, error) {
 	if strings.TrimSpace(secret) == "" {
 		return nil, errors.New("hmac secret is required")
 	}
@@ -37,10 +42,11 @@ func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error
 		return nil, errors.New("hmac clock skew must be positive")
 	}
 	return &HMAC{
-		secret:   []byte(secret),
-		nonces:   nonces,
-		skew:     skew,
-		nonceTTL: nonceTTL(nonces),
+		secret:      []byte(secret),
+		nonces:      nonces,
+		skew:        skew,
+		nonceTTL:    nonceTTL(nonces),
+		problemBase: problemBase,
 	}, nil
 }
 
@@ -48,7 +54,7 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			writeUnauthorized(w, r, "failed to read request body")
+			m.writeUnauthorized(w, r, "failed to read request body")
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -58,20 +64,20 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 		signature := r.Header.Get("X-Hook-Signature")
 		timestamp, err := strconv.ParseInt(timestampHeader, 10, 64)
 		if err != nil || nonce == "" || signature == "" {
-			writeUnauthorized(w, r, "missing or invalid signature headers")
+			m.writeUnauthorized(w, r, "missing or invalid signature headers")
 			return
 		}
 
 		if absDuration(time.Since(time.Unix(timestamp, 0))) > m.skew {
-			writeUnauthorized(w, r, "signature timestamp is outside allowed skew")
-			return
-		}
-		if m.nonces != nil && !m.nonces.Use(nonce, m.nonceTTL) {
-			writeUnauthorized(w, r, "nonce has already been used")
+			m.writeUnauthorized(w, r, "signature timestamp is outside allowed skew")
 			return
 		}
 		if !m.validSignature(timestampHeader, nonce, body, signature) {
-			writeUnauthorized(w, r, "signature mismatch")
+			m.writeUnauthorized(w, r, "signature mismatch")
+			return
+		}
+		if m.nonces != nil && !m.nonces.Use(nonce, m.nonceTTL) {
+			m.writeUnauthorized(w, r, "nonce has already been used")
 			return
 		}
 
@@ -98,8 +104,8 @@ func (m HMAC) validSignature(timestamp string, nonce string, body []byte, header
 	return hmac.Equal(got, want)
 }
 
-func writeUnauthorized(w http.ResponseWriter, r *http.Request, detail string) {
-	problem.Write(w, problem.Unauthorized(problem.DefaultBaseURL, r.URL.Path, requestid.From(r.Context()), detail))
+func (m HMAC) writeUnauthorized(w http.ResponseWriter, r *http.Request, detail string) {
+	problem.Write(w, problem.Unauthorized(m.problemBase, r.URL.Path, requestid.From(r.Context()), detail))
 }
 
 func absDuration(d time.Duration) time.Duration {
