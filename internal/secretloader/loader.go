@@ -6,11 +6,44 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/nycu/password-hook-service/internal/config"
 )
 
 type Getter interface {
 	GetSecret(context.Context, string) (string, error)
+}
+
+type keyVaultClient interface {
+	GetSecret(context.Context, string, string, *azsecrets.GetSecretOptions) (azsecrets.GetSecretResponse, error)
+}
+
+type keyVaultGetter struct {
+	client keyVaultClient
+}
+
+func NewKeyVaultGetter(vaultURL string) (Getter, error) {
+	credential, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Azure credential: %w", err)
+	}
+	client, err := azsecrets.NewClient(vaultURL, credential, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Key Vault secrets client: %w", err)
+	}
+	return keyVaultGetter{client: client}, nil
+}
+
+func (g keyVaultGetter) GetSecret(ctx context.Context, name string) (string, error) {
+	resp, err := g.client.GetSecret(ctx, name, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if resp.Value == nil {
+		return "", fmt.Errorf("Key Vault secret %s has nil value", name)
+	}
+	return *resp.Value, nil
 }
 
 func Resolve(ctx context.Context, cfg config.Config, getter Getter) (config.Config, error) {
@@ -23,7 +56,11 @@ func Resolve(ctx context.Context, cfg config.Config, getter Getter) (config.Conf
 		return cfg, nil
 	case config.SecretsSourceKeyVault:
 		if getter == nil {
-			return config.Config{}, errors.New("key vault getter is required")
+			var err error
+			getter, err = NewKeyVaultGetter(cfg.KeyVaultURL)
+			if err != nil {
+				return config.Config{}, err
+			}
 		}
 		return resolveKeyVault(ctx, cfg, getter)
 	default:
