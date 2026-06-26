@@ -37,7 +37,7 @@
 - Modify: `internal/config/config_test.go`
 - Modify: `internal/app/app_test.go`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add the following tests to `internal/config/config_test.go`:
 
@@ -177,7 +177,7 @@ GraphClientSecret:           "graph-client-secret",
 
 In `internal/config/config_test.go`, omit the `config.` qualifier because the tests are in package `config`.
 
-- [ ] **Step 2: Run config tests to verify failure**
+- [x] **Step 2: Run config tests to verify failure**
 
 Run:
 
@@ -187,7 +187,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/config .
 
 Expected: FAIL because `Config` does not yet define `SecretsSource`, `KeyVaultURL`, `KeyVaultSecretNames`, `GraphTenantID`, `GraphClientID`, `GraphClientSecret`, or `ValidateSecretLoadingInputs`.
 
-- [ ] **Step 3: Implement config fields and validation**
+- [x] **Step 3: Implement config fields and validation**
 
 In `internal/config/config.go`, add constants and types near the top of the file:
 
@@ -285,7 +285,7 @@ case strings.TrimSpace(c.GraphClientSecret) == "":
 	return errors.New("GRAPH_CLIENT_SECRET is required")
 ```
 
-- [ ] **Step 4: Run focused tests**
+- [x] **Step 4: Run focused tests**
 
 Run:
 
@@ -295,7 +295,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/config .
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go internal/app/app_test.go
@@ -310,7 +310,7 @@ git commit -m "feat: define explicit secret loading config"
 - Create: `internal/secretloader/loader.go`
 - Create: `internal/secretloader/loader_test.go`
 
-- [ ] **Step 1: Write failing loader tests**
+- [x] **Step 1: Write failing loader tests**
 
 Create `internal/secretloader/loader_test.go`:
 
@@ -478,7 +478,7 @@ func completeConfig() config.Config {
 }
 ```
 
-- [ ] **Step 2: Run loader tests to verify failure**
+- [x] **Step 2: Run loader tests to verify failure**
 
 Run:
 
@@ -488,7 +488,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/secretlo
 
 Expected: FAIL because `internal/secretloader` does not exist.
 
-- [ ] **Step 3: Implement loader without Azure SDK adapter**
+- [x] **Step 3: Implement loader without Azure SDK adapter**
 
 Create `internal/secretloader/loader.go`:
 
@@ -566,7 +566,7 @@ func sanitizeSecretError(err error) error {
 }
 ```
 
-- [ ] **Step 4: Run loader tests**
+- [x] **Step 4: Run loader tests**
 
 Run:
 
@@ -576,7 +576,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/secretlo
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/secretloader/loader.go internal/secretloader/loader_test.go
@@ -593,7 +593,7 @@ git commit -m "feat: add secret loading resolver"
 - Modify: `internal/secretloader/loader.go`
 - Create: `internal/secretloader/azure_test.go`
 
-- [ ] **Step 1: Add Azure SDK dependencies**
+- [x] **Step 1: Add Azure SDK dependencies**
 
 Run:
 
@@ -603,7 +603,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go get github.com/Azure/azu
 
 Expected: `go.mod` includes direct requirements for `azidentity` and `azsecrets`; `go.sum` is updated.
 
-- [ ] **Step 2: Write Azure getter unit test for nil secret values**
+- [x] **Step 2: Write Azure getter unit test for nil secret values**
 
 Create `internal/secretloader/azure_test.go`:
 
@@ -635,7 +635,7 @@ func (fakeKeyVaultClient) GetSecret(context.Context, string, string, *azsecrets.
 }
 ```
 
-- [ ] **Step 3: Run Azure getter test to verify failure**
+- [x] **Step 3: Run Azure getter test to verify failure**
 
 Run:
 
@@ -645,7 +645,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/secretlo
 
 Expected: FAIL because `keyVaultGetter` does not exist.
 
-- [ ] **Step 4: Implement Azure Key Vault getter**
+- [x] **Step 4: Implement Azure Key Vault getter**
 
 Replace `internal/secretloader/loader.go` with an implementation that keeps the existing resolver code and adds this Azure adapter:
 
@@ -707,7 +707,7 @@ case config.SecretsSourceKeyVault:
 	return resolveKeyVault(ctx, cfg, getter)
 ```
 
-- [ ] **Step 5: Run loader tests**
+- [x] **Step 5: Run loader tests**
 
 Run:
 
@@ -717,7 +717,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/secretlo
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/secretloader/loader.go internal/secretloader/azure_test.go
@@ -731,7 +731,7 @@ git commit -m "feat: load secrets from Azure Key Vault"
 **Files:**
 - Modify: `cmd/server/main.go`
 
-- [ ] **Step 1: Write the startup wiring change**
+- [x] **Step 1: Write the startup wiring change**
 
 Update `cmd/server/main.go` imports to include:
 
@@ -765,7 +765,7 @@ if err != nil {
 }
 ```
 
-- [ ] **Step 2: Run server package tests/build**
+- [x] **Step 2: Run server package tests/build**
 
 Run:
 
@@ -775,7 +775,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./cmd/server ./inte
 
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add cmd/server/main.go
@@ -791,7 +791,7 @@ git commit -m "feat: resolve runtime secrets at startup"
 - Modify: `deploy/docker-compose.yml`
 - Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`
 
-- [ ] **Step 1: Update README current scope**
+- [x] **Step 1: Update README current scope**
 
 In `README.md`, change the current scope paragraph from:
 
@@ -811,7 +811,7 @@ Add a bullet to the implemented list:
 - explicit runtime secret loading from local env or Azure Key Vault
 ```
 
-- [ ] **Step 2: Update README local env**
+- [x] **Step 2: Update README local env**
 
 Replace the local environment block with:
 
@@ -839,7 +839,7 @@ Update the `docker run` env list to include:
   -e GRAPH_CLIENT_SECRET \
 ```
 
-- [ ] **Step 3: Add README Key Vault mode**
+- [x] **Step 3: Add README Key Vault mode**
 
 Add this section after local run:
 
@@ -864,7 +864,7 @@ export SERVICEBUS_QUEUE_NAME="password-sync"
 The managed identity assigned to the container app must have `secrets/get` permission for the configured Key Vault. Local development must opt into `SECRETS_SOURCE=env`; the service does not silently fall back from Key Vault to environment secrets.
 ````
 
-- [ ] **Step 4: Update README configuration table**
+- [x] **Step 4: Update README configuration table**
 
 Replace the configuration table with:
 
@@ -890,7 +890,7 @@ Replace the configuration table with:
 | `RATE_LIMIT_PER_IP` | `500` | Per-IP request threshold per one-second window |
 ```
 
-- [ ] **Step 5: Update docker-compose local fallback**
+- [x] **Step 5: Update docker-compose local fallback**
 
 Update `deploy/docker-compose.yml` service environment:
 
@@ -909,7 +909,7 @@ environment:
   SERVICEBUS_QUEUE_NAME: "password-sync"
 ```
 
-- [ ] **Step 6: Update roadmap active slice**
+- [x] **Step 6: Update roadmap active slice**
 
 In `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`, change the active plan to:
 
@@ -923,7 +923,7 @@ Update the Slice 3 row:
 | 3. Secret Loading | Planned | `2026-06-26-secret-loading.md` | Loads runtime secrets via Key Vault/Managed Identity with explicit local env fallback |
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add README.md deploy/docker-compose.yml docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
@@ -937,7 +937,7 @@ git commit -m "docs: document secret loading configuration"
 **Files:**
 - Verify all modified files.
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
 
 Run:
 
@@ -947,7 +947,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go tes
 
 Expected: PASS.
 
-- [ ] **Step 2: Confirm no secrets are hardcoded beyond test/local examples**
+- [x] **Step 2: Confirm no secrets are hardcoded beyond test/local examples**
 
 Run:
 
@@ -957,7 +957,7 @@ rg -n "local-graph-client-secret|local-development-secret|SharedAccessKey=dGVzdA
 
 Expected: matches appear only in tests, README local examples, and docker-compose local examples.
 
-- [ ] **Step 3: Confirm roadmap and plan status**
+- [x] **Step 3: Confirm roadmap and plan status**
 
 Run:
 
@@ -968,7 +968,7 @@ git log --oneline -10
 
 Expected: branch remains the active slice branch or the executor-created slice 3 branch; commits include the five Slice 3 commits above; no unrelated files are modified.
 
-- [ ] **Step 4: Mark Slice 3 done after verification**
+- [x] **Step 4: Mark Slice 3 done after verification**
 
 After all tests pass and review fixes are applied, update `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`:
 
@@ -976,7 +976,7 @@ After all tests pass and review fixes are applied, update `docs/superpowers/plan
 | 3. Secret Loading | Done | `2026-06-26-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
 ```
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 git add docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
