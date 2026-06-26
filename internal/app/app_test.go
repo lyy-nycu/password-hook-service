@@ -90,9 +90,13 @@ func (q *captureQueue) EnqueuePasswordSync(_ context.Context, msg migration.Pass
 
 func completeAppConfig() config.Config {
 	return config.Config{
+		SecretsSource:              config.SecretsSourceEnv,
+		KeyVaultURL:                "",
+		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
 		HTTPAddr:                   ":8080",
 		HMACSecret:                 "shared-secret",
 		EntraPrimaryDomain:         "nycu.edu.tw",
+		EntraFallbackDomain:        "nycu.onmicrosoft.com",
 		ProblemBaseURL:             "https://nycu.edu.tw/problems",
 		HMACClockSkew:              30 * time.Second,
 		NonceTTL:                   60 * time.Second,
@@ -102,6 +106,9 @@ func completeAppConfig() config.Config {
 		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
+		GraphTenantID:              "tenant-id",
+		GraphClientID:              "client-id",
+		GraphClientSecret:          "graph-client-secret",
 	}
 }
 

@@ -10,10 +10,25 @@ import (
 	"time"
 )
 
+const (
+	SecretsSourceEnv      = "env"
+	SecretsSourceKeyVault = "keyvault"
+)
+
+type KeyVaultSecretNames struct {
+	HMACSecret                 string
+	ServiceBusConnectionString string
+	GraphClientSecret          string
+}
+
 type Config struct {
+	SecretsSource              string
+	KeyVaultURL                string
+	KeyVaultSecretNames        KeyVaultSecretNames
 	HTTPAddr                   string
 	HMACSecret                 string
 	EntraPrimaryDomain         string
+	EntraFallbackDomain        string
 	ProblemBaseURL             string
 	HMACClockSkew              time.Duration
 	NonceTTL                   time.Duration
@@ -23,13 +38,24 @@ type Config struct {
 	ServiceBusConnectionString string
 	ServiceBusQueueName        string
 	PasswordMessageTTL         time.Duration
+	GraphTenantID              string
+	GraphClientID              string
+	GraphClientSecret          string
 }
 
 func Load() Config {
 	return Config{
+		SecretsSource: strings.TrimSpace(os.Getenv("SECRETS_SOURCE")),
+		KeyVaultURL:   strings.TrimSpace(os.Getenv("KEY_VAULT_URL")),
+		KeyVaultSecretNames: KeyVaultSecretNames{
+			HMACSecret:                 env("KEY_VAULT_HMAC_SECRET_NAME", "hook-hmac-secret"),
+			ServiceBusConnectionString: env("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME", "servicebus-conn-str"),
+			GraphClientSecret:          env("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME", "graph-client-secret"),
+		},
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		HMACSecret:                 os.Getenv("HOOK_HMAC_SECRET"),
 		EntraPrimaryDomain:         env("ENTRA_PRIMARY_DOMAIN", "nycu.edu.tw"),
+		EntraFallbackDomain:        strings.TrimSpace(os.Getenv("ENTRA_FALLBACK_DOMAIN")),
 		ProblemBaseURL:             strings.TrimRight(env("PROBLEM_BASE_URL", "https://nycu.edu.tw/problems"), "/"),
 		HMACClockSkew:              30 * time.Second,
 		NonceTTL:                   60 * time.Second,
@@ -39,10 +65,17 @@ func Load() Config {
 		ServiceBusConnectionString: strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
 		ServiceBusQueueName:        env("SERVICEBUS_QUEUE_NAME", "password-sync"),
 		PasswordMessageTTL:         300 * time.Second,
+		GraphTenantID:              strings.TrimSpace(os.Getenv("GRAPH_TENANT_ID")),
+		GraphClientID:              strings.TrimSpace(os.Getenv("GRAPH_CLIENT_ID")),
+		GraphClientSecret:          strings.TrimSpace(os.Getenv("GRAPH_CLIENT_SECRET")),
 	}
 }
 
 func (c Config) Validate() error {
+	if err := c.ValidateSecretLoadingInputs(); err != nil {
+		return err
+	}
+
 	switch {
 	case strings.TrimSpace(c.HTTPAddr) == "":
 		return errors.New("HTTP_ADDR is required")
@@ -52,6 +85,14 @@ func (c Config) Validate() error {
 		return errors.New("ENTRA_PRIMARY_DOMAIN is required")
 	case strings.Contains(c.EntraPrimaryDomain, "@"):
 		return fmt.Errorf("ENTRA_PRIMARY_DOMAIN must be a domain, got %q", c.EntraPrimaryDomain)
+	case strings.Contains(c.EntraFallbackDomain, "@"):
+		return fmt.Errorf("ENTRA_FALLBACK_DOMAIN must be a domain, got %q", c.EntraFallbackDomain)
+	case strings.TrimSpace(c.GraphTenantID) == "":
+		return errors.New("GRAPH_TENANT_ID is required")
+	case strings.TrimSpace(c.GraphClientID) == "":
+		return errors.New("GRAPH_CLIENT_ID is required")
+	case strings.TrimSpace(c.GraphClientSecret) == "":
+		return errors.New("GRAPH_CLIENT_SECRET is required")
 	case !strings.HasPrefix(c.ProblemBaseURL, "https://"):
 		return errors.New("PROBLEM_BASE_URL must start with https://")
 	case c.HMACClockSkew <= 0:
@@ -70,6 +111,34 @@ func (c Config) Validate() error {
 		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return validateCIDRs(c.PortalAllowedCIDRs)
+	}
+}
+
+func (c Config) ValidateSecretLoadingInputs() error {
+	switch c.SecretsSource {
+	case "":
+		return errors.New("SECRETS_SOURCE is required (env or keyvault)")
+	case SecretsSourceEnv:
+		return nil
+	case SecretsSourceKeyVault:
+		if strings.TrimSpace(c.KeyVaultURL) == "" {
+			return errors.New("KEY_VAULT_URL is required when SECRETS_SOURCE=keyvault")
+		}
+		if !strings.HasPrefix(c.KeyVaultURL, "https://") {
+			return errors.New("KEY_VAULT_URL must start with https://")
+		}
+		switch {
+		case strings.TrimSpace(c.KeyVaultSecretNames.HMACSecret) == "":
+			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
+		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
+			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
+		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
+			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
+		default:
+			return nil
+		}
+	default:
+		return errors.New("SECRETS_SOURCE must be env or keyvault")
 	}
 }
 
