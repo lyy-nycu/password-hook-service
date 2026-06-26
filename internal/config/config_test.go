@@ -26,6 +26,24 @@ func TestValidateAcceptsCompleteConfig(t *testing.T) {
 	}
 }
 
+func TestLoadServiceBusDefaults(t *testing.T) {
+	t.Setenv("HOOK_HMAC_SECRET", "shared-secret")
+	t.Setenv("SERVICEBUS_CONNECTION_STRING", " Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA== ")
+	t.Setenv("SERVICEBUS_QUEUE_NAME", "")
+
+	cfg := Load()
+
+	if cfg.ServiceBusConnectionString != "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==" {
+		t.Fatalf("ServiceBusConnectionString = %q", cfg.ServiceBusConnectionString)
+	}
+	if cfg.ServiceBusQueueName != "password-sync" {
+		t.Fatalf("ServiceBusQueueName = %q, want password-sync", cfg.ServiceBusQueueName)
+	}
+	if cfg.PasswordMessageTTL != 300*time.Second {
+		t.Fatalf("PasswordMessageTTL = %s, want 300s", cfg.PasswordMessageTTL)
+	}
+}
+
 func TestValidateRejectsInvalidPortalAllowedCIDR(t *testing.T) {
 	t.Parallel()
 

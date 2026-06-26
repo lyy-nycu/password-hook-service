@@ -3,6 +3,7 @@ package servicebusqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -88,19 +89,16 @@ func (q *Queue) EnqueuePasswordSync(ctx context.Context, msg migration.PasswordS
 }
 
 func (q *Queue) Close(ctx context.Context) error {
-	var senderErr error
+	var closeErrs []error
 	if q.sender != nil {
-		senderErr = q.sender.Close(ctx)
+		if err := q.sender.Close(ctx); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close service bus sender: %w", err))
+		}
 	}
-	var clientErr error
 	if q.client != nil {
-		clientErr = q.client.Close(ctx)
+		if err := q.client.Close(ctx); err != nil {
+			closeErrs = append(closeErrs, fmt.Errorf("close service bus client: %w", err))
+		}
 	}
-	if senderErr != nil {
-		return fmt.Errorf("close service bus sender: %w", senderErr)
-	}
-	if clientErr != nil {
-		return fmt.Errorf("close service bus client: %w", clientErr)
-	}
-	return nil
+	return errors.Join(closeErrs...)
 }

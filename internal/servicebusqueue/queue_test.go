@@ -177,6 +177,26 @@ func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 		t.Fatalf("sender closed %d times before client error, want 1", sender.closed)
 	}
 
+	senderErr = errors.New("close sender")
+	clientErr = errors.New("close client")
+	sender = &captureSender{closeErr: senderErr}
+	client = &captureCloser{closeErr: clientErr}
+	queue = NewWithClient(sender, client, 300*time.Second)
+
+	err = queue.Close(ctx)
+	if !errors.Is(err, senderErr) {
+		t.Fatalf("Close error = %v, want sender error", err)
+	}
+	if !errors.Is(err, clientErr) {
+		t.Fatalf("Close error = %v, want client error", err)
+	}
+	if !strings.Contains(err.Error(), "close service bus sender") {
+		t.Fatalf("Close error = %q, want close service bus sender", err.Error())
+	}
+	if !strings.Contains(err.Error(), "close service bus client") {
+		t.Fatalf("Close error = %q, want close service bus client", err.Error())
+	}
+
 	client = &captureCloser{}
 	queue = NewWithClient(nil, client, 300*time.Second)
 
