@@ -58,7 +58,7 @@ Rejected for this slice:
 - Create: `Makefile`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the Makefile**
+- [x] **Step 1: Write the Makefile**
 
 Create `Makefile`:
 
@@ -84,7 +84,7 @@ docker-build:
 	docker build -f deploy/Dockerfile -t password-hook-service .
 ```
 
-- [ ] **Step 2: Run Makefile targets**
+- [x] **Step 2: Run Makefile targets**
 
 Run:
 
@@ -95,7 +95,7 @@ make vet
 
 Expected: both commands pass. `make test` may print `go: no module dependencies to download` before Slice 2 dependency is added.
 
-- [ ] **Step 3: Update README verification commands**
+- [x] **Step 3: Update README verification commands**
 
 In `README.md`, replace the long local verification commands with Makefile-first instructions while keeping the raw Docker command visible as fallback:
 
@@ -115,7 +115,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go tes
 ```
 ````
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Makefile README.md
@@ -130,7 +130,7 @@ git commit -m "chore: add local verification make targets"
 - Modify: `internal/config/config.go`
 - Modify: `internal/config/config_test.go`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Append to `internal/config/config_test.go`:
 
@@ -188,7 +188,7 @@ func completeConfig() Config {
 
 Update the existing config tests to call `completeConfig()` and then override only the field under test.
 
-- [ ] **Step 2: Run config tests to verify failure**
+- [x] **Step 2: Run config tests to verify failure**
 
 Run:
 
@@ -198,7 +198,7 @@ make test
 
 Expected: FAIL in `internal/config` because `Config` does not yet have `ServiceBusConnectionString`, `ServiceBusQueueName`, or `PasswordMessageTTL`.
 
-- [ ] **Step 3: Implement config fields and validation**
+- [x] **Step 3: Implement config fields and validation**
 
 In `internal/config/config.go`, add fields:
 
@@ -227,7 +227,7 @@ case c.PasswordMessageTTL <= 0:
 	return errors.New("PasswordMessageTTL must be positive")
 ```
 
-- [ ] **Step 4: Run focused config tests**
+- [x] **Step 4: Run focused config tests**
 
 Run:
 
@@ -237,7 +237,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/config
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/config/config.go internal/config/config_test.go
@@ -254,7 +254,7 @@ git commit -m "feat: require service bus producer configuration"
 - Create: `internal/servicebusqueue/queue.go`
 - Create: `internal/servicebusqueue/queue_test.go`
 
-- [ ] **Step 1: Add Azure Service Bus dependency**
+- [x] **Step 1: Add Azure Service Bus dependency**
 
 Run:
 
@@ -264,7 +264,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go get github.com/Azure/azu
 
 Expected: `go.mod` gains the Azure SDK modules needed by `azservicebus`, and `go.sum` is created or updated.
 
-- [ ] **Step 2: Write failing queue adapter tests**
+- [x] **Step 2: Write failing queue adapter tests**
 
 Create `internal/servicebusqueue/queue_test.go`:
 
@@ -409,7 +409,7 @@ func assertNoPasswordMetadata(t *testing.T, props map[string]any) {
 }
 ```
 
-- [ ] **Step 3: Run queue tests to verify failure**
+- [x] **Step 3: Run queue tests to verify failure**
 
 Run:
 
@@ -419,7 +419,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/serviceb
 
 Expected: FAIL because `New`, `NewWithClient`, `Queue`, and `EnqueuePasswordSync` are not implemented.
 
-- [ ] **Step 4: Implement queue adapter**
+- [x] **Step 4: Implement queue adapter**
 
 Create `internal/servicebusqueue/queue.go`:
 
@@ -525,7 +525,7 @@ func (q *Queue) Close(ctx context.Context) error {
 }
 ```
 
-- [ ] **Step 5: Run focused queue tests**
+- [x] **Step 5: Run focused queue tests**
 
 Run:
 
@@ -535,7 +535,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/serviceb
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add go.mod go.sum internal/servicebusqueue/queue.go internal/servicebusqueue/queue_test.go
@@ -550,7 +550,7 @@ git commit -m "feat: add service bus password sync queue"
 - Modify: `internal/app/app.go`
 - Modify: `internal/app/app_test.go`
 
-- [ ] **Step 1: Write failing app-level tests with queue injection**
+- [x] **Step 1: Write failing app-level tests with queue injection**
 
 Replace `internal/app/app_test.go` with:
 
@@ -687,7 +687,7 @@ func signRequest(req *http.Request, secret string, body []byte) {
 }
 ```
 
-- [ ] **Step 2: Run app tests to verify failure**
+- [x] **Step 2: Run app tests to verify failure**
 
 Run:
 
@@ -697,7 +697,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/app
 
 Expected: FAIL because `NewWithQueue` does not exist and `app.New` still uses `discardQueue`.
 
-- [ ] **Step 3: Implement app queue wiring**
+- [x] **Step 3: Implement app queue wiring**
 
 In `internal/app/app.go`:
 
@@ -793,7 +793,7 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 Remove the old `discardQueue` type.
 
-- [ ] **Step 4: Run focused app tests**
+- [x] **Step 4: Run focused app tests**
 
 Run:
 
@@ -803,7 +803,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./internal/app
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/app/app.go internal/app/app_test.go
@@ -818,7 +818,7 @@ git commit -m "feat: wire hook producer to service bus queue"
 - Modify: `README.md`
 - Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`
 
-- [ ] **Step 1: Update README current scope**
+- [x] **Step 1: Update README current scope**
 
 In `README.md`, change the current scope text so it says Slice 2 now includes producer-side Service Bus enqueueing:
 
@@ -843,7 +843,7 @@ This service currently implements the HTTP foundation and producer-side Azure Se
 Microsoft Graph, Key Vault, worker consumption, retry/DLQ policy, Terraform resources, and CI/CD security gates are implemented in later slices.
 ```
 
-- [ ] **Step 2: Update README configuration**
+- [x] **Step 2: Update README configuration**
 
 Add Service Bus variables to the configuration table:
 
@@ -859,7 +859,7 @@ export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.ne
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 
-- [ ] **Step 3: Update roadmap active plan**
+- [x] **Step 3: Update roadmap active plan**
 
 Update `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`:
 
@@ -877,7 +877,7 @@ Update completion tracking:
 
 Do not mark Slice 2 done until full verification and review are complete.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
@@ -891,7 +891,7 @@ git commit -m "docs: document service bus producer configuration"
 **Files:**
 - Review all changed files.
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
 
 Run:
 
@@ -901,7 +901,7 @@ make verify
 
 Expected: PASS for `gofmt -w .`, `go test ./...`, and `go vet ./...`.
 
-- [ ] **Step 2: Verify Slice 2 done criteria**
+- [x] **Step 2: Verify Slice 2 done criteria**
 
 Check each item manually:
 
@@ -925,7 +925,7 @@ Password is not logged:
 - servicebusqueue metadata test verifies ApplicationProperties do not contain password-like data.
 ```
 
-- [ ] **Step 3: Inspect dependency footprint**
+- [x] **Step 3: Inspect dependency footprint**
 
 Run:
 
@@ -935,7 +935,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go list -m all
 
 Expected: Azure SDK modules are present because Slice 2 introduces Service Bus. No Graph, Key Vault, Terraform provider, or worker-specific dependency is introduced by this slice.
 
-- [ ] **Step 4: Commit verification fixes if needed**
+- [x] **Step 4: Commit verification fixes if needed**
 
 If verification changes files or exposes issues, fix them with TDD and commit:
 
@@ -946,7 +946,7 @@ git commit -m "test: verify service bus producer slice"
 
 If no files changed, do not create an empty commit.
 
-- [ ] **Step 5: Request code review**
+- [x] **Step 5: Request code review**
 
 Use `superpowers:requesting-code-review` with:
 
