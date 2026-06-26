@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -12,10 +13,14 @@ import (
 	"github.com/nycu/password-hook-service/internal/middleware"
 	"github.com/nycu/password-hook-service/internal/migration"
 	"github.com/nycu/password-hook-service/internal/requestid"
+	"github.com/nycu/password-hook-service/internal/servicebusqueue"
 )
 
 type App struct {
 	server *httpserver.Server
+	closer interface {
+		Close(context.Context) error
+	}
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -23,7 +28,24 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	queue := discardQueue{}
+	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	if err != nil {
+		return nil, err
+	}
+	return newWithQueue(cfg, queue, queue)
+}
+
+func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if queue == nil {
+		return nil, errors.New("migration queue is required")
+	}
+	return newWithQueue(cfg, queue, nil)
+}
+
+func newWithQueue(cfg config.Config, queue migration.Queue, closer interface{ Close(context.Context) error }) (*App, error) {
 	service := migration.NewService(cfg.EntraPrimaryDomain, queue)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
@@ -47,19 +69,21 @@ func New(cfg config.Config) (*App, error) {
 		Hook: hookHandler,
 	}, buildinfo.Current())
 
-	return &App{server: server}, nil
+	return &App{server: server, closer: closer}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
-	return a.server.Run(ctx)
+	err := a.server.Run(ctx)
+	if a.closer == nil {
+		return err
+	}
+	closeErr := a.closer.Close(context.Background())
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	a.server.ServeHTTP(w, r)
-}
-
-type discardQueue struct{}
-
-func (discardQueue) EnqueuePasswordSync(context.Context, migration.PasswordSyncMessage) error {
-	return nil
 }
