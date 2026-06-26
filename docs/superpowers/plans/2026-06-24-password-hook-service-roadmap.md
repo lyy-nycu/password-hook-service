@@ -33,10 +33,6 @@ Current active slice:
 
 - Slice 2: `docs/superpowers/plans/2026-06-25-producer-servicebus.md`
 
-Next detailed plan to create after Slice 1 is complete:
-
-- Slice 2: `docs/superpowers/plans/YYYY-MM-DD-producer-servicebus.md`
-
 ---
 
 ## Slice Boundaries
@@ -59,7 +55,7 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 |---|---|---|---|
 | Project Structure Scaffold | Done | `2026-06-24-password-hook-service-project-structure.md` | `92ba9aa feat: scaffold password hook service foundation` |
 | 1. M1 Foundation Hardening | Done | `2026-06-24-m1-foundation-hardening.md` | Review fixes applied locally; full `go test ./... && go vet ./...` passed |
-| 2. Producer to Service Bus | Planned | `2026-06-25-producer-servicebus.md` | Detailed plan created |
+| 2. Producer to Service Bus | In progress | `2026-06-25-producer-servicebus.md` | Producer-side Service Bus plan created |
 | 3. Secret Loading | Not planned | Not created |  |
 | 4. Worker Queue Consumption | Not planned | Not created |  |
 | 5. Retry and DLQ Policy | Not planned | Not created |  |

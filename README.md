@@ -6,7 +6,7 @@ It accepts successful LDAP login credentials from the portal, authenticates requ
 
 ## Current Scope
 
-This scaffold implements the M1 foundation:
+This service currently implements the HTTP foundation and producer-side Azure Service Bus enqueueing:
 
 - Go module and package structure
 - `GET /healthz`
@@ -18,8 +18,10 @@ This scaffold implements the M1 foundation:
 - request ID propagation
 - source allowlist and anomalous request rate limiting
 - identity classification and UPN building primitives
+- Azure Service Bus producer for eligible internal student/employee IDs
+- 300 second Service Bus message TTL for password sync jobs
 
-Azure Service Bus, Microsoft Graph, Key Vault, and Terraform resources are represented by stable package/file boundaries and are implemented in later milestones.
+Microsoft Graph, Key Vault, worker consumption, retry/DLQ policy, Terraform resources, and CI/CD security gates are implemented in later slices.
 
 ## Local Verification
 
@@ -44,6 +46,8 @@ export HOOK_HMAC_SECRET="local-development-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
 export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
+export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA=="
+export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 
 Optional local API protection settings:
@@ -62,6 +66,8 @@ docker run --rm -p 8080:8080 \
   -e ENTRA_PRIMARY_DOMAIN \
   -e PROBLEM_BASE_URL \
   -e HTTP_ADDR \
+  -e SERVICEBUS_CONNECTION_STRING \
+  -e SERVICEBUS_QUEUE_NAME \
   -e PORTAL_ALLOWED_CIDRS \
   -e RATE_LIMIT_PER_IP \
   password-hook-service
@@ -108,5 +114,7 @@ The hook endpoint returns `202 Accepted` when the request is accepted by the ser
 | `HOOK_HMAC_SECRET` | empty | HMAC shared secret for portal requests |
 | `ENTRA_PRIMARY_DOMAIN` | `nycu.edu.tw` | Domain used to build internal Entra UPNs |
 | `PROBLEM_BASE_URL` | `https://nycu.edu.tw/problems` | RFC 9457 problem type base URL |
+| `SERVICEBUS_CONNECTION_STRING` | empty | Azure Service Bus connection string used by the producer until Slice 3 moves secret loading to Key Vault |
+| `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |
 | `PORTAL_ALLOWED_CIDRS` | empty | Optional comma-separated source CIDR allowlist |
 | `RATE_LIMIT_PER_IP` | `500` | Per-IP request threshold per one-second window |
