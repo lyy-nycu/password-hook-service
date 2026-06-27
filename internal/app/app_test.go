@@ -102,7 +102,7 @@ func TestNewWithQueueClosesOwnedQueueWhenAppWiringFails(t *testing.T) {
 	}
 }
 
-func TestRunClosesQueueWithBoundedContextAfterCancellation(t *testing.T) {
+func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	closer := &captureCloser{}
 	cfg := completeAppConfig()
 	cfg.HTTPAddr = "127.0.0.1:0"
@@ -120,8 +120,8 @@ func TestRunClosesQueueWithBoundedContextAfterCancellation(t *testing.T) {
 	if closer.closeCalls != 1 {
 		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
 	}
-	if err := closer.closeErrs[0]; err != nil {
-		t.Fatalf("close context was already canceled: %v", err)
+	if err := closer.closeErrs[0]; err != context.Canceled {
+		t.Fatalf("close context err = %v, want %v", err, context.Canceled)
 	}
 	if !closer.closeHadDeadlines[0] {
 		t.Fatal("close context has no deadline")

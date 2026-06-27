@@ -85,7 +85,7 @@ func (a *App) Run(ctx context.Context) error {
 	if a.closer == nil {
 		return err
 	}
-	closeCtx, cancel := context.WithTimeout(context.Background(), queueCloseTimeout)
+	closeCtx, cancel := context.WithTimeout(ctx, queueCloseTimeout)
 	defer cancel()
 	closeErr := a.closer.Close(closeCtx)
 	return errors.Join(err, closeErr)
