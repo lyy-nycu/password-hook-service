@@ -31,7 +31,7 @@
 
 Current active slice:
 
-- Slice 3: `docs/superpowers/plans/2026-06-26-secret-loading.md`
+- Slice 4: detailed plan not created yet
 
 ---
 
