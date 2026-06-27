@@ -1,5 +1,5 @@
 GO_IMAGE ?= golang:1.26.4
-DOCKER_RUN = docker run --rm -v "$(PWD):/src" -w /src $(GO_IMAGE)
+DOCKER_RUN = docker run --rm -v "$(CURDIR):/src" -w /src $(GO_IMAGE)
 
 .PHONY: fmt test vet verify docker-build
 

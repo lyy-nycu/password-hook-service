@@ -46,9 +46,13 @@ export HOOK_HMAC_SECRET="local-development-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
 export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
-export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA=="
+export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=password-hook-producer-send;SharedAccessKey=dGVzdA=="
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
+
+Use a queue- or topic-level Shared Access Policy with only the `Send` permission for
+the producer connection string. Do not use the namespace
+`RootManageSharedAccessKey` for application runtime credentials.
 
 Optional local API protection settings:
 
