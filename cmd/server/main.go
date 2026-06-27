@@ -18,6 +18,9 @@ func main() {
 
 	cfg, err := secretloader.Resolve(ctx, config.Load(), nil)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		slog.Error("load configuration", slog.Any("error", err))
 		os.Exit(1)
 	}

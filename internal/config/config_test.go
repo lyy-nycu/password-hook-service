@@ -148,42 +148,16 @@ func TestValidateKeyVaultSourceRequiresHTTPSVaultURL(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresGraphCredentials(t *testing.T) {
+func TestValidateAllowsMissingGraphCredentials(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name string
-		edit func(*Config)
-		want string
-	}{
-		{
-			name: "tenant",
-			edit: func(cfg *Config) { cfg.GraphTenantID = "" },
-			want: "GRAPH_TENANT_ID is required",
-		},
-		{
-			name: "client id",
-			edit: func(cfg *Config) { cfg.GraphClientID = "" },
-			want: "GRAPH_CLIENT_ID is required",
-		},
-		{
-			name: "client secret",
-			edit: func(cfg *Config) { cfg.GraphClientSecret = "" },
-			want: "GRAPH_CLIENT_SECRET is required",
-		},
-	}
+	cfg := completeConfig()
+	cfg.GraphTenantID = ""
+	cfg.GraphClientID = ""
+	cfg.GraphClientSecret = ""
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			cfg := completeConfig()
-			tt.edit(&cfg)
-
-			if err := cfg.Validate(); err == nil || err.Error() != tt.want {
-				t.Fatalf("Validate error = %v, want %q", err, tt.want)
-			}
-		})
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
 	}
 }
 
@@ -210,9 +184,6 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 	if cfg.KeyVaultSecretNames.ServiceBusConnectionString != "servicebus-conn-str" {
 		t.Fatalf("ServiceBusConnectionString name = %q", cfg.KeyVaultSecretNames.ServiceBusConnectionString)
 	}
-	if cfg.KeyVaultSecretNames.GraphClientSecret != "graph-client-secret" {
-		t.Fatalf("GraphClientSecret name = %q", cfg.KeyVaultSecretNames.GraphClientSecret)
-	}
 	if cfg.GraphTenantID != "tenant-id" || cfg.GraphClientID != "client-id" {
 		t.Fatalf("Graph tenant/client = %q/%q", cfg.GraphTenantID, cfg.GraphClientID)
 	}
@@ -222,7 +193,7 @@ func completeConfig() Config {
 	return Config{
 		SecretsSource:              SecretsSourceEnv,
 		KeyVaultURL:                "",
-		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
+		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str"},
 		HTTPAddr:                   ":8080",
 		HMACSecret:                 "shared-secret",
 		EntraPrimaryDomain:         "nycu.edu.tw",

@@ -38,11 +38,9 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
-	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{values: map[string]string{
 		"hook-hmac-secret":    "kv-hmac",
 		"servicebus-conn-str": "kv-servicebus",
-		"graph-client-secret": "kv-graph-secret",
 	}}
 
 	got, err := Resolve(context.Background(), cfg, getter)
@@ -56,10 +54,10 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	if got.ServiceBusConnectionString != "kv-servicebus" {
 		t.Fatalf("ServiceBusConnectionString = %q", got.ServiceBusConnectionString)
 	}
-	if got.GraphClientSecret != "kv-graph-secret" {
-		t.Fatalf("GraphClientSecret = %q", got.GraphClientSecret)
+	if got.GraphClientSecret != cfg.GraphClientSecret {
+		t.Fatalf("GraphClientSecret = %q, want unchanged value %q", got.GraphClientSecret, cfg.GraphClientSecret)
 	}
-	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str", "graph-client-secret"}
+	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str"}
 	if strings.Join(getter.calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls = %v, want %v", getter.calls, wantCalls)
 	}
@@ -73,7 +71,6 @@ func TestResolveKeyVaultSourceWrapsGetterErrorWithoutSecretValue(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
-	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{
 		values: map[string]string{
 			"hook-hmac-secret": "kv-hmac",
@@ -103,7 +100,6 @@ func TestResolveKeyVaultSourceRejectsBlankSecretValue(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
-	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{values: map[string]string{
 		"hook-hmac-secret":    "kv-hmac",
 		"servicebus-conn-str": "   ",
@@ -112,6 +108,24 @@ func TestResolveKeyVaultSourceRejectsBlankSecretValue(t *testing.T) {
 	_, err := Resolve(context.Background(), cfg, getter)
 	if err == nil || err.Error() != "load Key Vault secret servicebus-conn-str: secret value is empty" {
 		t.Fatalf("Resolve error = %v, want blank secret error", err)
+	}
+}
+
+func TestResolveKeyVaultSourcePropagatesContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.SecretsSource = config.SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
+	cfg.HMACSecret = ""
+	cfg.ServiceBusConnectionString = ""
+	getter := &fakeGetter{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := Resolve(ctx, cfg, getter)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Resolve error = %v, want context.Canceled", err)
 	}
 }
 
@@ -136,7 +150,7 @@ func completeConfig() config.Config {
 	return config.Config{
 		SecretsSource:              config.SecretsSourceEnv,
 		KeyVaultURL:                "",
-		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
+		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str"},
 		HTTPAddr:                   ":8080",
 		HMACSecret:                 "shared-secret",
 		EntraPrimaryDomain:         "nycu.edu.tw",

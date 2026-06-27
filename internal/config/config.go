@@ -18,7 +18,6 @@ const (
 type KeyVaultSecretNames struct {
 	HMACSecret                 string
 	ServiceBusConnectionString string
-	GraphClientSecret          string
 }
 
 type Config struct {
@@ -50,7 +49,6 @@ func Load() Config {
 		KeyVaultSecretNames: KeyVaultSecretNames{
 			HMACSecret:                 env("KEY_VAULT_HMAC_SECRET_NAME", "hook-hmac-secret"),
 			ServiceBusConnectionString: env("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME", "servicebus-conn-str"),
-			GraphClientSecret:          env("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME", "graph-client-secret"),
 		},
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		HMACSecret:                 os.Getenv("HOOK_HMAC_SECRET"),
@@ -87,12 +85,6 @@ func (c Config) Validate() error {
 		return fmt.Errorf("ENTRA_PRIMARY_DOMAIN must be a domain, got %q", c.EntraPrimaryDomain)
 	case strings.Contains(c.EntraFallbackDomain, "@"):
 		return fmt.Errorf("ENTRA_FALLBACK_DOMAIN must be a domain, got %q", c.EntraFallbackDomain)
-	case strings.TrimSpace(c.GraphTenantID) == "":
-		return errors.New("GRAPH_TENANT_ID is required")
-	case strings.TrimSpace(c.GraphClientID) == "":
-		return errors.New("GRAPH_CLIENT_ID is required")
-	case strings.TrimSpace(c.GraphClientSecret) == "":
-		return errors.New("GRAPH_CLIENT_SECRET is required")
 	case !strings.HasPrefix(c.ProblemBaseURL, "https://"):
 		return errors.New("PROBLEM_BASE_URL must start with https://")
 	case c.HMACClockSkew <= 0:
@@ -132,8 +124,6 @@ func (c Config) ValidateSecretLoadingInputs() error {
 			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
 			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
-		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
-			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		default:
 			return nil
 		}

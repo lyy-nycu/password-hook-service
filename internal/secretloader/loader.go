@@ -77,20 +77,18 @@ func resolveKeyVault(ctx context.Context, cfg config.Config, getter Getter) (con
 	if err != nil {
 		return config.Config{}, err
 	}
-	graphClientSecret, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.GraphClientSecret)
-	if err != nil {
-		return config.Config{}, err
-	}
 
 	cfg.HMACSecret = hmacSecret
 	cfg.ServiceBusConnectionString = serviceBusConnectionString
-	cfg.GraphClientSecret = graphClientSecret
 	return cfg, nil
 }
 
 func getRequiredSecret(ctx context.Context, getter Getter, name string) (string, error) {
 	value, err := getter.GetSecret(ctx, name)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", ctxErr
+		}
 		return "", fmt.Errorf("load Key Vault secret %s: %w", name, sanitizeSecretError(err))
 	}
 	value = strings.TrimSpace(value)
