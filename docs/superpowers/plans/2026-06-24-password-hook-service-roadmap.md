@@ -57,7 +57,7 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 | 1. M1 Foundation Hardening | Done | `2026-06-24-m1-foundation-hardening.md` | Review fixes applied locally; full `go test ./... && go vet ./...` passed |
 | 2. Producer to Service Bus | Done | `2026-06-25-producer-servicebus.md` | Producer-side Service Bus enqueueing verified and reviewed |
 | 3. Secret Loading | Done | `2026-06-26-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
-| 4. Worker Queue Consumption | Done | `2026-06-27-worker-queue-consumption.md` | Worker receive loop and Service Bus receiver adapter verified with `go test ./...` and `go vet ./...` |
+| 4. Worker Queue Consumption | Done | `2026-06-27-worker-queue-consumption.md` | Worker receive loop, Service Bus receiver adapter, permanent DLQ reason hardening, and shutdown-safe settlement verified with `go test ./...` and `go vet ./...` |
 | 5. Retry and DLQ Policy | Not planned | Not created |  |
 | 6. Microsoft Graph Client | Not planned | Not created |  |
 | 7. Password Data Protection | Not planned | Not created |  |

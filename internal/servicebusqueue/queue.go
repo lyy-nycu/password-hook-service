@@ -150,6 +150,9 @@ func (q *Queue) Close(ctx context.Context) error {
 }
 
 func (r *Receiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]*worker.Message, error) {
+	if err := r.ensureNativeReceiver(); err != nil {
+		return nil, err
+	}
 	messages, err := r.receiver.ReceiveMessages(ctx, maxMessages, nil)
 	if err != nil {
 		return nil, err
@@ -168,6 +171,9 @@ func (r *Receiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]*wor
 }
 
 func (r *Receiver) CompleteMessage(ctx context.Context, msg *worker.Message) error {
+	if err := r.ensureNativeReceiver(); err != nil {
+		return err
+	}
 	native, err := r.nativeMessage(msg)
 	if err != nil {
 		return err
@@ -180,6 +186,9 @@ func (r *Receiver) CompleteMessage(ctx context.Context, msg *worker.Message) err
 }
 
 func (r *Receiver) AbandonMessage(ctx context.Context, msg *worker.Message) error {
+	if err := r.ensureNativeReceiver(); err != nil {
+		return err
+	}
 	native, err := r.nativeMessage(msg)
 	if err != nil {
 		return err
@@ -192,6 +201,9 @@ func (r *Receiver) AbandonMessage(ctx context.Context, msg *worker.Message) erro
 }
 
 func (r *Receiver) DeadLetterMessage(ctx context.Context, msg *worker.Message, reason string, description string) error {
+	if err := r.ensureNativeReceiver(); err != nil {
+		return err
+	}
 	native, err := r.nativeMessage(msg)
 	if err != nil {
 		return err
@@ -227,6 +239,13 @@ func (r *Receiver) nativeMessage(msg *worker.Message) (*azservicebus.ReceivedMes
 		return nil, errors.New("worker message was not received by this service bus receiver")
 	}
 	return native, nil
+}
+
+func (r *Receiver) ensureNativeReceiver() error {
+	if r == nil || r.receiver == nil {
+		return errors.New("service bus receiver is required")
+	}
+	return nil
 }
 
 func messageKind(msg *azservicebus.ReceivedMessage) string {

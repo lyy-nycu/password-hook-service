@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/nycu/password-hook-service/internal/migration"
 )
@@ -14,8 +15,10 @@ const (
 	passwordSyncKind = "password-sync"
 
 	deadLetterReasonInvalidMessageSchema = "invalid_message_schema"
+	deadLetterReasonPermanentProcessor   = "permanent_processor_error"
 	deadLetterDescriptionInvalidMessage  = "invalid password sync message"
 	deadLetterDescriptionPermanentError  = "permanent processor error"
+	defaultSettlementTimeout             = 10 * time.Second
 )
 
 type Message struct {
@@ -35,11 +38,16 @@ type Processor interface {
 }
 
 type Options struct {
-	MaxMessages int
+	MaxMessages       int
+	SettlementTimeout time.Duration
 }
 
+type PermanentReason string
+
+const PermanentReasonProcessorError PermanentReason = deadLetterReasonPermanentProcessor
+
 type PermanentError struct {
-	Reason string
+	Reason PermanentReason
 	Err    error
 }
 
@@ -48,12 +56,12 @@ func (e *PermanentError) Error() string {
 		return ""
 	}
 	if e.Err == nil {
-		return e.Reason
+		return string(e.Reason)
 	}
-	if strings.TrimSpace(e.Reason) == "" {
+	if strings.TrimSpace(string(e.Reason)) == "" {
 		return e.Err.Error()
 	}
-	return e.Reason + ": " + e.Err.Error()
+	return string(e.Reason) + ": " + e.Err.Error()
 }
 
 func (e *PermanentError) Unwrap() error {
@@ -64,9 +72,10 @@ func (e *PermanentError) Unwrap() error {
 }
 
 type Worker struct {
-	receiver    Receiver
-	processor   Processor
-	maxMessages int
+	receiver          Receiver
+	processor         Processor
+	maxMessages       int
+	settlementTimeout time.Duration
 }
 
 func New(receiver Receiver, processor Processor, options Options) (*Worker, error) {
@@ -79,10 +88,14 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	if options.MaxMessages <= 0 {
 		options.MaxMessages = 1
 	}
+	if options.SettlementTimeout <= 0 {
+		options.SettlementTimeout = defaultSettlementTimeout
+	}
 	return &Worker{
-		receiver:    receiver,
-		processor:   processor,
-		maxMessages: options.MaxMessages,
+		receiver:          receiver,
+		processor:         processor,
+		maxMessages:       options.MaxMessages,
+		settlementTimeout: options.SettlementTimeout,
 	}, nil
 }
 
@@ -114,7 +127,9 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	passwordSyncMessage, err := decodePasswordSyncMessage(msg)
 	if err != nil {
-		if settleErr := w.receiver.DeadLetterMessage(ctx, msg, deadLetterReasonInvalidMessageSchema, deadLetterDescriptionInvalidMessage); settleErr != nil {
+		settleCtx, cancel := w.settlementContext()
+		defer cancel()
+		if settleErr := w.receiver.DeadLetterMessage(settleCtx, msg, deadLetterReasonInvalidMessageSchema, deadLetterDescriptionInvalidMessage); settleErr != nil {
 			return fmt.Errorf("dead-letter invalid worker message: %w", settleErr)
 		}
 		return nil
@@ -122,7 +137,9 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 
 	err = w.processor.ProcessPasswordSync(ctx, passwordSyncMessage)
 	if err == nil {
-		if settleErr := w.receiver.CompleteMessage(ctx, msg); settleErr != nil {
+		settleCtx, cancel := w.settlementContext()
+		defer cancel()
+		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete worker message: %w", settleErr)
 		}
 		return nil
@@ -130,17 +147,25 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 
 	var permanentErr *PermanentError
 	if errors.As(err, &permanentErr) {
-		reason := sanitizeDeadLetterReason(permanentErr.Reason, "permanent_processor_error")
-		if settleErr := w.receiver.DeadLetterMessage(ctx, msg, reason, deadLetterDescriptionPermanentError); settleErr != nil {
+		reason := permanentDeadLetterReason(permanentErr)
+		settleCtx, cancel := w.settlementContext()
+		defer cancel()
+		if settleErr := w.receiver.DeadLetterMessage(settleCtx, msg, reason, deadLetterDescriptionPermanentError); settleErr != nil {
 			return fmt.Errorf("dead-letter permanent worker message: %w", settleErr)
 		}
 		return nil
 	}
 
-	if settleErr := w.receiver.AbandonMessage(ctx, msg); settleErr != nil {
+	settleCtx, cancel := w.settlementContext()
+	defer cancel()
+	if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("abandon worker message: %w", settleErr)
 	}
 	return nil
+}
+
+func (w *Worker) settlementContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), w.settlementTimeout)
 }
 
 func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, error) {
@@ -170,32 +195,14 @@ func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, err
 	return out, nil
 }
 
-func sanitizeDeadLetterReason(reason string, fallback string) string {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return fallback
+func permanentDeadLetterReason(err *PermanentError) string {
+	if err == nil {
+		return deadLetterReasonPermanentProcessor
 	}
-
-	var b strings.Builder
-	for _, r := range reason {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '_' || r == '-' || r == '.':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-		if b.Len() >= 128 {
-			break
-		}
+	switch err.Reason {
+	case PermanentReasonProcessorError:
+		return string(err.Reason)
+	default:
+		return deadLetterReasonPermanentProcessor
 	}
-	if b.Len() == 0 {
-		return fallback
-	}
-	return b.String()
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/worker"
 )
 
 func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
@@ -191,6 +192,92 @@ func TestReceiverReceivesAndSettlesServiceBusMessage(t *testing.T) {
 	}
 	if serviceBusReceiver.deadLetterOptions.ErrorDescription == nil || *serviceBusReceiver.deadLetterOptions.ErrorDescription != "invalid password sync message" {
 		t.Fatalf("dead-letter description = %v, want invalid password sync message", serviceBusReceiver.deadLetterOptions.ErrorDescription)
+	}
+}
+
+func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
+	ctx := context.Background()
+	native := &azservicebus.ReceivedMessage{
+		ApplicationProperties: map[string]any{"kind": "password-sync"},
+		Body:                  []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","password":"secret","enqueuedAt":"2026-06-27T12:00:00Z"}`),
+	}
+	serviceBusReceiver := &captureServiceBusReceiver{messages: []*azservicebus.ReceivedMessage{native}}
+	receiver := NewReceiver(serviceBusReceiver)
+
+	messages, err := receiver.ReceiveMessages(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReceiveMessages returned error: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("received %d messages, want 1", len(messages))
+	}
+
+	if err := receiver.AbandonMessage(ctx, messages[0]); err != nil {
+		t.Fatalf("AbandonMessage returned error: %v", err)
+	}
+
+	if serviceBusReceiver.abandoned != native {
+		t.Fatalf("abandoned native message = %#v, want %#v", serviceBusReceiver.abandoned, native)
+	}
+	if serviceBusReceiver.completed != nil || serviceBusReceiver.deadLettered != nil {
+		t.Fatalf("unexpected settlements: completed=%#v deadLettered=%#v", serviceBusReceiver.completed, serviceBusReceiver.deadLettered)
+	}
+}
+
+func TestReceiverRejectsMessageNotReceivedByReceiver(t *testing.T) {
+	ctx := context.Background()
+	receiver := NewReceiver(&captureServiceBusReceiver{})
+	msg := &worker.Message{Kind: "password-sync", Body: []byte("{}")}
+
+	tests := []struct {
+		name   string
+		settle func() error
+	}{
+		{
+			name:   "complete",
+			settle: func() error { return receiver.CompleteMessage(ctx, msg) },
+		},
+		{
+			name:   "abandon",
+			settle: func() error { return receiver.AbandonMessage(ctx, msg) },
+		},
+		{
+			name: "dead-letter",
+			settle: func() error {
+				return receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.settle()
+			if err == nil {
+				t.Fatal("settlement returned nil error")
+			}
+			if err.Error() != "worker message was not received by this service bus receiver" {
+				t.Fatalf("settlement error = %q, want worker message ownership error", err.Error())
+			}
+		})
+	}
+}
+
+func TestReceiverWithNilNativeReceiverReturnsErrors(t *testing.T) {
+	ctx := context.Background()
+	receiver := NewReceiver(nil)
+	msg := &worker.Message{Kind: "password-sync", Body: []byte("{}")}
+
+	if _, err := receiver.ReceiveMessages(ctx, 1); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("ReceiveMessages error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.CompleteMessage(ctx, msg); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("CompleteMessage error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.AbandonMessage(ctx, msg); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("AbandonMessage error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message"); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("DeadLetterMessage error = %v, want service bus receiver is required", err)
 	}
 }
 

@@ -60,7 +60,7 @@ func TestWorkerRetryableProcessorErrorAbandons(t *testing.T) {
 	}
 }
 
-func TestWorkerPermanentProcessorErrorDeadLettersWithSanitizedMetadata(t *testing.T) {
+func TestWorkerPermanentProcessorErrorDeadLettersWithFixedMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -82,8 +82,8 @@ func TestWorkerPermanentProcessorErrorDeadLettersWithSanitizedMetadata(t *testin
 	if receiver.deadLettered != 1 {
 		t.Fatalf("deadLettered = %d, want 1", receiver.deadLettered)
 	}
-	if receiver.deadLetterReason != "graph_403_password" {
-		t.Fatalf("deadLetterReason = %q, want graph_403_password", receiver.deadLetterReason)
+	if receiver.deadLetterReason != "permanent_processor_error" {
+		t.Fatalf("deadLetterReason = %q, want permanent_processor_error", receiver.deadLetterReason)
 	}
 	if receiver.deadLetterDescription != deadLetterDescriptionPermanentError {
 		t.Fatalf("deadLetterDescription = %q, want %q", receiver.deadLetterDescription, deadLetterDescriptionPermanentError)
@@ -93,6 +93,39 @@ func TestWorkerPermanentProcessorErrorDeadLettersWithSanitizedMetadata(t *testin
 	}
 	if receiver.completed != 0 || receiver.abandoned != 0 {
 		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	}
+}
+
+func TestWorkerPermanentProcessorErrorDoesNotTrustPasswordInReason(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const password = "super-secret-password"
+	msg := validPasswordSyncMessage()
+	msg.Password = password
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onDeadLetter = cancel
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReason("graph failed for " + msg.UPN + " with " + password),
+		Err:    errors.New("processor failed"),
+	}}
+	worker := newTestWorker(t, receiver, processor)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if receiver.deadLettered != 1 {
+		t.Fatalf("deadLettered = %d, want 1", receiver.deadLettered)
+	}
+	if receiver.deadLetterReason != "permanent_processor_error" {
+		t.Fatalf("deadLetterReason = %q, want permanent_processor_error", receiver.deadLetterReason)
+	}
+	if strings.Contains(receiver.deadLetterReason, password) || strings.Contains(receiver.deadLetterReason, msg.UPN) {
+		t.Fatalf("dead-letter reason contains sensitive data: %q", receiver.deadLetterReason)
+	}
+	if strings.Contains(receiver.deadLetterDescription, password) || strings.Contains(receiver.deadLetterDescription, msg.UPN) {
+		t.Fatalf("dead-letter description contains sensitive data: %q", receiver.deadLetterDescription)
 	}
 }
 
@@ -171,6 +204,30 @@ func TestWorkerContextCancellationSkipsRemainingMessages(t *testing.T) {
 	}
 	if receiver.completed != 1 {
 		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+}
+
+func TestWorkerUsesFreshSettlementContextAfterProcessorCancelsRunContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{
+		messages:                    []*Message{workerMessage(t, validPasswordSyncMessage())},
+		failSettlementsWhenCanceled: true,
+	}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{afterCall: cancel}
+	worker := newTestWorker(t, receiver, processor)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if receiver.completed != 1 {
+		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
+		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
 	}
 }
 
@@ -263,6 +320,8 @@ type fakeReceiver struct {
 	onComplete   func()
 	onAbandon    func()
 	onDeadLetter func()
+
+	failSettlementsWhenCanceled bool
 }
 
 func (r *fakeReceiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]*Message, error) {
@@ -281,6 +340,11 @@ func (r *fakeReceiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]
 }
 
 func (r *fakeReceiver) CompleteMessage(ctx context.Context, msg *Message) error {
+	if r.failSettlementsWhenCanceled {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	r.completed++
 	if r.onComplete != nil {
 		r.onComplete()
@@ -289,6 +353,11 @@ func (r *fakeReceiver) CompleteMessage(ctx context.Context, msg *Message) error 
 }
 
 func (r *fakeReceiver) AbandonMessage(ctx context.Context, msg *Message) error {
+	if r.failSettlementsWhenCanceled {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	r.abandoned++
 	if r.onAbandon != nil {
 		r.onAbandon()
@@ -297,6 +366,11 @@ func (r *fakeReceiver) AbandonMessage(ctx context.Context, msg *Message) error {
 }
 
 func (r *fakeReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reason string, description string) error {
+	if r.failSettlementsWhenCanceled {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	r.deadLettered++
 	r.deadLetterReason = reason
 	r.deadLetterDescription = description

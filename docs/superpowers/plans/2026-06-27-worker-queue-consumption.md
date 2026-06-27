@@ -8,6 +8,8 @@
 
 **Security Boundary:** Slice 4 uses native Service Bus dead-lettering, which preserves the original body. The worker must not be enabled in production before slice 5 replaces or constrains DLQ behavior so password payloads are safe.
 
+**Current Status:** Slice 4 implementation and post-handover review fixes are complete locally. The worker remains intentionally unwired from `cmd/server` until Slice 5 provides password-safe DLQ behavior.
+
 ---
 
 ## File Structure
@@ -15,7 +17,7 @@
 - Modify: `internal/worker/worker.go` - add receiver, processor, options, permanent error, receive loop, decoding, validation, and settlement behavior.
 - Create: `internal/worker/worker_test.go` - cover success, retryable failure, permanent failure, invalid schema, context cancellation, and settlement failures.
 - Modify: `internal/servicebusqueue/queue.go` - add receiver adapter construction, receive, complete, abandon, dead-letter, and close behavior while preserving producer APIs.
-- Modify: `internal/servicebusqueue/queue_test.go` - cover receiver creation error wrapping and close behavior for receiver plus client.
+- Modify: `internal/servicebusqueue/queue_test.go` - cover receiver creation error wrapping, abandon, message ownership errors, nil receiver behavior, and close behavior for receiver plus client.
 - Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md` - point to this plan and record slice 4 completion after verification.
 
 ---
@@ -59,6 +61,13 @@
   - Run `go test ./...`.
   - Run `go vet ./...`.
   - Update this checklist and roadmap status after verification.
+
+- [x] **Task 7: Address post-handover review findings**
+  - Treat permanent processor DLQ reasons as fixed enum-like values instead of trusting arbitrary `PermanentError.Reason` text.
+  - Add regression coverage proving a password or UPN in `PermanentError.Reason` is not written to DLQ metadata.
+  - Settle messages with a short fresh settlement context after processor return so shutdown cancellation does not leave a successfully processed message unsettled.
+  - Add regression coverage for settlement after processor-side cancellation.
+  - Add Service Bus receiver adapter coverage for `AbandonMessage`, settling a worker message not received by the receiver, and nil receiver behavior.
 
 ---
 
