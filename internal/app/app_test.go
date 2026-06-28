@@ -102,6 +102,21 @@ func TestNewWithQueueClosesOwnedQueueWhenAppWiringFails(t *testing.T) {
 	}
 }
 
+func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusQueueName = ""
+
+	application, err := NewWithQueue(cfg, &captureQueue{})
+
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+	if application == nil {
+		t.Fatal("NewWithQueue returned nil app")
+	}
+}
+
 func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	closer := &captureCloser{}
 	cfg := completeAppConfig()
@@ -120,8 +135,8 @@ func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	if closer.closeCalls != 1 {
 		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
 	}
-	if err := closer.closeErrs[0]; err != context.Canceled {
-		t.Fatalf("close context err = %v, want %v", err, context.Canceled)
+	if err := closer.closeErrs[0]; err != nil {
+		t.Fatalf("close context err = %v, want nil", err)
 	}
 	if !closer.closeHadDeadlines[0] {
 		t.Fatal("close context has no deadline")

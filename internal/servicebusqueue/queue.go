@@ -11,7 +11,10 @@ import (
 	"github.com/nycu/password-hook-service/internal/migration"
 )
 
-const defaultTTL = 300 * time.Second
+const (
+	defaultTTL   = 300 * time.Second
+	closeTimeout = 5 * time.Second
+)
 
 type sender interface {
 	SendMessage(context.Context, *azservicebus.Message, *azservicebus.SendMessageOptions) error
@@ -30,11 +33,14 @@ type Queue struct {
 
 var _ migration.Queue = (*Queue)(nil)
 
-func New(sender sender, ttl time.Duration) *Queue {
+func New(sender sender, ttl time.Duration) (*Queue, error) {
 	return NewWithClient(sender, nil, ttl)
 }
 
-func NewWithClient(sender sender, client closer, ttl time.Duration) *Queue {
+func NewWithClient(sender sender, client closer, ttl time.Duration) (*Queue, error) {
+	if sender == nil {
+		return nil, errors.New("service bus sender is required")
+	}
 	if ttl <= 0 {
 		ttl = defaultTTL
 	}
@@ -42,7 +48,7 @@ func NewWithClient(sender sender, client closer, ttl time.Duration) *Queue {
 		sender: sender,
 		client: client,
 		ttl:    ttl,
-	}
+	}, nil
 }
 
 func NewFromConnectionString(connectionString string, queueName string, ttl time.Duration) (*Queue, error) {
@@ -53,11 +59,19 @@ func NewFromConnectionString(connectionString string, queueName string, ttl time
 
 	sender, err := client.NewSender(queueName, nil)
 	if err != nil {
-		_ = client.Close(context.Background())
-		return nil, fmt.Errorf("create service bus sender: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("create service bus sender: %w", err),
+			closeWithTimeout(context.Background(), client),
+		)
 	}
 
-	return NewWithClient(sender, client, ttl), nil
+	return NewWithClient(sender, client, ttl)
+}
+
+func closeWithTimeout(ctx context.Context, closer closer) error {
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
+	defer cancel()
+	return closer.Close(closeCtx)
 }
 
 func (q *Queue) EnqueuePasswordSync(ctx context.Context, msg migration.PasswordSyncMessage) error {

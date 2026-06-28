@@ -43,6 +43,22 @@ func Load() Config {
 }
 
 func (c Config) Validate() error {
+	if err := c.ValidateHTTP(); err != nil {
+		return err
+	}
+	switch {
+	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
+		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
+	case strings.TrimSpace(c.ServiceBusQueueName) == "":
+		return errors.New("SERVICEBUS_QUEUE_NAME is required")
+	case c.PasswordMessageTTL <= 0:
+		return errors.New("PasswordMessageTTL must be positive")
+	default:
+		return nil
+	}
+}
+
+func (c Config) ValidateHTTP() error {
 	switch {
 	case strings.TrimSpace(c.HTTPAddr) == "":
 		return errors.New("HTTP_ADDR is required")
@@ -62,12 +78,6 @@ func (c Config) Validate() error {
 		return errors.New("RateLimitPerIP must not be negative")
 	case c.RateLimitWindow < 0:
 		return errors.New("RateLimitWindow must not be negative")
-	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
-		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
-	case strings.TrimSpace(c.ServiceBusQueueName) == "":
-		return errors.New("SERVICEBUS_QUEUE_NAME is required")
-	case c.PasswordMessageTTL <= 0:
-		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return validateCIDRs(c.PortalAllowedCIDRs)
 	}

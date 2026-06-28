@@ -39,7 +39,7 @@ func New(cfg config.Config) (*App, error) {
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateHTTP(); err != nil {
 		return nil, err
 	}
 	if queue == nil {
@@ -85,7 +85,7 @@ func (a *App) Run(ctx context.Context) error {
 	if a.closer == nil {
 		return err
 	}
-	closeCtx, cancel := context.WithTimeout(ctx, queueCloseTimeout)
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), queueCloseTimeout)
 	defer cancel()
 	closeErr := a.closer.Close(closeCtx)
 	return errors.Join(err, closeErr)
