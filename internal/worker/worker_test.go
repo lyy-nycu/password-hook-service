@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -253,6 +254,53 @@ func TestWorkerReturnsSettlementFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerEmptyReceiveWaitsBeforePollingAgain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &emptyBatchReceiver{firstCall: make(chan struct{})}
+	processor := &fakeProcessor{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:       1,
+		EmptyReceiveDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- worker.Run(ctx)
+	}()
+
+	select {
+	case <-receiver.firstCall:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not call ReceiveMessages")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if calls := receiver.calls.Load(); calls != 1 {
+		t.Fatalf("ReceiveMessages calls before empty delay elapsed = %d, want 1", calls)
+	}
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	if receiver.completed != 0 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after context cancellation")
+	}
+}
+
 func TestNewValidatesDependencies(t *testing.T) {
 	processor := &fakeProcessor{}
 	receiver := &fakeReceiver{}
@@ -378,6 +426,37 @@ func (r *fakeReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reas
 		r.onDeadLetter()
 	}
 	return r.deadLetterErr
+}
+
+type emptyBatchReceiver struct {
+	calls     atomic.Int32
+	firstCall chan struct{}
+
+	completed    int
+	abandoned    int
+	deadLettered int
+}
+
+func (r *emptyBatchReceiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]*Message, error) {
+	if r.calls.Add(1) == 1 {
+		close(r.firstCall)
+	}
+	return nil, nil
+}
+
+func (r *emptyBatchReceiver) CompleteMessage(ctx context.Context, msg *Message) error {
+	r.completed++
+	return nil
+}
+
+func (r *emptyBatchReceiver) AbandonMessage(ctx context.Context, msg *Message) error {
+	r.abandoned++
+	return nil
+}
+
+func (r *emptyBatchReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reason string, description string) error {
+	r.deadLettered++
+	return nil
 }
 
 type fakeProcessor struct {

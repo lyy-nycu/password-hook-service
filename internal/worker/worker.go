@@ -19,6 +19,7 @@ const (
 	deadLetterDescriptionInvalidMessage  = "invalid password sync message"
 	deadLetterDescriptionPermanentError  = "permanent processor error"
 	defaultSettlementTimeout             = 10 * time.Second
+	defaultEmptyReceiveDelay             = 250 * time.Millisecond
 )
 
 type Message struct {
@@ -40,6 +41,7 @@ type Processor interface {
 type Options struct {
 	MaxMessages       int
 	SettlementTimeout time.Duration
+	EmptyReceiveDelay time.Duration
 }
 
 type PermanentReason string
@@ -76,6 +78,7 @@ type Worker struct {
 	processor         Processor
 	maxMessages       int
 	settlementTimeout time.Duration
+	emptyReceiveDelay time.Duration
 }
 
 func New(receiver Receiver, processor Processor, options Options) (*Worker, error) {
@@ -91,11 +94,15 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	if options.SettlementTimeout <= 0 {
 		options.SettlementTimeout = defaultSettlementTimeout
 	}
+	if options.EmptyReceiveDelay <= 0 {
+		options.EmptyReceiveDelay = defaultEmptyReceiveDelay
+	}
 	return &Worker{
 		receiver:          receiver,
 		processor:         processor,
 		maxMessages:       options.MaxMessages,
 		settlementTimeout: options.SettlementTimeout,
+		emptyReceiveDelay: options.EmptyReceiveDelay,
 	}, nil
 }
 
@@ -112,6 +119,12 @@ func (w *Worker) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("receive worker messages: %w", err)
 		}
+		if len(messages) == 0 {
+			if err := w.waitAfterEmptyReceive(ctx); err != nil {
+				return nil
+			}
+			continue
+		}
 
 		for _, msg := range messages {
 			if err := ctx.Err(); err != nil {
@@ -121,6 +134,18 @@ func (w *Worker) Run(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+}
+
+func (w *Worker) waitAfterEmptyReceive(ctx context.Context) error {
+	timer := time.NewTimer(w.emptyReceiveDelay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
