@@ -18,6 +18,7 @@ const (
 type KeyVaultSecretNames struct {
 	HMACSecret                 string
 	ServiceBusConnectionString string
+	GraphClientSecret         string
 }
 
 type Config struct {
@@ -49,6 +50,7 @@ func Load() Config {
 		KeyVaultSecretNames: KeyVaultSecretNames{
 			HMACSecret:                 env("KEY_VAULT_HMAC_SECRET_NAME", "hook-hmac-secret"),
 			ServiceBusConnectionString: env("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME", "servicebus-conn-str"),
+			GraphClientSecret:         env("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME", "graph-client-secret"),
 		},
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		HMACSecret:                 os.Getenv("HOOK_HMAC_SECRET"),
@@ -124,6 +126,8 @@ func (c Config) ValidateSecretLoadingInputs() error {
 			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
 			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
+		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
+			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		default:
 			return nil
 		}

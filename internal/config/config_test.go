@@ -148,6 +148,19 @@ func TestValidateKeyVaultSourceRequiresHTTPSVaultURL(t *testing.T) {
 	}
 }
 
+func TestValidateKeyVaultSourceRequiresGraphClientSecretName(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.SecretsSource = SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
+	cfg.KeyVaultSecretNames.GraphClientSecret = ""
+
+	if err := cfg.ValidateSecretLoadingInputs(); err == nil || err.Error() != "KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault" {
+		t.Fatalf("ValidateSecretLoadingInputs error = %v, want %q", err, "KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
+	}
+}
+
 func TestValidateAllowsMissingGraphCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -184,6 +197,9 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 	if cfg.KeyVaultSecretNames.ServiceBusConnectionString != "servicebus-conn-str" {
 		t.Fatalf("ServiceBusConnectionString name = %q", cfg.KeyVaultSecretNames.ServiceBusConnectionString)
 	}
+	if cfg.KeyVaultSecretNames.GraphClientSecret != "graph-client-secret" {
+		t.Fatalf("GraphClientSecret name = %q", cfg.KeyVaultSecretNames.GraphClientSecret)
+	}
 	if cfg.GraphTenantID != "tenant-id" || cfg.GraphClientID != "client-id" {
 		t.Fatalf("Graph tenant/client = %q/%q", cfg.GraphTenantID, cfg.GraphClientID)
 	}
@@ -193,7 +209,7 @@ func completeConfig() Config {
 	return Config{
 		SecretsSource:              SecretsSourceEnv,
 		KeyVaultURL:                "",
-		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str"},
+		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
 		HTTPAddr:                   ":8080",
 		HMACSecret:                 "shared-secret",
 		EntraPrimaryDomain:         "nycu.edu.tw",

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/nycu/password-hook-service/internal/config"
@@ -77,9 +79,14 @@ func resolveKeyVault(ctx context.Context, cfg config.Config, getter Getter) (con
 	if err != nil {
 		return config.Config{}, err
 	}
+	graphClientSecret, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.GraphClientSecret)
+	if err != nil {
+		return config.Config{}, err
+	}
 
 	cfg.HMACSecret = hmacSecret
 	cfg.ServiceBusConnectionString = serviceBusConnectionString
+	cfg.GraphClientSecret = graphClientSecret
 	return cfg, nil
 }
 
@@ -102,5 +109,16 @@ func sanitizeSecretError(err error) error {
 	if err == nil {
 		return nil
 	}
-	return errors.New("secret read failed")
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) {
+		statusText := http.StatusText(respErr.StatusCode)
+		if statusText == "" {
+			statusText = "unknown status"
+		}
+		if respErr.ErrorCode != "" {
+			return fmt.Errorf("secret read failed: status %d %s: code %s", respErr.StatusCode, statusText, respErr.ErrorCode)
+		}
+		return fmt.Errorf("secret read failed: status %d %s", respErr.StatusCode, statusText)
+	}
+	return fmt.Errorf("secret read failed: %T", err)
 }
