@@ -17,6 +17,8 @@ import (
 	"github.com/nycu/password-hook-service/internal/migration"
 )
 
+const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
+
 func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 	logs, restore := captureDefaultLogger()
 	defer restore()
@@ -79,12 +81,92 @@ func TestAppHookRouteSkipsExternalEmailWithoutEnqueue(t *testing.T) {
 	}
 }
 
+func TestNewWithQueueClosesOwnedQueueWhenAppWiringFails(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.HMACSecret = ""
+	closer := &captureCloser{}
+
+	application, err := newWithQueue(cfg, &captureQueue{}, closer)
+	if err == nil {
+		t.Fatal("newWithQueue returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("newWithQueue returned app = %#v, want nil", application)
+	}
+	if closer.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
+	}
+	if len(closer.closeContexts) != 1 {
+		t.Fatalf("close contexts = %d, want 1", len(closer.closeContexts))
+	}
+	if closer.closeContexts[0] == nil {
+		t.Fatal("close context is nil")
+	}
+}
+
+func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusQueueName = ""
+
+	application, err := NewWithQueue(cfg, &captureQueue{})
+
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+	if application == nil {
+		t.Fatal("NewWithQueue returned nil app")
+	}
+}
+
+func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
+	closer := &captureCloser{}
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	application, err := newWithQueue(cfg, &captureQueue{}, closer)
+	if err != nil {
+		t.Fatalf("newWithQueue returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if closer.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
+	}
+	if err := closer.closeErrs[0]; err != nil {
+		t.Fatalf("close context err = %v, want nil", err)
+	}
+	if !closer.closeHadDeadlines[0] {
+		t.Fatal("close context has no deadline")
+	}
+}
+
 type captureQueue struct {
 	messages []migration.PasswordSyncMessage
 }
 
 func (q *captureQueue) EnqueuePasswordSync(_ context.Context, msg migration.PasswordSyncMessage) error {
 	q.messages = append(q.messages, msg)
+	return nil
+}
+
+type captureCloser struct {
+	closeCalls        int
+	closeContexts     []context.Context
+	closeErrs         []error
+	closeHadDeadlines []bool
+}
+
+func (c *captureCloser) Close(ctx context.Context) error {
+	c.closeCalls++
+	c.closeContexts = append(c.closeContexts, ctx)
+	c.closeErrs = append(c.closeErrs, ctx.Err())
+	_, hasDeadline := ctx.Deadline()
+	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
 	return nil
 }
 
@@ -103,7 +185,7 @@ func completeAppConfig() config.Config {
 		PortalAllowedCIDRs:         nil,
 		RateLimitPerIP:             500,
 		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusConnectionString: testServiceBusConnectionString,
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
 		GraphTenantID:              "tenant-id",
