@@ -31,10 +31,18 @@ Run the standard local verification:
 make verify
 ```
 
-The Makefile wraps the Dockerized Go toolchain. The equivalent raw command is:
+The Makefile wraps the Dockerized Go toolchain and runs the container as your
+host UID/GID to avoid root-owned generated files. The equivalent raw command is:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go test ./... && go vet ./..."
+docker run --rm --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e GOCACHE=/tmp/go-build \
+  -e GOMODCACHE=/tmp/go/pkg/mod \
+  -v "$(pwd):/src" \
+  -w /src \
+  golang:1.26.4 \
+  sh -c "gofmt -w . && go test ./... && go vet ./..."
 ```
 
 ## Local Run
@@ -46,13 +54,13 @@ export HOOK_HMAC_SECRET="local-development-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
 export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
-export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=password-hook-producer-send;SharedAccessKey=dGVzdA=="
+export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 
 Use a queue- or topic-level Shared Access Policy with only the `Send` permission for
-the producer connection string. Do not use the namespace
-`RootManageSharedAccessKey` for application runtime credentials.
+the producer connection string. Do not use namespace-level manage policies for
+application runtime credentials.
 
 Optional local API protection settings:
 

@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
+
 func TestValidateRequiresHMACSecret(t *testing.T) {
 	t.Parallel()
 
@@ -28,12 +30,12 @@ func TestValidateAcceptsCompleteConfig(t *testing.T) {
 
 func TestLoadServiceBusDefaults(t *testing.T) {
 	t.Setenv("HOOK_HMAC_SECRET", "shared-secret")
-	t.Setenv("SERVICEBUS_CONNECTION_STRING", " Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA== ")
+	t.Setenv("SERVICEBUS_CONNECTION_STRING", " "+testServiceBusConnectionString+" ")
 	t.Setenv("SERVICEBUS_QUEUE_NAME", "")
 
 	cfg := Load()
 
-	if cfg.ServiceBusConnectionString != "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==" {
+	if cfg.ServiceBusConnectionString != testServiceBusConnectionString {
 		t.Fatalf("ServiceBusConnectionString = %q", cfg.ServiceBusConnectionString)
 	}
 	if cfg.ServiceBusQueueName != "password-sync" {
@@ -113,7 +115,7 @@ func completeConfig() Config {
 		PortalAllowedCIDRs:         nil,
 		RateLimitPerIP:             500,
 		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusConnectionString: testServiceBusConnectionString,
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
 	}

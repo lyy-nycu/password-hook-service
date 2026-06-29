@@ -17,6 +17,8 @@ import (
 	"github.com/nycu/password-hook-service/internal/migration"
 )
 
+const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
+
 func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 	logs, restore := captureDefaultLogger()
 	defer restore()
@@ -179,7 +181,7 @@ func completeAppConfig() config.Config {
 		PortalAllowedCIDRs:         nil,
 		RateLimitPerIP:             500,
 		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusConnectionString: testServiceBusConnectionString,
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
 	}
