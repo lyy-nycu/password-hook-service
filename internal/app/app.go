@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/nycu/password-hook-service/internal/buildinfo"
 	"github.com/nycu/password-hook-service/internal/config"
@@ -15,6 +16,8 @@ import (
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/servicebusqueue"
 )
+
+const queueCloseTimeout = 5 * time.Second
 
 type App struct {
 	server *httpserver.Server
@@ -36,7 +39,7 @@ func New(cfg config.Config) (*App, error) {
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
-	if err := cfg.Validate(); err != nil {
+	if err := cfg.ValidateHTTP(); err != nil {
 		return nil, err
 	}
 	if queue == nil {
@@ -50,7 +53,12 @@ func newWithQueue(cfg config.Config, queue migration.Queue, closer interface{ Cl
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
-		return nil, err
+		if closer == nil {
+			return nil, err
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), queueCloseTimeout)
+		defer cancel()
+		return nil, errors.Join(err, closer.Close(closeCtx))
 	}
 	rateLimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
 		AllowedCIDRs: cfg.PortalAllowedCIDRs,
@@ -77,11 +85,10 @@ func (a *App) Run(ctx context.Context) error {
 	if a.closer == nil {
 		return err
 	}
-	closeErr := a.closer.Close(context.Background())
-	if err != nil {
-		return err
-	}
-	return closeErr
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), queueCloseTimeout)
+	defer cancel()
+	closeErr := a.closer.Close(closeCtx)
+	return errors.Join(err, closeErr)
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {

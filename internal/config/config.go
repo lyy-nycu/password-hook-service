@@ -18,6 +18,7 @@ const (
 type KeyVaultSecretNames struct {
 	HMACSecret                 string
 	ServiceBusConnectionString string
+	GraphClientSecret          string
 }
 
 type Config struct {
@@ -49,6 +50,7 @@ func Load() Config {
 		KeyVaultSecretNames: KeyVaultSecretNames{
 			HMACSecret:                 env("KEY_VAULT_HMAC_SECRET_NAME", "hook-hmac-secret"),
 			ServiceBusConnectionString: env("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME", "servicebus-conn-str"),
+			GraphClientSecret:          env("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME", "graph-client-secret"),
 		},
 		HTTPAddr:                   env("HTTP_ADDR", ":8080"),
 		HMACSecret:                 os.Getenv("HOOK_HMAC_SECRET"),
@@ -73,7 +75,22 @@ func (c Config) Validate() error {
 	if err := c.ValidateSecretLoadingInputs(); err != nil {
 		return err
 	}
+	if err := c.ValidateHTTP(); err != nil {
+		return err
+	}
+	switch {
+	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
+		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
+	case strings.TrimSpace(c.ServiceBusQueueName) == "":
+		return errors.New("SERVICEBUS_QUEUE_NAME is required")
+	case c.PasswordMessageTTL <= 0:
+		return errors.New("PasswordMessageTTL must be positive")
+	default:
+		return nil
+	}
+}
 
+func (c Config) ValidateHTTP() error {
 	switch {
 	case strings.TrimSpace(c.HTTPAddr) == "":
 		return errors.New("HTTP_ADDR is required")
@@ -95,12 +112,6 @@ func (c Config) Validate() error {
 		return errors.New("RateLimitPerIP must not be negative")
 	case c.RateLimitWindow < 0:
 		return errors.New("RateLimitWindow must not be negative")
-	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
-		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
-	case strings.TrimSpace(c.ServiceBusQueueName) == "":
-		return errors.New("SERVICEBUS_QUEUE_NAME is required")
-	case c.PasswordMessageTTL <= 0:
-		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return validateCIDRs(c.PortalAllowedCIDRs)
 	}
@@ -124,6 +135,8 @@ func (c Config) ValidateSecretLoadingInputs() error {
 			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
 			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
+		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
+			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
 		default:
 			return nil
 		}

@@ -32,10 +32,18 @@ Run the standard local verification:
 make verify
 ```
 
-The Makefile wraps the Dockerized Go toolchain. The equivalent raw command is:
+The Makefile wraps the Dockerized Go toolchain and runs the container as your
+host UID/GID to avoid root-owned generated files. The equivalent raw command is:
 
 ```bash
-docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 sh -c "gofmt -w . && go test ./... && go vet ./..."
+docker run --rm --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -e GOCACHE=/tmp/go-build \
+  -e GOMODCACHE=/tmp/go/pkg/mod \
+  -v "$(pwd):/src" \
+  -w /src \
+  golang:1.26.4 \
+  sh -c "gofmt -w . && go test ./... && go vet ./..."
 ```
 
 ## Local Run
@@ -48,9 +56,13 @@ export HOOK_HMAC_SECRET="local-development-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
 export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
-export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA=="
+export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
+
+Use a queue- or topic-level Shared Access Policy with only the `Send` permission for
+the producer connection string. Do not use namespace-level manage policies for
+application runtime credentials.
 
 Optional local API protection settings:
 
@@ -97,7 +109,11 @@ export SECRETS_SOURCE="keyvault"
 export KEY_VAULT_URL="https://<vault-name>.vault.azure.net/"
 export KEY_VAULT_HMAC_SECRET_NAME="hook-hmac-secret"
 export KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME="servicebus-conn-str"
+export KEY_VAULT_GRAPH_CLIENT_SECRET_NAME="graph-client-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
+export ENTRA_FALLBACK_DOMAIN="nycu.onmicrosoft.com"
+export GRAPH_TENANT_ID="<tenant-id>"
+export GRAPH_CLIENT_ID="<app-client-id>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 
@@ -132,13 +148,14 @@ The hook endpoint returns `202 Accepted` when the request is accepted by the ser
 | `KEY_VAULT_URL` | empty | Required when `SECRETS_SOURCE=keyvault` |
 | `KEY_VAULT_HMAC_SECRET_NAME` | `hook-hmac-secret` | Key Vault secret name for the HMAC shared secret |
 | `KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME` | `servicebus-conn-str` | Key Vault secret name for the Service Bus connection string |
+| `KEY_VAULT_GRAPH_CLIENT_SECRET_NAME` | `graph-client-secret` | Key Vault secret name for the Graph client secret |
 | `HTTP_ADDR` | `:8080` | HTTP bind address |
 | `HOOK_HMAC_SECRET` | empty | HMAC shared secret when `SECRETS_SOURCE=env` |
 | `ENTRA_PRIMARY_DOMAIN` | `nycu.edu.tw` | Domain used to build internal Entra UPNs |
 | `ENTRA_FALLBACK_DOMAIN` | empty | Optional fallback domain for later tenant bootstrap scenarios |
 | `GRAPH_TENANT_ID` | empty | Microsoft Entra tenant ID for later Graph client use |
 | `GRAPH_CLIENT_ID` | empty | App registration client ID for later Graph client use |
-| `GRAPH_CLIENT_SECRET` | empty | Optional Graph app client secret for later Graph client use |
+| `GRAPH_CLIENT_SECRET` | empty | Graph app client secret when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
 | `PROBLEM_BASE_URL` | `https://nycu.edu.tw/problems` | RFC 9457 problem type base URL |
 | `SERVICEBUS_CONNECTION_STRING` | empty | Azure Service Bus connection string when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
 | `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |

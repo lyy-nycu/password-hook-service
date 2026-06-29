@@ -3,10 +3,12 @@ package secretloader
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/nycu/password-hook-service/internal/config"
 )
 
@@ -38,9 +40,11 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
+	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{values: map[string]string{
-		"hook-hmac-secret":    "kv-hmac",
-		"servicebus-conn-str": "kv-servicebus",
+		"hook-hmac-secret":     "kv-hmac",
+		"servicebus-conn-str":  "kv-servicebus",
+		"graph-client-secret":  "kv-graph-secret",
 	}}
 
 	got, err := Resolve(context.Background(), cfg, getter)
@@ -54,10 +58,10 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	if got.ServiceBusConnectionString != "kv-servicebus" {
 		t.Fatalf("ServiceBusConnectionString = %q", got.ServiceBusConnectionString)
 	}
-	if got.GraphClientSecret != cfg.GraphClientSecret {
-		t.Fatalf("GraphClientSecret = %q, want unchanged value %q", got.GraphClientSecret, cfg.GraphClientSecret)
+	if got.GraphClientSecret != "kv-graph-secret" {
+		t.Fatalf("GraphClientSecret = %q", got.GraphClientSecret)
 	}
-	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str"}
+	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str", "graph-client-secret"}
 	if strings.Join(getter.calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls = %v, want %v", getter.calls, wantCalls)
 	}
@@ -71,6 +75,7 @@ func TestResolveKeyVaultSourceWrapsGetterErrorWithoutSecretValue(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
+	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{
 		values: map[string]string{
 			"hook-hmac-secret": "kv-hmac",
@@ -92,6 +97,36 @@ func TestResolveKeyVaultSourceWrapsGetterErrorWithoutSecretValue(t *testing.T) {
 	}
 }
 
+func TestResolveKeyVaultSourceIncludesSafeAzureResponseDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.SecretsSource = config.SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
+	cfg.HMACSecret = ""
+	cfg.ServiceBusConnectionString = ""
+	cfg.GraphClientSecret = ""
+	getter := &fakeGetter{
+		values: map[string]string{
+			"hook-hmac-secret": "kv-hmac",
+		},
+		errs: map[string]error{
+			"servicebus-conn-str": &azcore.ResponseError{StatusCode: http.StatusForbidden, ErrorCode: "Forbidden"},
+		},
+	}
+
+	_, err := Resolve(context.Background(), cfg, getter)
+	if err == nil {
+		t.Fatal("Resolve returned nil error")
+	}
+	if !strings.Contains(err.Error(), "status 403 Forbidden") {
+		t.Fatalf("error = %v, want response status diagnostics", err)
+	}
+	if !strings.Contains(err.Error(), "code Forbidden") {
+		t.Fatalf("error = %v, want response error code diagnostics", err)
+	}
+}
+
 func TestResolveKeyVaultSourceRejectsBlankSecretValue(t *testing.T) {
 	t.Parallel()
 
@@ -100,6 +135,7 @@ func TestResolveKeyVaultSourceRejectsBlankSecretValue(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
+	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{values: map[string]string{
 		"hook-hmac-secret":    "kv-hmac",
 		"servicebus-conn-str": "   ",
@@ -119,6 +155,7 @@ func TestResolveKeyVaultSourcePropagatesContextCancellation(t *testing.T) {
 	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
+	cfg.GraphClientSecret = ""
 	getter := &fakeGetter{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -150,7 +187,7 @@ func completeConfig() config.Config {
 	return config.Config{
 		SecretsSource:              config.SecretsSourceEnv,
 		KeyVaultURL:                "",
-		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str"},
+		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
 		HTTPAddr:                   ":8080",
 		HMACSecret:                 "shared-secret",
 		EntraPrimaryDomain:         "nycu.edu.tw",

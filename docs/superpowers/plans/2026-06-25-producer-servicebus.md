@@ -179,7 +179,7 @@ func completeConfig() Config {
 		PortalAllowedCIDRs:         nil,
 		RateLimitPerIP:             500,
 		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusConnectionString: "servicebus-connection-string-for-tests",
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
 	}
@@ -659,7 +659,7 @@ func completeAppConfig() config.Config {
 		NonceTTL:                   60 * time.Second,
 		RateLimitPerIP:             500,
 		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusConnectionString: "servicebus-connection-string-for-tests",
 		ServiceBusQueueName:        "password-sync",
 		PasswordMessageTTL:         300 * time.Second,
 	}
@@ -855,7 +855,7 @@ Add Service Bus variables to the configuration table:
 Add these exports to the local run section:
 
 ```bash
-export SERVICEBUS_CONNECTION_STRING="Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA=="
+export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 

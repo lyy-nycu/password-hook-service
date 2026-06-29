@@ -17,7 +17,7 @@ import (
 func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
 	ctx := context.Background()
 	sender := &captureSender{}
-	queue := New(sender, 300*time.Second)
+	queue := mustNewQueue(t, sender, 300*time.Second)
 	enqueuedAt := time.Date(2026, 6, 25, 12, 30, 0, 123, time.FixedZone("TST", 8*60*60))
 	msg := migration.PasswordSyncMessage{
 		CN:          "u1234567",
@@ -70,7 +70,7 @@ func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
 
 func TestQueuePropagatesSendError(t *testing.T) {
 	sendErr := errors.New("service bus unavailable")
-	queue := New(&captureSender{sendErr: sendErr}, 300*time.Second)
+	queue := mustNewQueue(t, &captureSender{sendErr: sendErr}, 300*time.Second)
 
 	err := queue.EnqueuePasswordSync(context.Background(), migration.PasswordSyncMessage{
 		CN:         "u1234567",
@@ -92,7 +92,7 @@ func TestQueuePropagatesSendError(t *testing.T) {
 
 func TestQueueWrapsMarshalErrorAndDoesNotSend(t *testing.T) {
 	sender := &captureSender{}
-	queue := New(sender, 300*time.Second)
+	queue := mustNewQueue(t, sender, 300*time.Second)
 
 	err := queue.EnqueuePasswordSync(context.Background(), migration.PasswordSyncMessage{
 		CN:         "u1234567",
@@ -319,11 +319,60 @@ func TestReceiverCloseClosesReceiverAndClient(t *testing.T) {
 	}
 }
 
+func TestNewRejectsNilSender(t *testing.T) {
+	queue, err := New(nil, 300*time.Second)
+
+	if err == nil {
+		t.Fatal("New returned nil error for nil sender")
+	}
+	if queue != nil {
+		t.Fatalf("New queue = %#v, want nil", queue)
+	}
+	if err.Error() != "service bus sender is required" {
+		t.Fatalf("New error = %q, want service bus sender is required", err.Error())
+	}
+}
+
+func TestNewWithClientRejectsNilSender(t *testing.T) {
+	queue, err := NewWithClient(nil, &captureCloser{}, 300*time.Second)
+
+	if err == nil {
+		t.Fatal("NewWithClient returned nil error for nil sender")
+	}
+	if queue != nil {
+		t.Fatalf("NewWithClient queue = %#v, want nil", queue)
+	}
+	if err.Error() != "service bus sender is required" {
+		t.Fatalf("NewWithClient error = %q, want service bus sender is required", err.Error())
+	}
+}
+
+func TestCloseWithTimeoutUsesBoundedUncanceledContext(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	closer := &captureCloser{}
+
+	err := closeWithTimeout(parent, closer)
+
+	if err != nil {
+		t.Fatalf("closeWithTimeout returned error: %v", err)
+	}
+	if closer.closed != 1 {
+		t.Fatalf("close calls = %d, want 1", closer.closed)
+	}
+	if closer.closeErrs[0] != nil {
+		t.Fatalf("close context err = %v, want nil", closer.closeErrs[0])
+	}
+	if !closer.closeHadDeadlines[0] {
+		t.Fatal("close context has no deadline")
+	}
+}
+
 func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 	ctx := context.Background()
 	sender := &captureSender{}
 	client := &captureCloser{}
-	queue := NewWithClient(sender, client, 300*time.Second)
+	queue := mustNewQueueWithClient(t, sender, client, 300*time.Second)
 
 	if err := queue.Close(ctx); err != nil {
 		t.Fatalf("Close returned error: %v", err)
@@ -339,7 +388,7 @@ func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 	senderErr := errors.New("close sender")
 	sender = &captureSender{closeErr: senderErr}
 	client = &captureCloser{}
-	queue = NewWithClient(sender, client, 300*time.Second)
+	queue = mustNewQueueWithClient(t, sender, client, 300*time.Second)
 
 	err := queue.Close(ctx)
 	if !errors.Is(err, senderErr) {
@@ -355,7 +404,7 @@ func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 	clientErr := errors.New("close client")
 	sender = &captureSender{}
 	client = &captureCloser{closeErr: clientErr}
-	queue = NewWithClient(sender, client, 300*time.Second)
+	queue = mustNewQueueWithClient(t, sender, client, 300*time.Second)
 
 	err = queue.Close(ctx)
 	if !errors.Is(err, clientErr) {
@@ -372,7 +421,7 @@ func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 	clientErr = errors.New("close client")
 	sender = &captureSender{closeErr: senderErr}
 	client = &captureCloser{closeErr: clientErr}
-	queue = NewWithClient(sender, client, 300*time.Second)
+	queue = mustNewQueueWithClient(t, sender, client, 300*time.Second)
 
 	err = queue.Close(ctx)
 	if !errors.Is(err, senderErr) {
@@ -388,15 +437,24 @@ func TestQueueCloseClosesSenderAndClient(t *testing.T) {
 		t.Fatalf("Close error = %q, want close service bus client", err.Error())
 	}
 
-	client = &captureCloser{}
-	queue = NewWithClient(nil, client, 300*time.Second)
+}
 
-	if err := queue.Close(ctx); err != nil {
-		t.Fatalf("Close with nil sender returned error: %v", err)
+func mustNewQueue(t *testing.T, sender sender, ttl time.Duration) *Queue {
+	t.Helper()
+	queue, err := New(sender, ttl)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
 	}
-	if client.closed != 1 {
-		t.Fatalf("client closed %d times with nil sender, want 1", client.closed)
+	return queue
+}
+
+func mustNewQueueWithClient(t *testing.T, sender sender, client closer, ttl time.Duration) *Queue {
+	t.Helper()
+	queue, err := NewWithClient(sender, client, ttl)
+	if err != nil {
+		t.Fatalf("NewWithClient returned error: %v", err)
 	}
+	return queue
 }
 
 type captureServiceBusReceiver struct {
@@ -464,12 +522,17 @@ func (s *captureSender) Close(ctx context.Context) error {
 }
 
 type captureCloser struct {
-	closed   int
-	closeErr error
+	closed            int
+	closeErr          error
+	closeHadDeadlines []bool
+	closeErrs         []error
 }
 
 func (c *captureCloser) Close(ctx context.Context) error {
 	c.closed++
+	_, hasDeadline := ctx.Deadline()
+	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
+	c.closeErrs = append(c.closeErrs, ctx.Err())
 	return c.closeErr
 }
 
