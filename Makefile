@@ -1,0 +1,21 @@
+GO_IMAGE ?= golang:1.26.4
+HOST_UID ?= $(shell id -u)
+HOST_GID ?= $(shell id -g)
+DOCKER_RUN = docker run --rm --user "$(HOST_UID):$(HOST_GID)" -e HOME=/tmp -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go/pkg/mod -v "$(CURDIR):/src" -w /src $(GO_IMAGE)
+
+.PHONY: fmt test vet verify docker-build
+
+fmt:
+	$(DOCKER_RUN) gofmt -w .
+
+test:
+	$(DOCKER_RUN) go test ./...
+
+vet:
+	$(DOCKER_RUN) go vet ./...
+
+verify:
+	$(DOCKER_RUN) sh -c "gofmt -w . && go test ./... && go vet ./..."
+
+docker-build:
+	docker build -f deploy/Dockerfile -t password-hook-service .
