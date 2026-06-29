@@ -31,7 +31,7 @@
 
 Current active slice:
 
-- Slice 5: detailed plan not created yet
+- Slice 5: `docs/superpowers/plans/2026-06-29-retry-dlq-policy.md`
 
 ---
 
@@ -58,7 +58,7 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 | 2. Producer to Service Bus | Done | `2026-06-25-producer-servicebus.md` | Producer-side Service Bus enqueueing verified and reviewed |
 | 3. Secret Loading | Done | `2026-06-26-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
 | 4. Worker Queue Consumption | Done | `2026-06-27-worker-queue-consumption.md` | Worker receive loop, Service Bus receiver adapter, permanent DLQ reason hardening, and shutdown-safe settlement verified with `go test ./...` and `go vet ./...` |
-| 5. Retry and DLQ Policy | Not planned | Not created |  |
+| 5. Retry and DLQ Policy | Planned | `2026-06-29-retry-dlq-policy.md` | Plan prepared from design, roadmap, and git log after Slice 4 merge |
 | 6. Microsoft Graph Client | Not planned | Not created |  |
 | 7. Password Data Protection | Not planned | Not created |  |
 | 8. Observability | Not planned | Not created |  |
