@@ -11,6 +11,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/worker"
 )
 
 func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
@@ -125,6 +126,196 @@ func TestNewFromConnectionStringWrapsClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create service bus client") {
 		t.Fatalf("error = %q, want create service bus client", err.Error())
+	}
+}
+
+func TestNewReceiverFromConnectionStringWrapsReceiverError(t *testing.T) {
+	receiver, err := NewReceiverFromConnectionString(validConnectionString(), "")
+
+	if err == nil {
+		t.Fatal("NewReceiverFromConnectionString returned nil error")
+	}
+	if receiver != nil {
+		t.Fatalf("NewReceiverFromConnectionString receiver = %#v, want nil", receiver)
+	}
+	if !strings.Contains(err.Error(), "create service bus receiver") {
+		t.Fatalf("error = %q, want create service bus receiver", err.Error())
+	}
+}
+
+func TestReceiverReceivesAndSettlesServiceBusMessage(t *testing.T) {
+	ctx := context.Background()
+	body := []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","password":"secret","enqueuedAt":"2026-06-27T12:00:00Z"}`)
+	native := &azservicebus.ReceivedMessage{
+		ApplicationProperties: map[string]any{"kind": "password-sync"},
+		Body:                  body,
+	}
+	serviceBusReceiver := &captureServiceBusReceiver{messages: []*azservicebus.ReceivedMessage{native}}
+	receiver := NewReceiver(serviceBusReceiver)
+
+	messages, err := receiver.ReceiveMessages(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReceiveMessages returned error: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("received %d messages, want 1", len(messages))
+	}
+	if messages[0].Kind != "password-sync" {
+		t.Fatalf("message kind = %q, want password-sync", messages[0].Kind)
+	}
+	if string(messages[0].Body) != string(body) {
+		t.Fatalf("message body = %q, want %q", messages[0].Body, body)
+	}
+
+	if err := receiver.CompleteMessage(ctx, messages[0]); err != nil {
+		t.Fatalf("CompleteMessage returned error: %v", err)
+	}
+	if serviceBusReceiver.completed != native {
+		t.Fatalf("completed native message = %#v, want %#v", serviceBusReceiver.completed, native)
+	}
+
+	messages, err = receiver.ReceiveMessages(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReceiveMessages returned error: %v", err)
+	}
+	if err := receiver.DeadLetterMessage(ctx, messages[0], "invalid_message_schema", "invalid password sync message"); err != nil {
+		t.Fatalf("DeadLetterMessage returned error: %v", err)
+	}
+	if serviceBusReceiver.deadLettered != native {
+		t.Fatalf("deadLettered native message = %#v, want %#v", serviceBusReceiver.deadLettered, native)
+	}
+	if serviceBusReceiver.deadLetterOptions == nil {
+		t.Fatal("deadLetterOptions = nil")
+	}
+	if serviceBusReceiver.deadLetterOptions.Reason == nil || *serviceBusReceiver.deadLetterOptions.Reason != "invalid_message_schema" {
+		t.Fatalf("dead-letter reason = %v, want invalid_message_schema", serviceBusReceiver.deadLetterOptions.Reason)
+	}
+	if serviceBusReceiver.deadLetterOptions.ErrorDescription == nil || *serviceBusReceiver.deadLetterOptions.ErrorDescription != "invalid password sync message" {
+		t.Fatalf("dead-letter description = %v, want invalid password sync message", serviceBusReceiver.deadLetterOptions.ErrorDescription)
+	}
+}
+
+func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
+	ctx := context.Background()
+	native := &azservicebus.ReceivedMessage{
+		ApplicationProperties: map[string]any{"kind": "password-sync"},
+		Body:                  []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","password":"secret","enqueuedAt":"2026-06-27T12:00:00Z"}`),
+	}
+	serviceBusReceiver := &captureServiceBusReceiver{messages: []*azservicebus.ReceivedMessage{native}}
+	receiver := NewReceiver(serviceBusReceiver)
+
+	messages, err := receiver.ReceiveMessages(ctx, 1)
+	if err != nil {
+		t.Fatalf("ReceiveMessages returned error: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("received %d messages, want 1", len(messages))
+	}
+
+	if err := receiver.AbandonMessage(ctx, messages[0]); err != nil {
+		t.Fatalf("AbandonMessage returned error: %v", err)
+	}
+
+	if serviceBusReceiver.abandoned != native {
+		t.Fatalf("abandoned native message = %#v, want %#v", serviceBusReceiver.abandoned, native)
+	}
+	if serviceBusReceiver.completed != nil || serviceBusReceiver.deadLettered != nil {
+		t.Fatalf("unexpected settlements: completed=%#v deadLettered=%#v", serviceBusReceiver.completed, serviceBusReceiver.deadLettered)
+	}
+}
+
+func TestReceiverRejectsMessageNotReceivedByReceiver(t *testing.T) {
+	ctx := context.Background()
+	receiver := NewReceiver(&captureServiceBusReceiver{})
+	msg := &worker.Message{Kind: "password-sync", Body: []byte("{}")}
+
+	tests := []struct {
+		name   string
+		settle func() error
+	}{
+		{
+			name:   "complete",
+			settle: func() error { return receiver.CompleteMessage(ctx, msg) },
+		},
+		{
+			name:   "abandon",
+			settle: func() error { return receiver.AbandonMessage(ctx, msg) },
+		},
+		{
+			name: "dead-letter",
+			settle: func() error {
+				return receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.settle()
+			if err == nil {
+				t.Fatal("settlement returned nil error")
+			}
+			if err.Error() != "worker message was not received by this service bus receiver" {
+				t.Fatalf("settlement error = %q, want worker message ownership error", err.Error())
+			}
+		})
+	}
+}
+
+func TestReceiverWithNilNativeReceiverReturnsErrors(t *testing.T) {
+	ctx := context.Background()
+	receiver := NewReceiver(nil)
+	msg := &worker.Message{Kind: "password-sync", Body: []byte("{}")}
+
+	if _, err := receiver.ReceiveMessages(ctx, 1); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("ReceiveMessages error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.CompleteMessage(ctx, msg); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("CompleteMessage error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.AbandonMessage(ctx, msg); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("AbandonMessage error = %v, want service bus receiver is required", err)
+	}
+	if err := receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message"); err == nil || err.Error() != "service bus receiver is required" {
+		t.Fatalf("DeadLetterMessage error = %v, want service bus receiver is required", err)
+	}
+}
+
+func TestReceiverCloseClosesReceiverAndClient(t *testing.T) {
+	ctx := context.Background()
+	serviceBusReceiver := &captureServiceBusReceiver{}
+	client := &captureCloser{}
+	receiver := NewReceiverWithClient(serviceBusReceiver, client)
+
+	if err := receiver.Close(ctx); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+
+	if serviceBusReceiver.closed != 1 {
+		t.Fatalf("receiver closed %d times, want 1", serviceBusReceiver.closed)
+	}
+	if client.closed != 1 {
+		t.Fatalf("client closed %d times, want 1", client.closed)
+	}
+
+	receiverErr := errors.New("close receiver")
+	clientErr := errors.New("close client")
+	serviceBusReceiver = &captureServiceBusReceiver{closeErr: receiverErr}
+	client = &captureCloser{closeErr: clientErr}
+	receiver = NewReceiverWithClient(serviceBusReceiver, client)
+
+	err := receiver.Close(ctx)
+	if !errors.Is(err, receiverErr) {
+		t.Fatalf("Close error = %v, want receiver error", err)
+	}
+	if !errors.Is(err, clientErr) {
+		t.Fatalf("Close error = %v, want client error", err)
+	}
+	if !strings.Contains(err.Error(), "close service bus receiver") {
+		t.Fatalf("Close error = %q, want close service bus receiver", err.Error())
+	}
+	if !strings.Contains(err.Error(), "close service bus client") {
+		t.Fatalf("Close error = %q, want close service bus client", err.Error())
 	}
 }
 
@@ -266,6 +457,51 @@ func mustNewQueueWithClient(t *testing.T, sender sender, client closer, ttl time
 	return queue
 }
 
+type captureServiceBusReceiver struct {
+	messages []*azservicebus.ReceivedMessage
+
+	completed    *azservicebus.ReceivedMessage
+	abandoned    *azservicebus.ReceivedMessage
+	deadLettered *azservicebus.ReceivedMessage
+
+	deadLetterOptions *azservicebus.DeadLetterOptions
+
+	closed   int
+	closeErr error
+}
+
+func (r *captureServiceBusReceiver) ReceiveMessages(ctx context.Context, maxMessages int, options *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error) {
+	if len(r.messages) == 0 {
+		return nil, nil
+	}
+	if len(r.messages) <= maxMessages {
+		messages := r.messages
+		return messages, nil
+	}
+	return r.messages[:maxMessages], nil
+}
+
+func (r *captureServiceBusReceiver) CompleteMessage(ctx context.Context, msg *azservicebus.ReceivedMessage, options *azservicebus.CompleteMessageOptions) error {
+	r.completed = msg
+	return nil
+}
+
+func (r *captureServiceBusReceiver) AbandonMessage(ctx context.Context, msg *azservicebus.ReceivedMessage, options *azservicebus.AbandonMessageOptions) error {
+	r.abandoned = msg
+	return nil
+}
+
+func (r *captureServiceBusReceiver) DeadLetterMessage(ctx context.Context, msg *azservicebus.ReceivedMessage, options *azservicebus.DeadLetterOptions) error {
+	r.deadLettered = msg
+	r.deadLetterOptions = options
+	return nil
+}
+
+func (r *captureServiceBusReceiver) Close(ctx context.Context) error {
+	r.closed++
+	return r.closeErr
+}
+
 type captureSender struct {
 	message  *azservicebus.Message
 	sent     int
@@ -328,4 +564,8 @@ func assertNoPasswordMetadata(t *testing.T, props map[string]any, password strin
 			t.Fatalf("application property %q contains password-like value", key)
 		}
 	}
+}
+
+func validConnectionString() string {
+	return "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA=="
 }
