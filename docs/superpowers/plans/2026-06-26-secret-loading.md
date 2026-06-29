@@ -204,6 +204,8 @@ type KeyVaultSecretNames struct {
 }
 ```
 
+The completed implementation uses all three Key Vault secret names: `internal/secretloader.Resolve` loads the HMAC secret, Service Bus connection string, and Graph client secret before assigning them onto `config.Config`.
+
 Extend `Config`:
 
 ```go
@@ -654,8 +656,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/azsecrets"
 	"github.com/nycu/password-hook-service/internal/config"
@@ -690,6 +694,28 @@ func (g keyVaultGetter) GetSecret(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("Key Vault secret %s has nil value", name)
 	}
 	return *resp.Value, nil
+}
+```
+
+Update `sanitizeSecretError()` so production errors retain safe Azure response diagnostics without exposing secret values:
+
+```go
+func sanitizeSecretError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var respErr *azcore.ResponseError
+	if errors.As(err, &respErr) {
+		statusText := http.StatusText(respErr.StatusCode)
+		if statusText == "" {
+			statusText = "unknown status"
+		}
+		if respErr.ErrorCode != "" {
+			return fmt.Errorf("secret read failed: status %d %s: code %s", respErr.StatusCode, statusText, respErr.ErrorCode)
+		}
+		return fmt.Errorf("secret read failed: status %d %s", respErr.StatusCode, statusText)
+	}
+	return fmt.Errorf("secret read failed: %T", err)
 }
 ```
 
