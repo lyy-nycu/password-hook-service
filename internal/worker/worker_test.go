@@ -186,6 +186,55 @@ func TestWorkerInvalidMessagesDeadLetter(t *testing.T) {
 	}
 }
 
+func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","password":"secret"}`)
+	receiver := &fakeReceiver{messages: []*Message{{Kind: passwordSyncKind, Body: body}}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{}
+	deadLetters := &fakeDeadLetterSink{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:    10,
+		DeadLetterSink: deadLetters,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 0 {
+		t.Fatalf("processor calls = %d, want 0", processor.calls)
+	}
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	entry := deadLetters.entries[0]
+	if entry.Reason != DeadLetterReasonInvalidMessageSchema {
+		t.Fatalf("safe DLQ reason = %q, want %q", entry.Reason, DeadLetterReasonInvalidMessageSchema)
+	}
+	if entry.CN != "u1234567" || entry.UPN != "u1234567@example.edu" {
+		t.Fatalf("safe DLQ identity = (%q, %q), want parsed CN and UPN", entry.CN, entry.UPN)
+	}
+	body, err = json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal DeadLetterEntry returned error: %v", err)
+	}
+	if strings.Contains(string(body), "secret") || strings.Contains(string(body), `"password"`) {
+		t.Fatalf("safe DLQ entry leaked password data: %s", body)
+	}
+	if receiver.completed != 1 {
+		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
+		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
+	}
+}
+
 func TestWorkerContextCancellationSkipsRemainingMessages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -310,6 +359,16 @@ func TestNewValidatesDependencies(t *testing.T) {
 	}
 	if _, err := New(receiver, nil, Options{}); err == nil || err.Error() != "worker processor is required" {
 		t.Fatalf("New with nil processor error = %v", err)
+	}
+}
+
+func TestNewRequiresDeadLetterSink(t *testing.T) {
+	_, err := New(&fakeReceiver{}, &fakeProcessor{}, Options{})
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if err.Error() != "worker dead-letter sink is required" {
+		t.Fatalf("New error = %q, want worker dead-letter sink is required", err.Error())
 	}
 }
 
@@ -456,6 +515,15 @@ func (r *emptyBatchReceiver) AbandonMessage(ctx context.Context, msg *Message) e
 
 func (r *emptyBatchReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reason string, description string) error {
 	r.deadLettered++
+	return nil
+}
+
+type fakeDeadLetterSink struct {
+	entries []DeadLetterEntry
+}
+
+func (s *fakeDeadLetterSink) RecordPasswordSyncFailure(ctx context.Context, entry DeadLetterEntry) error {
+	s.entries = append(s.entries, entry)
 	return nil
 }
 
