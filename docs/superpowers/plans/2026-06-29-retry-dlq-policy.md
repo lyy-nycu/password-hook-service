@@ -159,21 +159,21 @@ Do not serialize:
 
 **Files:** modify `internal/worker/worker.go`; modify `internal/worker/worker_test.go`.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
   - Add `TestNewRequiresDeadLetterSink`: `New(receiver, processor, Options{})` returns exactly `worker dead-letter sink is required`.
   - Add `TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal`: a message containing `"password":"secret"` but missing `enqueuedAt` produces zero processor calls, one safe DLQ entry with reason `invalid_message_schema`, one complete, zero abandon, and no `secret` in marshaled `DeadLetterEntry`.
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
   - Run: `go test ./internal/worker -run 'TestNewRequiresDeadLetterSink|TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal' -v`
   - Expected: FAIL because `DeadLetterSink` is not implemented and invalid messages still use native dead-lettering.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   - Add the exact worker schema from `Code Schema And Quality Spec`.
   - Add `var defaultRetryBackoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}`.
   - `New` must reject nil `Options.DeadLetterSink`, copy `RetryBackoffs`, and default `Now`/`Sleep`.
   - Replace invalid-message native dead-lettering with `DeadLetterSink.RecordPasswordSyncFailure`, then complete the original message with the existing fresh settlement-context pattern.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
   - Run: `go test ./internal/worker -run 'TestNewRequiresDeadLetterSink|TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal' -v`
   - Expected: PASS.
   - Commit: `git add internal/worker/worker.go internal/worker/worker_test.go && git commit -m "feat: require password-safe worker DLQ sink"`
@@ -182,22 +182,22 @@ Do not serialize:
 
 **Files:** modify `internal/worker/worker.go`; modify `internal/worker/worker_test.go`.
 
-- [ ] **Step 1: Write failing retry tests**
+- [x] **Step 1: Write failing retry tests**
   - `TestWorkerRetriesTransientProcessorErrorsBeforeSuccess`: processor returns error, error, nil; sleeper records `[1s, 2s]`; processor calls `3`; complete `1`; abandon `0`; DLQ entries `0`.
   - `TestWorkerRetriesTransientProcessorErrorsThenSafeDLQ`: processor always returns ordinary error; calls `4`; sleeper records `[1s, 2s, 4s]`; one safe DLQ entry with reason `transient_processor_retries_exhausted`, `Attempts: 4`; original completed; password absent from marshaled entry.
   - `TestWorkerPermanentProcessorErrorSkipsRetryAndSafeDLQ`: processor returns `&PermanentError{Reason: PermanentReasonProcessorError, Err: errors.New("graph 403")}`; calls `1`; no sleeps; one safe DLQ entry with reason `permanent_processor_error`, `Attempts: 1`; original completed.
   - `TestWorkerPermanentProcessorErrorDoesNotTrustSensitiveReason`: `PermanentError.Reason` contains UPN and password; safe DLQ reason is exactly `permanent_processor_error`; reason and description contain neither UPN nor password.
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
   - Run: `go test ./internal/worker -run 'TestWorkerRetriesTransientProcessorErrorsBeforeSuccess|TestWorkerRetriesTransientProcessorErrorsThenSafeDLQ|TestWorkerPermanentProcessorErrorSkipsRetryAndSafeDLQ|TestWorkerPermanentProcessorErrorDoesNotTrustSensitiveReason' -v`
   - Expected: FAIL because current worker performs one processor attempt.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   - Add internal retry helper: call `ProcessPasswordSync`; return on nil or `*PermanentError`; sleep between transient failures through `Options.Sleep`; use default backoffs when unset; return terminal transient result after 1s/2s/4s are consumed.
   - Use descriptions: `invalid password sync message`, `permanent processor error`, `transient processor retries exhausted`.
   - For terminal permanent/transient failures, build `DeadLetterEntry` with `CN`, `UPN`, `Reason`, `Description`, `Attempts`, `EnqueuedAt`, `FailedAt`, empty `Password`; write safe DLQ; complete original.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
   - Run the same focused `go test ./internal/worker -run ... -v` command from Step 2.
   - Expected: PASS.
   - Commit: `git add internal/worker/worker.go internal/worker/worker_test.go && git commit -m "feat: add worker retry and terminal failure policy"`
@@ -206,12 +206,12 @@ Do not serialize:
 
 **Files:** modify `internal/worker/worker.go`; modify `internal/worker/worker_test.go`.
 
-- [ ] **Step 1: Add tests and fakes**
+- [x] **Step 1: Add tests and fakes**
   - `TestWorkerAbandonsWhenRetryBackoffIsCanceled`: transient error plus fake sleeper returning `context.Canceled`; processor calls `1`; abandon `1`; complete `0`; DLQ entries `0`.
   - `TestWorkerAbandonsOriginalWhenSafeDLQWriteFails`: permanent error plus fake DLQ sink returning `safe DLQ unavailable`; `Run` wraps that error; abandon `1`; complete `0`.
   - Test fakes must include `fakeDeadLetterSink []DeadLetterEntry`, `fakeSleeper []time.Duration`, and `fakeProcessor.errs []error`. Worker receiver fakes must not expose native `DeadLetterMessage`.
 
-- [ ] **Step 2: Verify and commit**
+- [x] **Step 2: Verify and commit**
   - Run: `go test ./internal/worker -v`
   - Expected: PASS.
   - Commit: `git add internal/worker/worker.go internal/worker/worker_test.go && git commit -m "test: cover retry cancellation and safe DLQ failure"`
@@ -220,22 +220,22 @@ Do not serialize:
 
 **Files:** create `internal/servicebusqueue/deadletter.go`; create `internal/servicebusqueue/deadletter_test.go`.
 
-- [ ] **Step 1: Write failing Service Bus DLQ tests**
+- [x] **Step 1: Write failing Service Bus DLQ tests**
   - `TestDeadLetterQueueSendsSanitizedPasswordSyncFailure`: send `worker.DeadLetterEntry{Password: "must-not-appear"}`; expect subject `password-sync-dlq`, content type `application/json`, properties `kind=password-sync-dlq`, `cn`, `upn`, `reason`; body contains `"attempts":4`; body/properties do not contain `must-not-appear`.
   - `TestNewDeadLetterQueueRejectsNilSender`: error exactly `service bus dead-letter sender is required`.
   - `TestDeadLetterQueueWrapsSendError`: sender returns `service bus send failed`; returned error wraps it and contains `send password sync dead-letter message`.
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
   - Run: `go test ./internal/servicebusqueue -run 'TestDeadLetterQueue|TestNewDeadLetterQueue' -v`
   - Expected: FAIL because `NewDeadLetterQueue` does not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   - Add `const passwordSyncDLQKind = "password-sync-dlq"`.
   - Add `DeadLetterQueue{sender sender, client closer}` implementing `worker.DeadLetterSink`.
   - Provide `NewDeadLetterQueue`, `NewDeadLetterQueueWithClient`, `NewDeadLetterQueueFromConnectionString`, `RecordPasswordSyncFailure`, and `Close`.
   - `RecordPasswordSyncFailure` must set `entry.Password = ""` before marshaling and must exclude password from all `azservicebus.Message.ApplicationProperties`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
   - Run: `go test ./internal/servicebusqueue -run 'TestDeadLetterQueue|TestNewDeadLetterQueue' -v`
   - Expected: PASS.
   - Commit: `git add internal/servicebusqueue/deadletter.go internal/servicebusqueue/deadletter_test.go && git commit -m "feat: add password-safe service bus DLQ sink"`
@@ -244,15 +244,15 @@ Do not serialize:
 
 **Files:** modify `internal/servicebusqueue/queue.go`; modify `internal/servicebusqueue/queue_test.go`; modify `internal/worker/worker_test.go`.
 
-- [ ] **Step 1: Remove native DLQ API**
+- [x] **Step 1: Remove native DLQ API**
   - In `internal/servicebusqueue/queue.go`, remove `DeadLetterMessage` from `serviceBusReceiver` and delete `func (r *Receiver) DeadLetterMessage(...)`.
   - Keep `ReceiveMessages`, `CompleteMessage`, `AbandonMessage`, and `Close`.
 
-- [ ] **Step 2: Update tests**
+- [x] **Step 2: Update tests**
   - In `queue_test.go`, remove native DLQ assertions from `TestReceiverReceivesAndSettlesServiceBusMessage`, `TestReceiverRejectsMessageNotReceivedByReceiver`, and `TestReceiverWithNilNativeReceiverReturnsErrors`.
   - In `worker_test.go`, remove fake native-DLQ fields/methods and assert safe DLQ through `fakeDeadLetterSink`.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
   - Run: `go test ./internal/worker ./internal/servicebusqueue -v`
   - Expected: PASS.
   - Run: `rg -n "DeadLetterMessage|DeadLetterOptions|deadLettered|deadLetterReason|deadLetterDescription" internal`
@@ -263,20 +263,20 @@ Do not serialize:
 
 **Files:** modify `internal/config/config.go`; modify `internal/config/config_test.go`.
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
   - `TestLoadDefaultsServiceBusDeadLetterQueueName`: `Load().ServiceBusDeadLetterQueueName == "password-sync-dlq"`.
   - `TestValidateRequiresServiceBusDeadLetterQueueName`: empty field returns exactly `SERVICEBUS_DEADLETTER_QUEUE_NAME is required`.
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
   - Run: `go test ./internal/config -run 'TestLoadDefaultsServiceBusDeadLetterQueueName|TestValidateRequiresServiceBusDeadLetterQueueName' -v`
   - Expected: FAIL because the config field does not exist.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
   - Add `ServiceBusDeadLetterQueueName string` to `config.Config`.
   - Add `ServiceBusDeadLetterQueueName: env("SERVICEBUS_DEADLETTER_QUEUE_NAME", "password-sync-dlq"),` in `Load`.
   - Add validation: `case strings.TrimSpace(c.ServiceBusDeadLetterQueueName) == "": return errors.New("SERVICEBUS_DEADLETTER_QUEUE_NAME is required")`.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
   - Run: `go test ./internal/config -v`
   - Expected: PASS.
   - Commit: `git add internal/config/config.go internal/config/config_test.go && git commit -m "feat: configure password-safe DLQ queue name"`
@@ -285,17 +285,17 @@ Do not serialize:
 
 **Files:** modify `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`; modify this plan.
 
-- [ ] **Step 1: Run full verification**
+- [x] **Step 1: Run full verification**
   - Run: `go test ./...`
   - Expected: PASS.
   - Run: `go vet ./...`
   - Expected: PASS.
 
-- [ ] **Step 2: Run leak-focused search**
+- [x] **Step 2: Run leak-focused search**
   - Run: `rg -n "password|Password|DeadLetterMessage|DeadLetterOptions" internal/worker internal/servicebusqueue`
   - Expected: password references are limited to password sync processing, test leak assertions, and `json:"-"` on `DeadLetterEntry.Password`; no `DeadLetterMessage` or `DeadLetterOptions` remains in the password sync worker path.
 
-- [ ] **Step 3: Update docs and commit**
+- [x] **Step 3: Update docs and commit**
   - Update Slice 5 roadmap row only after verification: `| 5. Retry and DLQ Policy | Done | \`2026-06-29-retry-dlq-policy.md\` | Safe DLQ payload excludes password; retry policy verified with \`go test ./...\` and \`go vet ./...\` |`
   - Check off completed tasks in this file.
   - Commit: `git add docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md docs/superpowers/plans/2026-06-29-retry-dlq-policy.md && git commit -m "docs: mark retry and DLQ policy slice complete"`
