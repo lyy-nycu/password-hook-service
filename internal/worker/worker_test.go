@@ -40,28 +40,36 @@ func TestWorkerSuccessCompletesAndProcessesDecodedMessage(t *testing.T) {
 	}
 }
 
-func TestWorkerRetryableProcessorErrorAbandons(t *testing.T) {
+func TestWorkerRetryableProcessorErrorRetriesThenSafeDLQ(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
-	receiver.onAbandon = cancel
+	receiver.onComplete = cancel
 	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
-	worker := newTestWorker(t, receiver, processor)
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
 
 	if err := worker.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if receiver.abandoned != 1 {
-		t.Fatalf("abandoned = %d, want 1", receiver.abandoned)
+	if processor.calls != 4 {
+		t.Fatalf("processor calls = %d, want 4", processor.calls)
 	}
-	if receiver.completed != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: completed=%d deadLettered=%d", receiver.completed, receiver.deadLettered)
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	if deadLetters.entries[0].Reason != DeadLetterReasonTransientRetriesExhausted {
+		t.Fatalf("safe DLQ reason = %q, want %q", deadLetters.entries[0].Reason, DeadLetterReasonTransientRetriesExhausted)
+	}
+	if receiver.completed != 1 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
 	}
 }
 
-func TestWorkerPermanentProcessorErrorDeadLettersWithFixedMetadata(t *testing.T) {
+func TestWorkerPermanentProcessorErrorRecordsSafeDLQWithFixedMetadata(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -69,35 +77,37 @@ func TestWorkerPermanentProcessorErrorDeadLettersWithFixedMetadata(t *testing.T)
 	msg := validPasswordSyncMessage()
 	msg.Password = password
 	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
-	receiver.onDeadLetter = cancel
+	receiver.onComplete = cancel
 	processor := &fakeProcessor{err: &PermanentError{
 		Reason: "graph 403/password",
 		Err:    errors.New("failed with " + password),
 	}}
-	worker := newTestWorker(t, receiver, processor)
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, &fakeSleeper{})
 
 	if err := worker.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if receiver.deadLettered != 1 {
-		t.Fatalf("deadLettered = %d, want 1", receiver.deadLettered)
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
 	}
-	if receiver.deadLetterReason != "permanent_processor_error" {
-		t.Fatalf("deadLetterReason = %q, want permanent_processor_error", receiver.deadLetterReason)
+	entry := deadLetters.entries[0]
+	if entry.Reason != "permanent_processor_error" {
+		t.Fatalf("safe DLQ reason = %q, want permanent_processor_error", entry.Reason)
 	}
-	if receiver.deadLetterDescription != deadLetterDescriptionPermanentError {
-		t.Fatalf("deadLetterDescription = %q, want %q", receiver.deadLetterDescription, deadLetterDescriptionPermanentError)
+	if entry.Description != deadLetterDescriptionPermanentError {
+		t.Fatalf("safe DLQ description = %q, want %q", entry.Description, deadLetterDescriptionPermanentError)
 	}
-	if strings.Contains(receiver.deadLetterReason, password) || strings.Contains(receiver.deadLetterDescription, password) {
-		t.Fatalf("dead-letter metadata contains password: reason=%q description=%q", receiver.deadLetterReason, receiver.deadLetterDescription)
+	if strings.Contains(entry.Reason, password) || strings.Contains(entry.Description, password) {
+		t.Fatalf("safe DLQ metadata contains password: reason=%q description=%q", entry.Reason, entry.Description)
 	}
-	if receiver.completed != 0 || receiver.abandoned != 0 {
-		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	if receiver.completed != 1 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
 	}
 }
 
-func TestWorkerPermanentProcessorErrorDoesNotTrustPasswordInReason(t *testing.T) {
+func TestWorkerPermanentProcessorErrorDoesNotTrustPasswordInSafeDLQReason(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -105,32 +115,34 @@ func TestWorkerPermanentProcessorErrorDoesNotTrustPasswordInReason(t *testing.T)
 	msg := validPasswordSyncMessage()
 	msg.Password = password
 	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
-	receiver.onDeadLetter = cancel
+	receiver.onComplete = cancel
 	processor := &fakeProcessor{err: &PermanentError{
 		Reason: PermanentReason("graph failed for " + msg.UPN + " with " + password),
 		Err:    errors.New("processor failed"),
 	}}
-	worker := newTestWorker(t, receiver, processor)
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, &fakeSleeper{})
 
 	if err := worker.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
 
-	if receiver.deadLettered != 1 {
-		t.Fatalf("deadLettered = %d, want 1", receiver.deadLettered)
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
 	}
-	if receiver.deadLetterReason != "permanent_processor_error" {
-		t.Fatalf("deadLetterReason = %q, want permanent_processor_error", receiver.deadLetterReason)
+	entry := deadLetters.entries[0]
+	if entry.Reason != "permanent_processor_error" {
+		t.Fatalf("safe DLQ reason = %q, want permanent_processor_error", entry.Reason)
 	}
-	if strings.Contains(receiver.deadLetterReason, password) || strings.Contains(receiver.deadLetterReason, msg.UPN) {
-		t.Fatalf("dead-letter reason contains sensitive data: %q", receiver.deadLetterReason)
+	if strings.Contains(entry.Reason, password) || strings.Contains(entry.Reason, msg.UPN) {
+		t.Fatalf("safe DLQ reason contains sensitive data: %q", entry.Reason)
 	}
-	if strings.Contains(receiver.deadLetterDescription, password) || strings.Contains(receiver.deadLetterDescription, msg.UPN) {
-		t.Fatalf("dead-letter description contains sensitive data: %q", receiver.deadLetterDescription)
+	if strings.Contains(entry.Description, password) || strings.Contains(entry.Description, msg.UPN) {
+		t.Fatalf("safe DLQ description contains sensitive data: %q", entry.Description)
 	}
 }
 
-func TestWorkerInvalidMessagesDeadLetter(t *testing.T) {
+func TestWorkerInvalidMessagesRecordSafeDLQ(t *testing.T) {
 	tests := []struct {
 		name    string
 		message *Message
@@ -162,9 +174,10 @@ func TestWorkerInvalidMessagesDeadLetter(t *testing.T) {
 			defer cancel()
 
 			receiver := &fakeReceiver{messages: []*Message{tt.message}}
-			receiver.onDeadLetter = cancel
+			receiver.onComplete = cancel
 			processor := &fakeProcessor{}
-			worker := newTestWorker(t, receiver, processor)
+			deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+			worker := newPolicyTestWorker(t, receiver, processor, deadLetters, &fakeSleeper{})
 
 			if err := worker.Run(ctx); err != nil {
 				t.Fatalf("Run returned error: %v", err)
@@ -173,14 +186,17 @@ func TestWorkerInvalidMessagesDeadLetter(t *testing.T) {
 			if processor.calls != 0 {
 				t.Fatalf("processor calls = %d, want 0", processor.calls)
 			}
-			if receiver.deadLettered != 1 {
-				t.Fatalf("deadLettered = %d, want 1", receiver.deadLettered)
+			if len(deadLetters.entries) != 1 {
+				t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
 			}
-			if receiver.deadLetterReason != deadLetterReasonInvalidMessageSchema {
-				t.Fatalf("deadLetterReason = %q, want %q", receiver.deadLetterReason, deadLetterReasonInvalidMessageSchema)
+			if deadLetters.entries[0].Reason != deadLetterReasonInvalidMessageSchema {
+				t.Fatalf("safe DLQ reason = %q, want %q", deadLetters.entries[0].Reason, deadLetterReasonInvalidMessageSchema)
 			}
-			if receiver.deadLetterDescription != deadLetterDescriptionInvalidMessage {
-				t.Fatalf("deadLetterDescription = %q, want %q", receiver.deadLetterDescription, deadLetterDescriptionInvalidMessage)
+			if deadLetters.entries[0].Description != deadLetterDescriptionInvalidMessage {
+				t.Fatalf("safe DLQ description = %q, want %q", deadLetters.entries[0].Description, deadLetterDescriptionInvalidMessage)
+			}
+			if receiver.completed != 1 || receiver.deadLettered != 0 {
+				t.Fatalf("unexpected settlements: completed=%d deadLettered=%d", receiver.completed, receiver.deadLettered)
 			}
 		})
 	}
@@ -392,6 +408,65 @@ func TestWorkerPermanentProcessorErrorDoesNotTrustSensitiveReason(t *testing.T) 
 	}
 }
 
+func TestWorkerAbandonsWhenRetryBackoffIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onAbandon = cancel
+	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{err: context.Canceled}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want 1", processor.calls)
+	}
+	if receiver.abandoned != 1 {
+		t.Fatalf("abandoned = %d, want 1", receiver.abandoned)
+	}
+	if receiver.completed != 0 {
+		t.Fatalf("completed = %d, want 0", receiver.completed)
+	}
+	if len(deadLetters.entries) != 0 {
+		t.Fatalf("safe DLQ entries = %d, want 0", len(deadLetters.entries))
+	}
+}
+
+func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
+	ctx := context.Background()
+	sinkErr := errors.New("safe DLQ unavailable")
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	deadLetters := &fakeDeadLetterSink{err: sinkErr}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	err := worker.Run(ctx)
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("Run error = %v, want safe DLQ error", err)
+	}
+	if !strings.Contains(err.Error(), "safe DLQ unavailable") {
+		t.Fatalf("Run error = %q, want safe DLQ unavailable", err.Error())
+	}
+	if receiver.abandoned != 1 {
+		t.Fatalf("abandoned = %d, want 1", receiver.abandoned)
+	}
+	if receiver.completed != 0 {
+		t.Fatalf("completed = %d, want 0", receiver.completed)
+	}
+}
+
 func TestWorkerContextCancellationSkipsRemainingMessages(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -469,6 +544,7 @@ func TestWorkerEmptyReceiveWaitsBeforePollingAgain(t *testing.T) {
 	worker, err := New(receiver, processor, Options{
 		MaxMessages:       1,
 		EmptyReceiveDelay: 50 * time.Millisecond,
+		DeadLetterSink:    &fakeDeadLetterSink{},
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)

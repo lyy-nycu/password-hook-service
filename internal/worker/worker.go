@@ -194,7 +194,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.recordPasswordSyncFailure(settleCtx, invalidMessageDeadLetterEntry(msg, w.now())); settleErr != nil {
-			return fmt.Errorf("record invalid worker message dead-letter: %w", settleErr)
+			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record invalid worker message dead-letter", settleErr)
 		}
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete invalid worker message: %w", settleErr)
@@ -234,7 +234,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 			EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 			FailedAt:    w.now(),
 		}); settleErr != nil {
-			return fmt.Errorf("record permanent worker message dead-letter: %w", settleErr)
+			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record permanent worker message dead-letter", settleErr)
 		}
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete permanent worker message: %w", settleErr)
@@ -254,7 +254,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 		FailedAt:    w.now(),
 	}); settleErr != nil {
-		return fmt.Errorf("record exhausted worker message dead-letter: %w", settleErr)
+		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record exhausted worker message dead-letter", settleErr)
 	}
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete exhausted worker message: %w", settleErr)
@@ -297,6 +297,14 @@ func (w *Worker) settlementContext() (context.Context, context.CancelFunc) {
 func (w *Worker) recordPasswordSyncFailure(ctx context.Context, entry DeadLetterEntry) error {
 	entry.Password = ""
 	return w.deadLetterSink.RecordPasswordSyncFailure(ctx, entry)
+}
+
+func (w *Worker) abandonAfterDeadLetterFailure(ctx context.Context, msg *Message, operation string, err error) error {
+	recordErr := fmt.Errorf("%s: %w", operation, err)
+	if abandonErr := w.receiver.AbandonMessage(ctx, msg); abandonErr != nil {
+		return errors.Join(recordErr, fmt.Errorf("abandon worker message after dead-letter failure: %w", abandonErr))
+	}
+	return recordErr
 }
 
 func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, error) {
