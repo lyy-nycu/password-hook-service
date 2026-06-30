@@ -30,7 +30,6 @@ type serviceBusReceiver interface {
 	ReceiveMessages(context.Context, int, *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error)
 	CompleteMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.CompleteMessageOptions) error
 	AbandonMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.AbandonMessageOptions) error
-	DeadLetterMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.DeadLetterOptions) error
 	Close(context.Context) error
 }
 
@@ -210,24 +209,6 @@ func (r *Receiver) AbandonMessage(ctx context.Context, msg *worker.Message) erro
 		return err
 	}
 	if err := r.receiver.AbandonMessage(ctx, native, nil); err != nil {
-		return err
-	}
-	delete(r.native, msg)
-	return nil
-}
-
-func (r *Receiver) DeadLetterMessage(ctx context.Context, msg *worker.Message, reason string, description string) error {
-	if err := r.ensureNativeReceiver(); err != nil {
-		return err
-	}
-	native, err := r.nativeMessage(msg)
-	if err != nil {
-		return err
-	}
-	if err := r.receiver.DeadLetterMessage(ctx, native, &azservicebus.DeadLetterOptions{
-		Reason:           &reason,
-		ErrorDescription: &description,
-	}); err != nil {
 		return err
 	}
 	delete(r.native, msg)

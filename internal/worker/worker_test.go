@@ -35,8 +35,8 @@ func TestWorkerSuccessCompletesAndProcessesDecodedMessage(t *testing.T) {
 	if receiver.completed != 1 {
 		t.Fatalf("completed = %d, want 1", receiver.completed)
 	}
-	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
+	if receiver.abandoned != 0 {
+		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
 	}
 }
 
@@ -64,8 +64,8 @@ func TestWorkerRetryableProcessorErrorRetriesThenSafeDLQ(t *testing.T) {
 	if deadLetters.entries[0].Reason != DeadLetterReasonTransientRetriesExhausted {
 		t.Fatalf("safe DLQ reason = %q, want %q", deadLetters.entries[0].Reason, DeadLetterReasonTransientRetriesExhausted)
 	}
-	if receiver.completed != 1 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
+	if receiver.completed != 1 || receiver.abandoned != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
 	}
 }
 
@@ -96,14 +96,14 @@ func TestWorkerPermanentProcessorErrorRecordsSafeDLQWithFixedMetadata(t *testing
 	if entry.Reason != "permanent_processor_error" {
 		t.Fatalf("safe DLQ reason = %q, want permanent_processor_error", entry.Reason)
 	}
-	if entry.Description != deadLetterDescriptionPermanentError {
-		t.Fatalf("safe DLQ description = %q, want %q", entry.Description, deadLetterDescriptionPermanentError)
+	if entry.Description != dlqDescriptionPermanentError {
+		t.Fatalf("safe DLQ description = %q, want %q", entry.Description, dlqDescriptionPermanentError)
 	}
 	if strings.Contains(entry.Reason, password) || strings.Contains(entry.Description, password) {
 		t.Fatalf("safe DLQ metadata contains password: reason=%q description=%q", entry.Reason, entry.Description)
 	}
-	if receiver.completed != 1 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
+	if receiver.completed != 1 || receiver.abandoned != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
 	}
 }
 
@@ -189,14 +189,14 @@ func TestWorkerInvalidMessagesRecordSafeDLQ(t *testing.T) {
 			if len(deadLetters.entries) != 1 {
 				t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
 			}
-			if deadLetters.entries[0].Reason != deadLetterReasonInvalidMessageSchema {
-				t.Fatalf("safe DLQ reason = %q, want %q", deadLetters.entries[0].Reason, deadLetterReasonInvalidMessageSchema)
+			if deadLetters.entries[0].Reason != dlqReasonInvalidMessageSchema {
+				t.Fatalf("safe DLQ reason = %q, want %q", deadLetters.entries[0].Reason, dlqReasonInvalidMessageSchema)
 			}
-			if deadLetters.entries[0].Description != deadLetterDescriptionInvalidMessage {
-				t.Fatalf("safe DLQ description = %q, want %q", deadLetters.entries[0].Description, deadLetterDescriptionInvalidMessage)
+			if deadLetters.entries[0].Description != dlqDescriptionInvalidMessage {
+				t.Fatalf("safe DLQ description = %q, want %q", deadLetters.entries[0].Description, dlqDescriptionInvalidMessage)
 			}
-			if receiver.completed != 1 || receiver.deadLettered != 0 {
-				t.Fatalf("unexpected settlements: completed=%d deadLettered=%d", receiver.completed, receiver.deadLettered)
+			if receiver.completed != 1 {
+				t.Fatalf("completed = %d, want 1", receiver.completed)
 			}
 		})
 	}
@@ -246,8 +246,8 @@ func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
 	if receiver.completed != 1 {
 		t.Fatalf("completed = %d, want 1", receiver.completed)
 	}
-	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
+	if receiver.abandoned != 0 {
+		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
 	}
 }
 
@@ -508,8 +508,8 @@ func TestWorkerUsesFreshSettlementContextAfterProcessorCancelsRunContext(t *test
 	if receiver.completed != 1 {
 		t.Fatalf("completed = %d, want 1", receiver.completed)
 	}
-	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
+	if receiver.abandoned != 0 {
+		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
 	}
 }
 
@@ -568,8 +568,8 @@ func TestWorkerEmptyReceiveWaitsBeforePollingAgain(t *testing.T) {
 	if processor.calls != 0 {
 		t.Fatalf("processor calls = %d, want 0", processor.calls)
 	}
-	if receiver.completed != 0 || receiver.abandoned != 0 || receiver.deadLettered != 0 {
-		t.Fatalf("unexpected settlements: completed=%d abandoned=%d deadLettered=%d", receiver.completed, receiver.abandoned, receiver.deadLettered)
+	if receiver.completed != 0 || receiver.abandoned != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
 	}
 
 	cancel()
@@ -673,20 +673,12 @@ func validPasswordSyncMessage() migration.PasswordSyncMessage {
 type fakeReceiver struct {
 	messages []*Message
 
-	completed    int
-	abandoned    int
-	deadLettered int
-
-	deadLetterReason      string
-	deadLetterDescription string
-
-	completeErr   error
-	abandonErr    error
-	deadLetterErr error
-
-	onComplete   func()
-	onAbandon    func()
-	onDeadLetter func()
+	completed   int
+	abandoned   int
+	completeErr error
+	abandonErr  error
+	onComplete  func()
+	onAbandon   func()
 
 	failSettlementsWhenCanceled bool
 }
@@ -732,28 +724,12 @@ func (r *fakeReceiver) AbandonMessage(ctx context.Context, msg *Message) error {
 	return r.abandonErr
 }
 
-func (r *fakeReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reason string, description string) error {
-	if r.failSettlementsWhenCanceled {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
-	r.deadLettered++
-	r.deadLetterReason = reason
-	r.deadLetterDescription = description
-	if r.onDeadLetter != nil {
-		r.onDeadLetter()
-	}
-	return r.deadLetterErr
-}
-
 type emptyBatchReceiver struct {
 	calls     atomic.Int32
 	firstCall chan struct{}
 
-	completed    int
-	abandoned    int
-	deadLettered int
+	completed int
+	abandoned int
 }
 
 func (r *emptyBatchReceiver) ReceiveMessages(ctx context.Context, maxMessages int) ([]*Message, error) {
@@ -770,11 +746,6 @@ func (r *emptyBatchReceiver) CompleteMessage(ctx context.Context, msg *Message) 
 
 func (r *emptyBatchReceiver) AbandonMessage(ctx context.Context, msg *Message) error {
 	r.abandoned++
-	return nil
-}
-
-func (r *emptyBatchReceiver) DeadLetterMessage(ctx context.Context, msg *Message, reason string, description string) error {
-	r.deadLettered++
 	return nil
 }
 

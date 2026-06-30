@@ -18,13 +18,13 @@ const (
 	DeadLetterReasonPermanentProcessor        = "permanent_processor_error"
 	DeadLetterReasonTransientRetriesExhausted = "transient_processor_retries_exhausted"
 
-	deadLetterReasonInvalidMessageSchema  = DeadLetterReasonInvalidMessageSchema
-	deadLetterReasonPermanentProcessor    = DeadLetterReasonPermanentProcessor
-	deadLetterDescriptionInvalidMessage   = "invalid password sync message"
-	deadLetterDescriptionPermanentError   = "permanent processor error"
-	deadLetterDescriptionRetriesExhausted = "transient processor retries exhausted"
-	defaultSettlementTimeout              = 10 * time.Second
-	defaultEmptyReceiveDelay              = 250 * time.Millisecond
+	dlqReasonInvalidMessageSchema  = DeadLetterReasonInvalidMessageSchema
+	dlqReasonPermanentProcessor    = DeadLetterReasonPermanentProcessor
+	dlqDescriptionInvalidMessage   = "invalid password sync message"
+	dlqDescriptionPermanentError   = "permanent processor error"
+	dlqDescriptionRetriesExhausted = "transient processor retries exhausted"
+	defaultSettlementTimeout       = 10 * time.Second
+	defaultEmptyReceiveDelay       = 250 * time.Millisecond
 )
 
 var defaultRetryBackoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
@@ -73,7 +73,7 @@ type Options struct {
 
 type PermanentReason string
 
-const PermanentReasonProcessorError PermanentReason = deadLetterReasonPermanentProcessor
+const PermanentReasonProcessorError PermanentReason = dlqReasonPermanentProcessor
 
 type PermanentError struct {
 	Reason PermanentReason
@@ -229,7 +229,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 			CN:          passwordSyncMessage.CN,
 			UPN:         passwordSyncMessage.UPN,
 			Reason:      DeadLetterReasonPermanentProcessor,
-			Description: deadLetterDescriptionPermanentError,
+			Description: dlqDescriptionPermanentError,
 			Attempts:    result.attempts,
 			EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 			FailedAt:    w.now(),
@@ -249,7 +249,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		CN:          passwordSyncMessage.CN,
 		UPN:         passwordSyncMessage.UPN,
 		Reason:      DeadLetterReasonTransientRetriesExhausted,
-		Description: deadLetterDescriptionRetriesExhausted,
+		Description: dlqDescriptionRetriesExhausted,
 		Attempts:    result.attempts,
 		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 		FailedAt:    w.now(),
@@ -336,13 +336,13 @@ func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, err
 
 func permanentDeadLetterReason(err *PermanentError) string {
 	if err == nil {
-		return deadLetterReasonPermanentProcessor
+		return dlqReasonPermanentProcessor
 	}
 	switch err.Reason {
 	case PermanentReasonProcessorError:
 		return string(err.Reason)
 	default:
-		return deadLetterReasonPermanentProcessor
+		return dlqReasonPermanentProcessor
 	}
 }
 
@@ -350,7 +350,7 @@ func invalidMessageDeadLetterEntry(msg *Message, failedAt time.Time) DeadLetterE
 	entry := DeadLetterEntry{
 		Kind:        passwordSyncKind,
 		Reason:      DeadLetterReasonInvalidMessageSchema,
-		Description: deadLetterDescriptionInvalidMessage,
+		Description: dlqDescriptionInvalidMessage,
 		Attempts:    0,
 		FailedAt:    failedAt,
 	}
