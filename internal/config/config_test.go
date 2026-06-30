@@ -46,6 +46,16 @@ func TestLoadServiceBusDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsServiceBusDeadLetterQueueName(t *testing.T) {
+	t.Setenv("SERVICEBUS_DEADLETTER_QUEUE_NAME", "")
+
+	cfg := Load()
+
+	if cfg.ServiceBusDeadLetterQueueName != "password-sync-dlq" {
+		t.Fatalf("ServiceBusDeadLetterQueueName = %q, want password-sync-dlq", cfg.ServiceBusDeadLetterQueueName)
+	}
+}
+
 func TestValidateRejectsInvalidPortalAllowedCIDR(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +86,17 @@ func TestValidateRequiresServiceBusQueueName(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil || err.Error() != "SERVICEBUS_QUEUE_NAME is required" {
 		t.Fatalf("Validate error = %v, want %q", err, "SERVICEBUS_QUEUE_NAME is required")
+	}
+}
+
+func TestValidateRequiresServiceBusDeadLetterQueueName(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusDeadLetterQueueName = ""
+
+	if err := cfg.Validate(); err == nil || err.Error() != "SERVICEBUS_DEADLETTER_QUEUE_NAME is required" {
+		t.Fatalf("Validate error = %v, want %q", err, "SERVICEBUS_DEADLETTER_QUEUE_NAME is required")
 	}
 }
 
@@ -209,24 +230,25 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 
 func completeConfig() Config {
 	return Config{
-		SecretsSource:              SecretsSourceEnv,
-		KeyVaultURL:                "",
-		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
-		HTTPAddr:                   ":8080",
-		HMACSecret:                 "shared-secret",
-		EntraPrimaryDomain:         "nycu.edu.tw",
-		EntraFallbackDomain:        "nycu.onmicrosoft.com",
-		ProblemBaseURL:             "https://nycu.edu.tw/problems",
-		HMACClockSkew:              30 * time.Second,
-		NonceTTL:                   60 * time.Second,
-		PortalAllowedCIDRs:         nil,
-		RateLimitPerIP:             500,
-		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: testServiceBusConnectionString,
-		ServiceBusQueueName:        "password-sync",
-		PasswordMessageTTL:         300 * time.Second,
-		GraphTenantID:              "tenant-id",
-		GraphClientID:              "client-id",
-		GraphClientSecret:          "graph-client-secret",
+		SecretsSource:                 SecretsSourceEnv,
+		KeyVaultURL:                   "",
+		KeyVaultSecretNames:           KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
+		HTTPAddr:                      ":8080",
+		HMACSecret:                    "shared-secret",
+		EntraPrimaryDomain:            "nycu.edu.tw",
+		EntraFallbackDomain:           "nycu.onmicrosoft.com",
+		ProblemBaseURL:                "https://nycu.edu.tw/problems",
+		HMACClockSkew:                 30 * time.Second,
+		NonceTTL:                      60 * time.Second,
+		PortalAllowedCIDRs:            nil,
+		RateLimitPerIP:                500,
+		RateLimitWindow:               time.Second,
+		ServiceBusConnectionString:    testServiceBusConnectionString,
+		ServiceBusQueueName:           "password-sync",
+		ServiceBusDeadLetterQueueName: "password-sync-dlq",
+		PasswordMessageTTL:            300 * time.Second,
+		GraphTenantID:                 "tenant-id",
+		GraphClientID:                 "client-id",
+		GraphClientSecret:             "graph-client-secret",
 	}
 }
