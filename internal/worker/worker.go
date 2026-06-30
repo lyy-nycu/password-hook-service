@@ -18,12 +18,13 @@ const (
 	DeadLetterReasonPermanentProcessor        = "permanent_processor_error"
 	DeadLetterReasonTransientRetriesExhausted = "transient_processor_retries_exhausted"
 
-	deadLetterReasonInvalidMessageSchema = DeadLetterReasonInvalidMessageSchema
-	deadLetterReasonPermanentProcessor   = DeadLetterReasonPermanentProcessor
-	deadLetterDescriptionInvalidMessage  = "invalid password sync message"
-	deadLetterDescriptionPermanentError  = "permanent processor error"
-	defaultSettlementTimeout             = 10 * time.Second
-	defaultEmptyReceiveDelay             = 250 * time.Millisecond
+	deadLetterReasonInvalidMessageSchema  = DeadLetterReasonInvalidMessageSchema
+	deadLetterReasonPermanentProcessor    = DeadLetterReasonPermanentProcessor
+	deadLetterDescriptionInvalidMessage   = "invalid password sync message"
+	deadLetterDescriptionPermanentError   = "permanent processor error"
+	deadLetterDescriptionRetriesExhausted = "transient processor retries exhausted"
+	defaultSettlementTimeout              = 10 * time.Second
+	defaultEmptyReceiveDelay              = 250 * time.Millisecond
 )
 
 var defaultRetryBackoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
@@ -201,8 +202,8 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	err = w.processor.ProcessPasswordSync(ctx, passwordSyncMessage)
-	if err == nil {
+	result := w.processPasswordSync(ctx, passwordSyncMessage)
+	if result.err == nil {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -211,32 +212,82 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	var permanentErr *PermanentError
-	if errors.As(err, &permanentErr) {
-		reason := permanentDeadLetterReason(permanentErr)
+	if result.retryCanceled {
+		settleCtx, cancel := w.settlementContext()
+		defer cancel()
+		if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
+			return fmt.Errorf("abandon worker message: %w", settleErr)
+		}
+		return nil
+	}
+
+	if result.permanent {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
 			Kind:        passwordSyncKind,
 			CN:          passwordSyncMessage.CN,
 			UPN:         passwordSyncMessage.UPN,
-			Reason:      reason,
+			Reason:      DeadLetterReasonPermanentProcessor,
 			Description: deadLetterDescriptionPermanentError,
-			Attempts:    1,
+			Attempts:    result.attempts,
 			EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 			FailedAt:    w.now(),
 		}); settleErr != nil {
 			return fmt.Errorf("record permanent worker message dead-letter: %w", settleErr)
+		}
+		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
+			return fmt.Errorf("complete permanent worker message: %w", settleErr)
 		}
 		return nil
 	}
 
 	settleCtx, cancel := w.settlementContext()
 	defer cancel()
-	if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
-		return fmt.Errorf("abandon worker message: %w", settleErr)
+	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
+		Kind:        passwordSyncKind,
+		CN:          passwordSyncMessage.CN,
+		UPN:         passwordSyncMessage.UPN,
+		Reason:      DeadLetterReasonTransientRetriesExhausted,
+		Description: deadLetterDescriptionRetriesExhausted,
+		Attempts:    result.attempts,
+		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
+		FailedAt:    w.now(),
+	}); settleErr != nil {
+		return fmt.Errorf("record exhausted worker message dead-letter: %w", settleErr)
+	}
+	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
+		return fmt.Errorf("complete exhausted worker message: %w", settleErr)
 	}
 	return nil
+}
+
+type processorResult struct {
+	err           error
+	attempts      int
+	permanent     bool
+	retryCanceled bool
+}
+
+func (w *Worker) processPasswordSync(ctx context.Context, msg migration.PasswordSyncMessage) processorResult {
+	for attempts := 1; ; attempts++ {
+		err := w.processor.ProcessPasswordSync(ctx, msg)
+		if err == nil {
+			return processorResult{attempts: attempts}
+		}
+
+		var permanentErr *PermanentError
+		if errors.As(err, &permanentErr) {
+			return processorResult{err: permanentErr, attempts: attempts, permanent: true}
+		}
+
+		if attempts > len(w.retryBackoffs) {
+			return processorResult{err: err, attempts: attempts}
+		}
+		if sleepErr := w.sleep(ctx, w.retryBackoffs[attempts-1]); sleepErr != nil {
+			return processorResult{err: sleepErr, attempts: attempts, retryCanceled: true}
+		}
+	}
 }
 
 func (w *Worker) settlementContext() (context.Context, context.CancelFunc) {

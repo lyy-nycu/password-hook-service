@@ -194,7 +194,7 @@ func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
 	receiver := &fakeReceiver{messages: []*Message{{Kind: passwordSyncKind, Body: body}}}
 	receiver.onComplete = cancel
 	processor := &fakeProcessor{}
-	deadLetters := &fakeDeadLetterSink{}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
 	worker, err := New(receiver, processor, Options{
 		MaxMessages:    10,
 		DeadLetterSink: deadLetters,
@@ -232,6 +232,163 @@ func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
 	}
 	if receiver.abandoned != 0 || receiver.deadLettered != 0 {
 		t.Fatalf("unexpected settlements: abandoned=%d deadLettered=%d", receiver.abandoned, receiver.deadLettered)
+	}
+}
+
+func TestWorkerRetriesTransientProcessorErrorsBeforeSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onComplete = cancel
+	receiver.onAbandon = cancel
+	processor := &fakeProcessor{errs: []error{
+		errors.New("graph temporarily unavailable"),
+		errors.New("graph still unavailable"),
+		nil,
+	}}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 3 {
+		t.Fatalf("processor calls = %d, want 3", processor.calls)
+	}
+	assertDurations(t, sleeper.durations, []time.Duration{time.Second, 2 * time.Second})
+	if receiver.completed != 1 {
+		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+	if receiver.abandoned != 0 {
+		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
+	}
+	if len(deadLetters.entries) != 0 {
+		t.Fatalf("safe DLQ entries = %d, want 0", len(deadLetters.entries))
+	}
+}
+
+func TestWorkerRetriesTransientProcessorErrorsThenSafeDLQ(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := validPasswordSyncMessage()
+	msg.Password = "secret"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	receiver.onAbandon = cancel
+	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 4 {
+		t.Fatalf("processor calls = %d, want 4", processor.calls)
+	}
+	assertDurations(t, sleeper.durations, []time.Duration{time.Second, 2 * time.Second, 4 * time.Second})
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	entry := deadLetters.entries[0]
+	if entry.Reason != DeadLetterReasonTransientRetriesExhausted {
+		t.Fatalf("safe DLQ reason = %q, want %q", entry.Reason, DeadLetterReasonTransientRetriesExhausted)
+	}
+	if entry.Attempts != 4 {
+		t.Fatalf("safe DLQ attempts = %d, want 4", entry.Attempts)
+	}
+	body, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal DeadLetterEntry returned error: %v", err)
+	}
+	if strings.Contains(string(body), "secret") || strings.Contains(string(body), `"password"`) {
+		t.Fatalf("safe DLQ entry leaked password data: %s", body)
+	}
+	if receiver.completed != 1 {
+		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+	if receiver.abandoned != 0 {
+		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
+	}
+}
+
+func TestWorkerPermanentProcessorErrorSkipsRetryAndSafeDLQ(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 1 {
+		t.Fatalf("processor calls = %d, want 1", processor.calls)
+	}
+	if len(sleeper.durations) != 0 {
+		t.Fatalf("sleeps = %v, want none", sleeper.durations)
+	}
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	entry := deadLetters.entries[0]
+	if entry.Reason != DeadLetterReasonPermanentProcessor {
+		t.Fatalf("safe DLQ reason = %q, want %q", entry.Reason, DeadLetterReasonPermanentProcessor)
+	}
+	if entry.Attempts != 1 {
+		t.Fatalf("safe DLQ attempts = %d, want 1", entry.Attempts)
+	}
+	if receiver.completed != 1 {
+		t.Fatalf("completed = %d, want 1", receiver.completed)
+	}
+}
+
+func TestWorkerPermanentProcessorErrorDoesNotTrustSensitiveReason(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	const password = "super-secret-password"
+	msg := validPasswordSyncMessage()
+	msg.Password = password
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReason("graph failed for " + msg.UPN + " with " + password),
+		Err:    errors.New("processor failed"),
+	}}
+	deadLetters := &fakeDeadLetterSink{onRecord: cancel}
+	sleeper := &fakeSleeper{}
+	worker := newPolicyTestWorker(t, receiver, processor, deadLetters, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	entry := deadLetters.entries[0]
+	if entry.Reason != DeadLetterReasonPermanentProcessor {
+		t.Fatalf("safe DLQ reason = %q, want %q", entry.Reason, DeadLetterReasonPermanentProcessor)
+	}
+	if strings.Contains(entry.Reason, password) || strings.Contains(entry.Reason, msg.UPN) {
+		t.Fatalf("safe DLQ reason contains sensitive data: %q", entry.Reason)
+	}
+	if strings.Contains(entry.Description, password) || strings.Contains(entry.Description, msg.UPN) {
+		t.Fatalf("safe DLQ description contains sensitive data: %q", entry.Description)
 	}
 }
 
@@ -375,11 +532,38 @@ func TestNewRequiresDeadLetterSink(t *testing.T) {
 func newTestWorker(t *testing.T, receiver Receiver, processor Processor) *Worker {
 	t.Helper()
 
-	worker, err := New(receiver, processor, Options{MaxMessages: 10})
+	worker, err := New(receiver, processor, Options{MaxMessages: 10, DeadLetterSink: &fakeDeadLetterSink{}})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
 	}
 	return worker
+}
+
+func newPolicyTestWorker(t *testing.T, receiver Receiver, processor Processor, deadLetters *fakeDeadLetterSink, sleeper *fakeSleeper) *Worker {
+	t.Helper()
+
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:    10,
+		DeadLetterSink: deadLetters,
+		Sleep:          sleeper.Sleep,
+		Now:            func() time.Time { return time.Date(2026, 6, 29, 9, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return worker
+}
+
+func assertDurations(t *testing.T, got []time.Duration, want []time.Duration) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("durations = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("durations = %v, want %v", got, want)
+		}
+	}
 }
 
 func workerMessage(t *testing.T, msg migration.PasswordSyncMessage) *Message {
@@ -519,18 +703,34 @@ func (r *emptyBatchReceiver) DeadLetterMessage(ctx context.Context, msg *Message
 }
 
 type fakeDeadLetterSink struct {
-	entries []DeadLetterEntry
+	entries  []DeadLetterEntry
+	err      error
+	onRecord func()
 }
 
 func (s *fakeDeadLetterSink) RecordPasswordSyncFailure(ctx context.Context, entry DeadLetterEntry) error {
 	s.entries = append(s.entries, entry)
-	return nil
+	if s.onRecord != nil {
+		s.onRecord()
+	}
+	return s.err
+}
+
+type fakeSleeper struct {
+	durations []time.Duration
+	err       error
+}
+
+func (s *fakeSleeper) Sleep(ctx context.Context, delay time.Duration) error {
+	s.durations = append(s.durations, delay)
+	return s.err
 }
 
 type fakeProcessor struct {
 	calls     int
 	messages  []migration.PasswordSyncMessage
 	err       error
+	errs      []error
 	afterCall func()
 }
 
@@ -539,6 +739,11 @@ func (p *fakeProcessor) ProcessPasswordSync(ctx context.Context, msg migration.P
 	p.messages = append(p.messages, msg)
 	if p.afterCall != nil {
 		p.afterCall()
+	}
+	if len(p.errs) > 0 {
+		err := p.errs[0]
+		p.errs = p.errs[1:]
+		return err
 	}
 	return p.err
 }
