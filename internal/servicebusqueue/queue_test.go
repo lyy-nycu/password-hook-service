@@ -1,6 +1,7 @@
 package servicebusqueue
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -20,12 +22,16 @@ func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
 	queue := mustNewQueue(t, sender, 300*time.Second)
 	enqueuedAt := time.Date(2026, 6, 25, 12, 30, 0, 123, time.FixedZone("TST", 8*60*60))
 	msg := migration.PasswordSyncMessage{
-		CN:          "u1234567",
-		UPN:         "u1234567@example.edu",
-		Password:    "not-for-metadata",
-		DisplayName: "Test User",
-		Mail:        "test@example.edu",
-		EnqueuedAt:  enqueuedAt,
+		CN:                 "u1234567",
+		UPN:                "u1234567@example.edu",
+		Password:           "not-for-metadata",
+		PasswordCiphertext: "ciphertext",
+		PasswordNonce:      "nonce",
+		PasswordKeyID:      "password-payload-key-v1",
+		PasswordAlg:        passwordcrypto.AlgorithmAES256GCM,
+		DisplayName:        "Test User",
+		Mail:               "test@example.edu",
+		EnqueuedAt:         enqueuedAt,
 	}
 
 	if err := queue.EnqueuePasswordSync(ctx, msg); err != nil {
@@ -60,12 +66,53 @@ func TestQueueSendsPasswordSyncMessageWithTTL(t *testing.T) {
 	if body.UPN != msg.UPN {
 		t.Fatalf("body UPN = %q, want %q", body.UPN, msg.UPN)
 	}
-	if body.Password != msg.Password {
-		t.Fatalf("body Password = %q, want %q", body.Password, msg.Password)
+	if body.Password != "" {
+		t.Fatalf("body Password = %q, want empty", body.Password)
+	}
+	if body.PasswordCiphertext != msg.PasswordCiphertext || body.PasswordNonce != msg.PasswordNonce || body.PasswordKeyID != msg.PasswordKeyID || body.PasswordAlg != msg.PasswordAlg {
+		t.Fatalf("body encrypted fields = %#v, want fields from %#v", body, msg)
 	}
 
 	assertPasswordSyncMetadata(t, got.ApplicationProperties, msg)
 	assertNoPasswordMetadata(t, got.ApplicationProperties, msg.Password)
+}
+
+func TestQueueRejectsPlaintextPasswordSerialization(t *testing.T) {
+	t.Parallel()
+
+	sender := &captureSender{}
+	queue, err := New(sender, 300*time.Second)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	err = queue.EnqueuePasswordSync(context.Background(), migration.PasswordSyncMessage{
+		CN:                 "311551001",
+		UPN:                "311551001@nycu.edu.tw",
+		Password:           "must-not-be-serialized",
+		PasswordCiphertext: "ciphertext",
+		PasswordNonce:      "nonce",
+		PasswordKeyID:      "password-payload-key-v1",
+		PasswordAlg:        passwordcrypto.AlgorithmAES256GCM,
+		EnqueuedAt:         time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("EnqueuePasswordSync returned error: %v", err)
+	}
+
+	got := sender.message
+	if got == nil {
+		t.Fatal("sent message is nil")
+	}
+	if bytes.Contains(got.Body, []byte("must-not-be-serialized")) || bytes.Contains(got.Body, []byte(`"password"`)) {
+		t.Fatalf("Service Bus body leaks password: %s", got.Body)
+	}
+	for key, value := range got.ApplicationProperties {
+		combined := fmt.Sprintf("%s=%v", key, value)
+		if strings.Contains(combined, "must-not-be-serialized") || strings.Contains(strings.ToLower(combined), "ciphertext") || strings.Contains(strings.ToLower(combined), "nonce") {
+			t.Fatalf("Service Bus application property leaks password material: %s", combined)
+		}
+	}
 }
 
 func TestQueuePropagatesSendError(t *testing.T) {
