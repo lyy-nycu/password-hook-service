@@ -6,6 +6,8 @@
 
 **Planning Rule:** Keep this roadmap high level. Do not expand every slice into code/test steps here. Create a separate detailed implementation plan only for the next active slice.
 
+**Agent Entry Point:** Read `docs/superpowers/plans/README.md` before choosing a detailed plan.
+
 ---
 
 ## Slice Sequence
@@ -31,7 +33,9 @@
 
 Current active slice:
 
-- Slice 5: `docs/superpowers/plans/2026-06-29-retry-dlq-policy.md`
+- Security Realignment: `active/2026-07-01-password-payload-encryption-realignment.md`
+
+This realignment must complete before Slice 6 because the queue payload schema and worker terminal failure behavior changed after ADR 2026-07-01. It supersedes execution of `superseded/2026-06-29-slice-05-retry-dlq-policy.md` and `superseded/2026-06-30-password-payload-encryption.md`, and it reworks the password-related assumptions from Slices 2 and 4.
 
 ---
 
@@ -53,12 +57,13 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 
 | Slice | Status | Detailed Plan | Commit/Notes |
 |---|---|---|---|
-| Project Structure Scaffold | Done | `2026-06-24-password-hook-service-project-structure.md` | `92ba9aa feat: scaffold password hook service foundation` |
-| 1. M1 Foundation Hardening | Done | `2026-06-24-m1-foundation-hardening.md` | Review fixes applied locally; full `go test ./... && go vet ./...` passed |
-| 2. Producer to Service Bus | Done | `2026-06-25-producer-servicebus.md` | Producer-side Service Bus enqueueing verified and reviewed |
-| 3. Secret Loading | Done | `2026-06-26-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
-| 4. Worker Queue Consumption | Done | `2026-06-27-worker-queue-consumption.md` | Worker receive loop, Service Bus receiver adapter, permanent DLQ reason hardening, and shutdown-safe settlement verified with `go test ./...` and `go vet ./...` |
-| 5. Retry and DLQ Policy | Planned | `2026-06-29-retry-dlq-policy.md` | Plan prepared from design, roadmap, and git log after Slice 4 merge |
+| Project Structure Scaffold | Done | `completed/2026-06-24-project-structure.md` | `92ba9aa feat: scaffold password hook service foundation` |
+| 1. M1 Foundation Hardening | Done | `completed/2026-06-24-slice-01-m1-foundation-hardening.md` | Review fixes applied locally; full `go test ./... && go vet ./...` passed |
+| 2. Producer to Service Bus | Completed / Partially Superseded | `completed/2026-06-25-slice-02-producer-servicebus.md` | Producer-side Service Bus patterns remain useful; plaintext queue schema superseded by Security Realignment |
+| 3. Secret Loading | Completed / Partially Superseded | `completed/2026-06-26-slice-03-secret-loading.md` | Key Vault/Managed Identity patterns remain useful; password payload encryption key loading added by Security Realignment |
+| 4. Worker Queue Consumption | Completed / Partially Superseded | `completed/2026-06-27-slice-04-worker-queue-consumption.md` | Worker loop and receiver adapter patterns remain useful; plaintext decode/native DLQ assumptions superseded by Security Realignment |
+| Security Realignment | Planned | `active/2026-07-01-password-payload-encryption-realignment.md` | Rechecks and reworks Slices 2/3/4/5/7 for encrypted queue payloads, decrypt-per-attempt worker behavior, and application safe DLQ |
+| 5. Retry and DLQ Policy | Superseded | `superseded/2026-06-29-slice-05-retry-dlq-policy.md` | Do not execute; safe DLQ intent retained in Security Realignment |
 | 6. Microsoft Graph Client | Not planned | Not created |  |
 | 7. Password Data Protection | Not planned | Not created |  |
 | 8. Observability | Not planned | Not created |  |

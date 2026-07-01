@@ -1,5 +1,13 @@
 # Worker Queue Consumption Implementation Plan
 
+> **Plan Status:** Completed / Partially Superseded
+>
+> **Use For:** Worker receive loop and Service Bus receiver adapter patterns.
+>
+> **Do Not Use For:** Password sync decode schema, decrypt behavior, or terminal failure behavior.
+>
+> **Replacement:** `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+
 **Goal:** Consume `password-sync` Service Bus jobs through a worker-owned receiver interface, decode `migration.PasswordSyncMessage`, dispatch to a processor interface, and settle messages according to the processor outcome.
 
 **Architecture:** Keep worker behavior in `internal/worker` with no Azure SDK dependency. Add the Azure Service Bus receiver adapter in `internal/servicebusqueue`, converting native `azservicebus.ReceivedMessage` values into worker messages and mapping worker settlement calls back to native settlement APIs. Do not start the worker from `cmd/server` yet because Graph processing and password-safe DLQ handling are later slices.
@@ -18,7 +26,7 @@
 - Create: `internal/worker/worker_test.go` - cover success, retryable failure, permanent failure, invalid schema, context cancellation, and settlement failures.
 - Modify: `internal/servicebusqueue/queue.go` - add receiver adapter construction, receive, complete, abandon, dead-letter, and close behavior while preserving producer APIs.
 - Modify: `internal/servicebusqueue/queue_test.go` - cover receiver creation error wrapping, abandon, message ownership errors, nil receiver behavior, and close behavior for receiver plus client.
-- Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md` - point to this plan and record slice 4 completion after verification.
+- Modify: `docs/superpowers/plans/roadmap.md` - point to this plan and record slice 4 completion after verification.
 
 ---
 

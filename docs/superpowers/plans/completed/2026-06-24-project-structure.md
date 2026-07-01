@@ -1,5 +1,11 @@
 # Password Hook Service Project Structure Implementation Plan
 
+> **Plan Status:** Completed
+>
+> **Use For:** Historical project scaffold context.
+>
+> **Do Not Use For:** Current implementation work; read `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md` first.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the initial Go project structure from the approved design document with a compiling M1 foundation.

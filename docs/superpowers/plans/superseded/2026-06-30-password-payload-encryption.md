@@ -1,5 +1,11 @@
 # Password Payload Encryption Implementation Plan
 
+> **Plan Status:** Superseded
+>
+> **Do Not Execute:** Use `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md` instead.
+>
+> **Historical Value:** This file remains design input for the realignment plan and ADR.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ensure Azure Service Bus and native DLQ never store cleartext passwords by encrypting password payloads at the application layer before enqueue and decrypting only inside the worker immediately before Microsoft Graph processing.

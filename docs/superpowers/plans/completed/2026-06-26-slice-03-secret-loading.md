@@ -1,5 +1,11 @@
 # Secret Loading Implementation Plan
 
+> **Plan Status:** Completed / Partially Superseded
+>
+> **Use For:** Key Vault and local env secret loading patterns.
+>
+> **Do Not Use For:** Complete current secret requirements; password payload encryption key loading is added by `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Load runtime secrets through Azure Key Vault with Managed Identity for production while requiring an explicit local `SECRETS_SOURCE=env` fallback for development and tests.
@@ -26,7 +32,7 @@
 - Modify: `internal/app/app_test.go` - update complete config helper with newly required resolved fields.
 - Modify: `README.md` - document `SECRETS_SOURCE=env`, `SECRETS_SOURCE=keyvault`, Key Vault secret names, Graph credential variables, and local run commands.
 - Modify: `deploy/docker-compose.yml` - make local fallback explicit and include required local development values.
-- Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md` - mark Slice 3 as planned/active during implementation and done after verification.
+- Modify: `docs/superpowers/plans/roadmap.md` - mark Slice 3 as planned/active during implementation and done after verification.
 
 ---
 
@@ -815,7 +821,7 @@ git commit -m "feat: resolve runtime secrets at startup"
 **Files:**
 - Modify: `README.md`
 - Modify: `deploy/docker-compose.yml`
-- Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`
+- Modify: `docs/superpowers/plans/roadmap.md`
 
 - [x] **Step 1: Update README current scope**
 
@@ -937,22 +943,22 @@ environment:
 
 - [x] **Step 6: Update roadmap active slice**
 
-In `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`, change the active plan to:
+In `docs/superpowers/plans/roadmap.md`, change the active plan to:
 
 ```markdown
-- Slice 3: `docs/superpowers/plans/2026-06-26-secret-loading.md`
+- Slice 3: `docs/superpowers/plans/completed/2026-06-26-slice-03-secret-loading.md`
 ```
 
 Update the Slice 3 row:
 
 ```markdown
-| 3. Secret Loading | Planned | `2026-06-26-secret-loading.md` | Loads runtime secrets via Key Vault/Managed Identity with explicit local env fallback |
+| 3. Secret Loading | Planned | `completed/2026-06-26-slice-03-secret-loading.md` | Loads runtime secrets via Key Vault/Managed Identity with explicit local env fallback |
 ```
 
 - [x] **Step 7: Commit**
 
 ```bash
-git add README.md deploy/docker-compose.yml docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
+git add README.md deploy/docker-compose.yml docs/superpowers/plans/roadmap.md
 git commit -m "docs: document secret loading configuration"
 ```
 
@@ -996,16 +1002,16 @@ Expected: branch remains the active slice branch or the executor-created slice 3
 
 - [x] **Step 4: Mark Slice 3 done after verification**
 
-After all tests pass and review fixes are applied, update `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`:
+After all tests pass and review fixes are applied, update `docs/superpowers/plans/roadmap.md`:
 
 ```markdown
-| 3. Secret Loading | Done | `2026-06-26-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
+| 3. Secret Loading | Done | `completed/2026-06-26-slice-03-secret-loading.md` | Key Vault/Managed Identity secret loading verified; explicit local env fallback documented |
 ```
 
 - [x] **Step 5: Final commit**
 
 ```bash
-git add docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
+git add docs/superpowers/plans/roadmap.md
 git commit -m "docs: mark secret loading slice complete"
 ```
 

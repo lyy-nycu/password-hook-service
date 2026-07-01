@@ -1,5 +1,11 @@
 # Retry and DLQ Policy Implementation Plan
 
+> **Plan Status:** Superseded
+>
+> **Do Not Execute:** Use `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md` instead.
+>
+> **Historical Value:** Safe DLQ direction is retained, but worker schema validation, decrypt-per-attempt behavior, and native DLQ removal must be implemented through the realignment plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement Slice 5 retry and dead-letter behavior so transient processor failures retry with 1s/2s/4s backoff and terminal failures are written to a password-safe DLQ payload.
@@ -28,7 +34,7 @@
 - Modify: `internal/servicebusqueue/queue_test.go` - update receiver tests after native DLQ removal.
 - Modify: `internal/config/config.go` - add `SERVICEBUS_DEADLETTER_QUEUE_NAME`.
 - Modify: `internal/config/config_test.go` - cover dead-letter queue config default and validation.
-- Modify after implementation: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md` - mark Slice 5 done only after verification passes.
+- Modify after implementation: `docs/superpowers/plans/roadmap.md` - mark Slice 5 done only after verification passes.
 
 ## Code Schema And Quality Spec
 
@@ -283,7 +289,7 @@ Do not serialize:
 
 ## Task 7: Final Verification And Roadmap Update
 
-**Files:** modify `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`; modify this plan.
+**Files:** modify `docs/superpowers/plans/roadmap.md`; modify this plan.
 
 - [ ] **Step 1: Run full verification**
   - Run: `go test ./...`
@@ -296,9 +302,9 @@ Do not serialize:
   - Expected: password references are limited to password sync processing, test leak assertions, and `json:"-"` on `DeadLetterEntry.Password`; no `DeadLetterMessage` or `DeadLetterOptions` remains in the password sync worker path.
 
 - [ ] **Step 3: Update docs and commit**
-  - Update Slice 5 roadmap row only after verification: `| 5. Retry and DLQ Policy | Done | \`2026-06-29-retry-dlq-policy.md\` | Safe DLQ payload excludes password; retry policy verified with \`go test ./...\` and \`go vet ./...\` |`
+  - Update Slice 5 roadmap row only after verification: `| 5. Retry and DLQ Policy | Done | \`superseded/2026-06-29-slice-05-retry-dlq-policy.md\` | Safe DLQ payload excludes password; retry policy verified with \`go test ./...\` and \`go vet ./...\` |`
   - Check off completed tasks in this file.
-  - Commit: `git add docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md docs/superpowers/plans/2026-06-29-retry-dlq-policy.md && git commit -m "docs: mark retry and DLQ policy slice complete"`
+  - Commit: `git add docs/superpowers/plans/roadmap.md docs/superpowers/plans/superseded/2026-06-29-slice-05-retry-dlq-policy.md && git commit -m "docs: mark retry and DLQ policy slice complete"`
 
 ## Out Of Scope
 

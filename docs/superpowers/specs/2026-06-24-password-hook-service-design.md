@@ -53,8 +53,8 @@ This approach:
 │  │                                                          │  │
 │  │  ┌────────────┐  enqueue  ┌───────────────────────────┐  │  │
 │  │  │ HTTP Server│──────────►│  Azure Service Bus Queue  │  │  │
-│  │  │ (producer) │           │  message TTL: 300s        │  │  │
-│  │  └────────────┘           │  Dead-Letter Queue (DLQ)  │  │  │
+│  │  │ (producer) │ encrypted │  ciphertext TTL: 300s     │  │  │
+│  │  └────────────┘ payloads  │  app safe DLQ only        │  │  │
 │  │                           └──────────┬────────────────┘  │  │
 │  │  ┌────────────┐  dequeue             │                   │  │
 │  │  │   Worker   │◄────────────────────┘                    │  │
@@ -68,8 +68,8 @@ This approach:
 │  │  API              │    │  - HMAC Shared Secret           │  │
 │  └────────┬──────────┘    │  - Graph API Client Secret      │  │
 │           │               │  - Service Bus Connection String│  │
-│  ┌────────▼──────────┐    └─────────────────────────────────┘  │
-│  │    Entra ID        │                                         │
+│  ┌────────▼──────────┐    │  - Password Payload Key         │  │
+│  │    Entra ID        │    └─────────────────────────────────┘  │
 │  │  Create / Update  │                                         │
 │  └───────────────────┘                                         │
 └─────────────────────────────────────────────────────────────────┘
@@ -80,7 +80,7 @@ This approach:
 | Principle | Implementation |
 |-----------|---------------|
 | Zero impact on login UX | Portal uses fire-and-forget HTTP call (3s timeout), never awaits result |
-| Password never persists | TTL-bounded in Service Bus (300s auto-expire), zeroed in memory after processing, never written to any log or storage |
+| Password never persists | Application-level encrypted before enqueue; Service Bus stores only ciphertext with 300s TTL; plaintext is zeroed after enqueue/processing and never written to logs or storage |
 | Stateless service | ACA instances are stateless; horizontal scaling is safe |
 | Secrets never in code | All secrets from Azure Key Vault via Managed Identity |
 | ISO 27001 compliant | Full audit trail via Azure Monitor; all controls documented |
@@ -122,21 +122,31 @@ All secrets are stored in **Azure Key Vault** and accessed via **ACA Managed Ide
 | HMAC shared secret | `hook-hmac-secret` | Request signing |
 | Graph API client secret | `graph-client-secret` | Entra ID access |
 | Service Bus connection string | `servicebus-conn-str` | Queue access |
+| Password payload encryption key | `password-payload-encryption-key` | AES-256-GCM encryption/decryption of queued password payloads |
 
-Rotation: Any secret can be rotated by updating Key Vault. The service picks up the new value on next restart (or via Key Vault secret versioning with polling).
+Rotation: Any secret can be rotated by updating Key Vault. The service picks up the new value on next restart (or via Key Vault secret versioning with polling). Password payload encryption key rotation is additive first: deploy support for the new key id before retiring any old key that may still protect unexpired queue messages.
 
 ### 3.3 Password Data Protection
 
 ```
 Layer 1 — Transit:       TLS 1.2+ (mandatory)
 Layer 2 — Authenticity:  HMAC-SHA256 request signing
-Layer 3 — Queue:         Service Bus encryption at rest + message TTL 300s (auto-delete)
-Layer 4 — Memory:        Password field zeroed immediately after enqueue
+Layer 3 — Queue:         Application-level AES-256-GCM envelope encryption before enqueue;
+                         Service Bus stores only ciphertext, nonce, algorithm, key id,
+                         and non-secret metadata; message TTL remains 300s
+Layer 4 — Memory:        Hook plaintext zeroed immediately after encryption/enqueue;
+                         worker plaintext exists only for the current Graph attempt
 Layer 5 — Logging:       All log structs use masking: password fields always emit "****"
                          Enforced via custom logger marshaller — not relying on developer discipline
-Layer 6 — DLQ:           Only username (cn) and error reason written to DLQ; password excluded
+Layer 6 — DLQ:           Native Service Bus DLQ is not used for password sync payloads;
+                         application safe DLQ stores only cn, upn, reason, attempts,
+                         and timestamps
 Layer 7 — Audit:         Azure Monitor captures all enqueue/dequeue/success/failure events
 ```
+
+Password queue payloads are application-level encrypted before enqueue. Azure Service Bus stores only authenticated ciphertext, nonce, algorithm, and key id. Service Bus encryption at rest remains enabled, but it is treated as storage-layer protection, not password-field protection.
+
+Service Bus application properties must not contain the cleartext password, password ciphertext, nonce, or any other password-derived material.
 
 ### 3.4 Graph API Permission Scope
 
@@ -152,8 +162,8 @@ Consider narrowing to `User.EnableDisableAccount.All` + `User.ManageIdentities.A
 
 | Control | Implementation |
 |---------|----------------|
-| A.9.4.3 Password management | Password never persists; TTL-bounded in transit |
-| A.10.1.1 Encryption | TLS 1.2+; Service Bus encryption at rest; Key Vault HSM |
+| A.9.4.3 Password management | Password never persists; queued payloads are application-level encrypted and TTL-bounded |
+| A.10.1.1 Encryption | TLS 1.2+; application-level AES-256-GCM for queued password payloads; Service Bus encryption at rest; Key Vault |
 | A.12.6.1 Vulnerability management | gosec, govulncheck, trivy, gitleaks in CI |
 | A.12.4.1 Audit logging | Azure Monitor; structured JSON logs with trace_id |
 | A.13.1.1 Network controls | Site-to-site VPN; HMAC authentication |
@@ -244,37 +254,42 @@ Implemented in `pkg/problem/` for reuse across services.
 [Background, simultaneously]
 6. Hook Service: validate HMAC signature → OK
 7. Hook Service: classify cn
-   → student ID / employee ID: build Service Bus message {cn, password, displayName, mail, ttl=300s}
+   → student ID / employee ID: encrypt password into an AES-256-GCM envelope and build Service Bus message {cn, upn, passwordCiphertext, passwordNonce, passwordKeyId, passwordAlg, displayName, mail, ttl=300s}
    → external email: do not enqueue; log/metric skipped_external_identity; respond 202
 8. Hook Service: enqueue eligible message → Service Bus → respond 202
 9. Worker: dequeue message
 10. Worker: resolve UPN (see §6)
-11. Worker: GET /v1.0/users/{upn} → Graph API
+11. Worker: decrypt password only for the current Graph attempt
+12. Worker: GET /v1.0/users/{upn} → Graph API
     → 404 Not Found: POST /v1.0/users  (create account + set password)
     → 200 OK:        PATCH /v1.0/users/{upn} (update password only)
-12. Worker: on success → log {action:"migrated", cn:"311551001"} → message acked
-13. Worker: zero password field from memory
+13. Worker: zero plaintext password buffer before retry backoff or settlement
+14. Worker: on success → log {action:"migrated", cn:"311551001"} → message acked
 ```
 
 ### 5.2 Message TTL Expiry
 
-If the worker is down and a message sits in the queue for > 300 seconds, Service Bus automatically deletes it. The password is gone — this is intentional. The account will be synced on the user's next login.
+If the worker is down and a message sits in the queue for > 300 seconds, Service Bus automatically deletes it. Only ciphertext is deleted because cleartext passwords are never stored in Service Bus. The account will be synced on the user's next login.
 
 ### 5.3 Failure Path
 
 ```
 Graph API returns transient error (429, 503, network timeout):
   → Retry up to 3 times with exponential backoff (1s, 2s, 4s)
-  → On 3rd failure: message moves to DLQ
+  → Plaintext password is zeroed before each retry backoff
+  → On 3rd failure: write a password-safe application DLQ record, then complete the original message
 
 Graph API returns permanent error (400, 403):
-  → No retry; immediately move to DLQ
+  → No retry; write a password-safe application DLQ record, then complete the original message
 
-DLQ entry:
+Safe DLQ entry:
   { "cn": "311551001", "upn": "311551001@nycu.edu.tw",
-    "error": "403 Forbidden", "attempts": 1, "enqueuedAt": "..." }
-  ← password is NOT recorded in DLQ
+    "reason": "403 Forbidden", "attempts": 1, "enqueuedAt": "...",
+    "failedAt": "..." }
+  ← password and ciphertext are NOT recorded in the safe DLQ
 ```
+
+Native Service Bus DLQ is not used for password sync payloads. Terminal failures are recorded in an application-level safe DLQ message containing only cn, upn, reason, attempts, and timestamps. The original password sync message is completed after the safe DLQ write succeeds.
 
 ---
 
@@ -363,12 +378,14 @@ password-hook-service/
 │   ├── buildinfo/
 │   │   └── buildinfo.go         ← Version, Commit, BuildTime (injected via ldflags)
 │   ├── migration/
-│   │   ├── service.go           ← Core migration policy: enqueue internal accounts, skip external email identities
+│   │   ├── service.go           ← Core migration policy: encrypt and enqueue internal accounts, skip external email identities
 │   │   ├── classifier.go        ← Classify cn as student_id, employee_id, or external_email
 │   │   ├── upn.go               ← Build stable internal UPNs from student/employee IDs
-│   │   └── message.go           ← Service Bus message schema for eligible password sync jobs
+│   │   └── message.go           ← Ciphertext Service Bus message schema for eligible password sync jobs
+│   ├── passwordcrypto/
+│   │   └── codec.go             ← AES-256-GCM envelope encryption for queued password payloads
 │   ├── worker/
-│   │   └── worker.go            ← Service Bus consumer; processes eligible migration jobs and drives Graph API calls
+│   │   └── worker.go            ← Service Bus consumer; decrypts per Graph attempt and drives Graph API calls
 │   ├── graphclient/
 │   │   └── client.go            ← Microsoft Graph API client (create/update user)
 │   └── config/
@@ -413,11 +430,11 @@ password-hook-service/
 | Rate limited | 429 | Retry after `Retry-After` header (max 3x) |
 | Service unavailable | 503 | Exponential backoff: 1s → 2s → 4s |
 | Network timeout | — | Exponential backoff: 1s → 2s → 4s |
-| Bad request | 400 | No retry → DLQ immediately |
-| Forbidden | 403 | No retry → DLQ immediately |
-| External email `cn` | — | Skip before enqueue; record `skipped_external_identity`; no DLQ |
+| Bad request | 400 | No retry; write safe DLQ record, then complete original message |
+| Forbidden | 403 | No retry; write safe DLQ record, then complete original message |
+| External email `cn` | — | Skip before enqueue; record `skipped_external_identity`; no safe DLQ |
 
-After 3 failed retries for transient errors → DLQ.
+After 3 failed retries for transient errors, write a password-safe application DLQ record and complete the original message.
 
 ### 8.2 Rate Limiting (at API Layer)
 

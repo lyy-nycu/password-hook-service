@@ -1,5 +1,11 @@
 # M1 Foundation Hardening Implementation Plan
 
+> **Plan Status:** Completed
+>
+> **Use For:** Historical HTTP foundation and middleware context.
+>
+> **Do Not Use For:** Current implementation work; read `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md` first.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Finish the M1 foundation slice so the password hook service has production-shaped HTTP behavior, validation, request tracing, HMAC authentication, masking logs, and clean configuration before adding Azure Service Bus or Microsoft Graph.

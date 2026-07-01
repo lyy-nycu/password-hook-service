@@ -1,5 +1,13 @@
 # Producer to Service Bus Implementation Plan
 
+> **Plan Status:** Completed / Partially Superseded
+>
+> **Use For:** Service Bus sender setup, TTL, config, and app injection patterns.
+>
+> **Do Not Use For:** Password sync message schema or password payload security requirements.
+>
+> **Replacement:** `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `POST /api/v1/hook/password` enqueue eligible internal password sync jobs to Azure Service Bus with a 300 second message TTL while continuing to skip external email identities without enqueueing.
@@ -48,7 +56,7 @@ Rejected for this slice:
 - Create: `internal/servicebusqueue/queue_test.go` - test JSON body, TTL, metadata, error propagation, and close behavior with fake sender.
 - Modify: `internal/app/app.go` - wire production Service Bus queue and add test injection via `NewWithQueue`.
 - Modify: `internal/app/app_test.go` - use injected fake queue and verify internal enqueue, external skip, and no password logs through the real HTTP path.
-- Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md` - mark Slice 2 as planned/active during implementation and done after verification.
+- Modify: `docs/superpowers/plans/roadmap.md` - mark Slice 2 as planned/active during implementation and done after verification.
 
 ---
 
@@ -816,7 +824,7 @@ git commit -m "feat: wire hook producer to service bus queue"
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`
+- Modify: `docs/superpowers/plans/roadmap.md`
 
 - [x] **Step 1: Update README current scope**
 
@@ -861,18 +869,18 @@ export SERVICEBUS_QUEUE_NAME="password-sync"
 
 - [x] **Step 3: Update roadmap active plan**
 
-Update `docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md`:
+Update `docs/superpowers/plans/roadmap.md`:
 
 ```markdown
 Current active slice:
 
-- Slice 2: `docs/superpowers/plans/2026-06-25-producer-servicebus.md`
+- Slice 2: `docs/superpowers/plans/completed/2026-06-25-slice-02-producer-servicebus.md`
 ```
 
 Update completion tracking:
 
 ```markdown
-| 2. Producer to Service Bus | In progress | `2026-06-25-producer-servicebus.md` | Producer-side Service Bus plan created |
+| 2. Producer to Service Bus | In progress | `completed/2026-06-25-slice-02-producer-servicebus.md` | Producer-side Service Bus plan created |
 ```
 
 Do not mark Slice 2 done until full verification and review are complete.
@@ -880,7 +888,7 @@ Do not mark Slice 2 done until full verification and review are complete.
 - [x] **Step 4: Commit**
 
 ```bash
-git add README.md docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
+git add README.md docs/superpowers/plans/roadmap.md
 git commit -m "docs: document service bus producer configuration"
 ```
 
@@ -940,7 +948,7 @@ Expected: Azure SDK modules are present because Slice 2 introduces Service Bus. 
 If verification changes files or exposes issues, fix them with TDD and commit:
 
 ```bash
-git add Makefile README.md go.mod go.sum internal/config/config.go internal/config/config_test.go internal/servicebusqueue/queue.go internal/servicebusqueue/queue_test.go internal/app/app.go internal/app/app_test.go docs/superpowers/plans/2026-06-24-password-hook-service-roadmap.md
+git add Makefile README.md go.mod go.sum internal/config/config.go internal/config/config_test.go internal/servicebusqueue/queue.go internal/servicebusqueue/queue_test.go internal/app/app.go internal/app/app_test.go docs/superpowers/plans/roadmap.md
 git commit -m "test: verify service bus producer slice"
 ```
 
@@ -952,7 +960,7 @@ Use `superpowers:requesting-code-review` with:
 
 ```text
 Description: Slice 2 producer-side Service Bus enqueueing for password sync jobs.
-Requirements: docs/superpowers/plans/2026-06-25-producer-servicebus.md and Slice 2 roadmap criteria.
+Requirements: docs/superpowers/plans/completed/2026-06-25-slice-02-producer-servicebus.md and Slice 2 roadmap criteria.
 Base SHA: ef9d686
 Head SHA: current HEAD after Slice 2 implementation.
 ```
