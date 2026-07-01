@@ -1,6 +1,6 @@
 # Password Payload Encryption Realignment Implementation Plan
 
-> **Plan Status:** Active
+> **Plan Status:** Completed
 >
 > **Use For:** Current implementation work before continuing to the Microsoft Graph slice.
 >
@@ -76,7 +76,7 @@ Historical slice impact:
 - Create: `internal/passwordcrypto/codec.go`
 - Create: `internal/passwordcrypto/codec_test.go`
 
-- [ ] **Step 1: Write failing codec tests**
+- [x] **Step 1: Write failing codec tests**
 
 Create `internal/passwordcrypto/codec_test.go`:
 
@@ -195,7 +195,7 @@ func TestZeroBytesClearsBuffer(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
 
 Run:
 
@@ -205,7 +205,7 @@ go test ./internal/passwordcrypto -v
 
 Expected: FAIL because `internal/passwordcrypto` does not exist.
 
-- [ ] **Step 3: Implement codec**
+- [x] **Step 3: Implement codec**
 
 Create `internal/passwordcrypto/codec.go`:
 
@@ -308,7 +308,7 @@ func ZeroBytes(buf []byte) {
 }
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 Run:
 
@@ -333,7 +333,7 @@ git commit -m "feat: add password payload encryption codec"
 - Modify: `internal/secretloader/loader.go`
 - Modify: `internal/secretloader/loader_test.go`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add tests covering:
 
@@ -396,7 +396,7 @@ PasswordEncryptionKeyID:      "password-payload-key-v1",
 ServiceBusDeadLetterQueueName: "password-sync-dlq",
 ```
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
 
 Run:
 
@@ -406,7 +406,7 @@ go test ./internal/config -v
 
 Expected: FAIL because config fields do not exist.
 
-- [ ] **Step 3: Implement config**
+- [x] **Step 3: Implement config**
 
 In `internal/config/config.go`, add:
 
@@ -453,7 +453,7 @@ case strings.TrimSpace(c.KeyVaultSecretNames.PasswordEncryptionKey) == "":
 	return errors.New("KEY_VAULT_PASSWORD_ENCRYPTION_KEY_NAME is required when SECRETS_SOURCE=keyvault")
 ```
 
-- [ ] **Step 4: Load Key Vault password encryption secret**
+- [x] **Step 4: Load Key Vault password encryption secret**
 
 In `internal/secretloader/loader.go`, update `resolveKeyVault`:
 
@@ -466,7 +466,7 @@ if err != nil {
 cfg.PasswordEncryptionKeyB64 = passwordEncryptionKey
 ```
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -492,7 +492,7 @@ git commit -m "feat: load password payload encryption config"
 - Modify: `internal/handler/hook_test.go`
 - Modify: `internal/app/app_test.go`
 
-- [ ] **Step 1: Write failing migration test**
+- [x] **Step 1: Write failing migration test**
 
 Add a test that proves enqueue receives ciphertext-only:
 
@@ -541,7 +541,7 @@ func TestServiceEncryptsPasswordBeforeEnqueue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Confirm failure**
+- [x] **Step 2: Confirm failure**
 
 Run:
 
@@ -551,7 +551,7 @@ go test ./internal/migration -run TestServiceEncryptsPasswordBeforeEnqueue -v
 
 Expected: FAIL because `NewService` has no encrypter dependency and `PasswordSyncMessage` still serializes `password`.
 
-- [ ] **Step 3: Update message schema**
+- [x] **Step 3: Update message schema**
 
 In `internal/migration/message.go`:
 
@@ -570,7 +570,7 @@ type PasswordSyncMessage struct {
 }
 ```
 
-- [ ] **Step 4: Update migration service**
+- [x] **Step 4: Update migration service**
 
 In `internal/migration/service.go`, add:
 
@@ -610,7 +610,7 @@ msg.PasswordAlg = env.Algorithm
 msg.Password = ""
 ```
 
-- [ ] **Step 5: Update callers and tests**
+- [x] **Step 5: Update callers and tests**
 
 Update every `migration.NewService(...)` call to pass a codec or fake encrypter:
 
@@ -633,7 +633,7 @@ func (fakePasswordEncrypter) Encrypt(context.Context, []byte, []byte) (passwordc
 }
 ```
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run:
 
@@ -656,7 +656,7 @@ git commit -m "feat: encrypt password before queue enqueue"
 - Modify: `internal/servicebusqueue/queue.go`
 - Modify: `internal/servicebusqueue/queue_test.go`
 
-- [ ] **Step 1: Add serialization guard test**
+- [x] **Step 1: Add serialization guard test**
 
 Add:
 
@@ -697,7 +697,7 @@ func TestQueueRejectsPlaintextPasswordSerialization(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 Run:
 
@@ -707,7 +707,7 @@ go test ./internal/servicebusqueue -run TestQueueRejectsPlaintextPasswordSeriali
 
 Expected: PASS after Task 3 because `Password` is `json:"-"`; if it fails, fix serialization before continuing.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/servicebusqueue/queue.go internal/servicebusqueue/queue_test.go
@@ -724,7 +724,7 @@ git commit -m "test: enforce ciphertext-only service bus payload"
 - Create: `internal/servicebusqueue/deadletter.go`
 - Create: `internal/servicebusqueue/deadletter_test.go`
 
-- [ ] **Step 1: Add safe DLQ worker contract**
+- [x] **Step 1: Add safe DLQ worker contract**
 
 In `internal/worker/worker.go`, replace receiver native DLQ with:
 
@@ -762,7 +762,7 @@ Now            func() time.Time
 Sleep          func(context.Context, time.Duration) error
 ```
 
-- [ ] **Step 2: Add safe DLQ tests**
+- [x] **Step 2: Add safe DLQ tests**
 
 Required worker tests:
 
@@ -778,7 +778,7 @@ Each test must marshal the captured `DeadLetterEntry` and assert it does not con
 []string{`"password"`, "cleartext-password", "passwordCiphertext", "ciphertext"}
 ```
 
-- [ ] **Step 3: Add Service Bus safe DLQ sender**
+- [x] **Step 3: Add Service Bus safe DLQ sender**
 
 Create `internal/servicebusqueue/deadletter.go` with:
 
@@ -799,7 +799,7 @@ func (q *DeadLetterQueue) Close(ctx context.Context) error
 
 `RecordPasswordSyncFailure` must set `entry.Password = ""` before marshaling and must put only `kind`, `cn`, `upn`, and `reason` in application properties.
 
-- [ ] **Step 4: Remove native DLQ API**
+- [x] **Step 4: Remove native DLQ API**
 
 In `internal/servicebusqueue/queue.go`:
 
@@ -807,7 +807,7 @@ In `internal/servicebusqueue/queue.go`:
 - Delete `func (r *Receiver) DeadLetterMessage(...)`.
 - Remove `azservicebus.DeadLetterOptions` from password sync receiver code.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -831,7 +831,7 @@ git commit -m "feat: use password-safe application dlq"
 - Modify: `internal/worker/worker.go`
 - Modify: `internal/worker/worker_test.go`
 
-- [ ] **Step 1: Add decrypter contract**
+- [x] **Step 1: Add decrypter contract**
 
 In `internal/worker/worker.go`:
 
@@ -849,7 +849,7 @@ if options.PasswordDecrypter == nil {
 }
 ```
 
-- [ ] **Step 2: Validate encrypted schema**
+- [x] **Step 2: Validate encrypted schema**
 
 Update `decodePasswordSyncMessage` to require:
 
@@ -876,7 +876,7 @@ if out.Password == "" {
 }
 ```
 
-- [ ] **Step 3: Decrypt per attempt and zero before backoff**
+- [x] **Step 3: Decrypt per attempt and zero before backoff**
 
 For each processor attempt:
 
@@ -898,7 +898,7 @@ passwordcrypto.ZeroBytes(plaintext)
 
 The implementation must zero `plaintext` before sleeping for retry backoff or settling the message.
 
-- [ ] **Step 4: Add lifecycle tests**
+- [x] **Step 4: Add lifecycle tests**
 
 Required worker tests:
 
@@ -911,7 +911,7 @@ func TestWorkerDecryptFailureRecordsSafeDLQWithoutCiphertext(t *testing.T)
 
 The fake sleeper in `TestWorkerDoesNotRetainPlaintextDuringRetryBackoff` must assert active plaintext count is zero before recording sleep.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run:
 
@@ -934,7 +934,7 @@ git commit -m "feat: decrypt password only inside worker attempt"
 - Modify: `internal/app/app.go`
 - Modify: `internal/app/app_test.go`
 
-- [ ] **Step 1: Add app construction tests**
+- [x] **Step 1: Add app construction tests**
 
 Add:
 
@@ -945,7 +945,7 @@ func TestAppHookRouteQueuesCiphertextOnlyMessage(t *testing.T)
 
 `TestAppHookRouteQueuesCiphertextOnlyMessage` must assert captured queue message has empty `Password`, non-empty encrypted fields, and marshaled JSON contains neither `"password"` nor the submitted cleartext.
 
-- [ ] **Step 2: Wire production codec**
+- [x] **Step 2: Wire production codec**
 
 In `internal/app/app.go`:
 
@@ -959,7 +959,7 @@ service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordCodec)
 
 If worker construction is already wired in this branch, pass the same codec as `worker.Options.PasswordDecrypter`.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 Run:
 
@@ -982,7 +982,7 @@ git commit -m "feat: wire password payload encryption"
 - Modify: `docs/superpowers/plans/roadmap.md`
 - Modify: this plan
 
-- [ ] **Step 1: Run full tests**
+- [x] **Step 1: Run full tests**
 
 Run:
 
@@ -993,7 +993,7 @@ go vet ./...
 
 Expected: both PASS.
 
-- [ ] **Step 2: Run leak-focused static scans**
+- [x] **Step 2: Run leak-focused static scans**
 
 Run:
 
@@ -1009,7 +1009,7 @@ Expected:
 - No worker validation requiring plaintext `Password`.
 - Any old-plan hits are inside explicit superseded notices or historical context, not active execution instructions.
 
-- [ ] **Step 3: Update roadmap**
+- [x] **Step 3: Update roadmap**
 
 Update `docs/superpowers/plans/roadmap.md`:
 
@@ -1025,7 +1025,7 @@ After verification passes, add a completion note:
 | Security Realignment | Done | `active/2026-07-01-password-payload-encryption-realignment.md` | Queue payloads encrypted before enqueue; worker decrypts per attempt; native DLQ removed from password sync path; verified with `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/superpowers/plans/roadmap.md docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md
