@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 )
@@ -46,6 +47,22 @@ func TestLoadServiceBusDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadDefaultsPasswordEncryptionConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := Load()
+
+	if cfg.KeyVaultSecretNames.PasswordEncryptionKey != "password-payload-encryption-key" {
+		t.Fatalf("PasswordEncryptionKey secret name = %q", cfg.KeyVaultSecretNames.PasswordEncryptionKey)
+	}
+	if cfg.PasswordEncryptionKeyID != "password-payload-key-v1" {
+		t.Fatalf("PasswordEncryptionKeyID = %q", cfg.PasswordEncryptionKeyID)
+	}
+	if cfg.ServiceBusDeadLetterQueueName != "password-sync-dlq" {
+		t.Fatalf("ServiceBusDeadLetterQueueName = %q", cfg.ServiceBusDeadLetterQueueName)
+	}
+}
+
 func TestValidateRejectsInvalidPortalAllowedCIDR(t *testing.T) {
 	t.Parallel()
 
@@ -76,6 +93,39 @@ func TestValidateRequiresServiceBusQueueName(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil || err.Error() != "SERVICEBUS_QUEUE_NAME is required" {
 		t.Fatalf("Validate error = %v, want %q", err, "SERVICEBUS_QUEUE_NAME is required")
+	}
+}
+
+func TestValidateRequiresPasswordEncryptionKeyB64(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.PasswordEncryptionKeyB64 = ""
+
+	if err := cfg.Validate(); err == nil || err.Error() != "PASSWORD_ENCRYPTION_KEY_B64 is required" {
+		t.Fatalf("Validate error = %v, want PASSWORD_ENCRYPTION_KEY_B64 is required", err)
+	}
+}
+
+func TestValidateRequiresPasswordEncryptionKeyID(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.PasswordEncryptionKeyID = ""
+
+	if err := cfg.Validate(); err == nil || err.Error() != "PASSWORD_ENCRYPTION_KEY_ID is required" {
+		t.Fatalf("Validate error = %v, want PASSWORD_ENCRYPTION_KEY_ID is required", err)
+	}
+}
+
+func TestValidateRequiresServiceBusDeadLetterQueueName(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusDeadLetterQueueName = ""
+
+	if err := cfg.Validate(); err == nil || err.Error() != "SERVICEBUS_DEADLETTER_QUEUE_NAME is required" {
+		t.Fatalf("Validate error = %v, want SERVICEBUS_DEADLETTER_QUEUE_NAME is required", err)
 	}
 }
 
@@ -163,6 +213,19 @@ func TestValidateKeyVaultSourceRequiresGraphClientSecretName(t *testing.T) {
 	}
 }
 
+func TestValidateKeyVaultSourceRequiresPasswordEncryptionKeyName(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.SecretsSource = SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
+	cfg.KeyVaultSecretNames.PasswordEncryptionKey = ""
+
+	if err := cfg.ValidateSecretLoadingInputs(); err == nil || err.Error() != "KEY_VAULT_PASSWORD_ENCRYPTION_KEY_NAME is required when SECRETS_SOURCE=keyvault" {
+		t.Fatalf("ValidateSecretLoadingInputs error = %v, want %q", err, "KEY_VAULT_PASSWORD_ENCRYPTION_KEY_NAME is required when SECRETS_SOURCE=keyvault")
+	}
+}
+
 func TestValidateAllowsMissingGraphCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -202,6 +265,9 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 	if cfg.KeyVaultSecretNames.GraphClientSecret != "graph-client-secret" {
 		t.Fatalf("GraphClientSecret name = %q", cfg.KeyVaultSecretNames.GraphClientSecret)
 	}
+	if cfg.KeyVaultSecretNames.PasswordEncryptionKey != "password-payload-encryption-key" {
+		t.Fatalf("PasswordEncryptionKey name = %q", cfg.KeyVaultSecretNames.PasswordEncryptionKey)
+	}
 	if cfg.GraphTenantID != "tenant-id" || cfg.GraphClientID != "client-id" {
 		t.Fatalf("Graph tenant/client = %q/%q", cfg.GraphTenantID, cfg.GraphClientID)
 	}
@@ -209,24 +275,27 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 
 func completeConfig() Config {
 	return Config{
-		SecretsSource:              SecretsSourceEnv,
-		KeyVaultURL:                "",
-		KeyVaultSecretNames:        KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
-		HTTPAddr:                   ":8080",
-		HMACSecret:                 "shared-secret",
-		EntraPrimaryDomain:         "nycu.edu.tw",
-		EntraFallbackDomain:        "nycu.onmicrosoft.com",
-		ProblemBaseURL:             "https://nycu.edu.tw/problems",
-		HMACClockSkew:              30 * time.Second,
-		NonceTTL:                   60 * time.Second,
-		PortalAllowedCIDRs:         nil,
-		RateLimitPerIP:             500,
-		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: testServiceBusConnectionString,
-		ServiceBusQueueName:        "password-sync",
-		PasswordMessageTTL:         300 * time.Second,
-		GraphTenantID:              "tenant-id",
-		GraphClientID:              "client-id",
-		GraphClientSecret:          "graph-client-secret",
+		SecretsSource:                 SecretsSourceEnv,
+		KeyVaultURL:                   "",
+		KeyVaultSecretNames:           KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret", PasswordEncryptionKey: "password-payload-encryption-key"},
+		HTTPAddr:                      ":8080",
+		HMACSecret:                    "shared-secret",
+		EntraPrimaryDomain:            "nycu.edu.tw",
+		EntraFallbackDomain:           "nycu.onmicrosoft.com",
+		ProblemBaseURL:                "https://nycu.edu.tw/problems",
+		HMACClockSkew:                 30 * time.Second,
+		NonceTTL:                      60 * time.Second,
+		PortalAllowedCIDRs:            nil,
+		RateLimitPerIP:                500,
+		RateLimitWindow:               time.Second,
+		ServiceBusConnectionString:    testServiceBusConnectionString,
+		ServiceBusQueueName:           "password-sync",
+		ServiceBusDeadLetterQueueName: "password-sync-dlq",
+		PasswordMessageTTL:            300 * time.Second,
+		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		PasswordEncryptionKeyID:       "password-payload-key-v1",
+		GraphTenantID:                 "tenant-id",
+		GraphClientID:                 "client-id",
+		GraphClientSecret:             "graph-client-secret",
 	}
 }
