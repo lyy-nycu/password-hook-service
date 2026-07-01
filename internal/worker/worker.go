@@ -9,18 +9,26 @@ import (
 	"time"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 )
 
 const (
 	passwordSyncKind = "password-sync"
 
-	deadLetterReasonInvalidMessageSchema = "invalid_message_schema"
-	deadLetterReasonPermanentProcessor   = "permanent_processor_error"
-	deadLetterDescriptionInvalidMessage  = "invalid password sync message"
-	deadLetterDescriptionPermanentError  = "permanent processor error"
-	defaultSettlementTimeout             = 10 * time.Second
-	defaultEmptyReceiveDelay             = 250 * time.Millisecond
+	DeadLetterReasonInvalidMessageSchema      = "invalid_message_schema"
+	DeadLetterReasonPermanentProcessor        = "permanent_processor_error"
+	DeadLetterReasonTransientRetriesExhausted = "transient_processor_retries_exhausted"
+
+	dlqReasonInvalidMessageSchema  = DeadLetterReasonInvalidMessageSchema
+	dlqReasonPermanentProcessor    = DeadLetterReasonPermanentProcessor
+	dlqDescriptionInvalidMessage   = "invalid password sync message"
+	dlqDescriptionPermanentError   = "permanent processor error"
+	dlqDescriptionRetriesExhausted = "transient processor retries exhausted"
+	defaultSettlementTimeout       = 10 * time.Second
+	defaultEmptyReceiveDelay       = 250 * time.Millisecond
 )
+
+var defaultRetryBackoffs = []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 
 type Message struct {
 	Body []byte
@@ -31,22 +39,47 @@ type Receiver interface {
 	ReceiveMessages(context.Context, int) ([]*Message, error)
 	CompleteMessage(context.Context, *Message) error
 	AbandonMessage(context.Context, *Message) error
-	DeadLetterMessage(context.Context, *Message, string, string) error
 }
 
 type Processor interface {
 	ProcessPasswordSync(context.Context, migration.PasswordSyncMessage) error
 }
 
+type PasswordDecrypter interface {
+	Decrypt(context.Context, passwordcrypto.Envelope, []byte) ([]byte, error)
+}
+
+type DeadLetterEntry struct {
+	Kind        string    `json:"kind"`
+	CN          string    `json:"cn,omitempty"`
+	UPN         string    `json:"upn,omitempty"`
+	Reason      string    `json:"reason"`
+	Description string    `json:"description"`
+	Attempts    int       `json:"attempts"`
+	EnqueuedAt  time.Time `json:"enqueuedAt,omitempty"`
+	FailedAt    time.Time `json:"failedAt"`
+
+	Password string `json:"-"`
+}
+
+type DeadLetterSink interface {
+	RecordPasswordSyncFailure(context.Context, DeadLetterEntry) error
+}
+
 type Options struct {
 	MaxMessages       int
 	SettlementTimeout time.Duration
 	EmptyReceiveDelay time.Duration
+	RetryBackoffs     []time.Duration
+	DeadLetterSink    DeadLetterSink
+	PasswordDecrypter PasswordDecrypter
+	Now               func() time.Time
+	Sleep             func(context.Context, time.Duration) error
 }
 
 type PermanentReason string
 
-const PermanentReasonProcessorError PermanentReason = deadLetterReasonPermanentProcessor
+const PermanentReasonProcessorError PermanentReason = dlqReasonPermanentProcessor
 
 type PermanentError struct {
 	Reason PermanentReason
@@ -76,9 +109,14 @@ func (e *PermanentError) Unwrap() error {
 type Worker struct {
 	receiver          Receiver
 	processor         Processor
+	passwordDecrypter PasswordDecrypter
 	maxMessages       int
 	settlementTimeout time.Duration
 	emptyReceiveDelay time.Duration
+	retryBackoffs     []time.Duration
+	deadLetterSink    DeadLetterSink
+	now               func() time.Time
+	sleep             func(context.Context, time.Duration) error
 }
 
 func New(receiver Receiver, processor Processor, options Options) (*Worker, error) {
@@ -87,6 +125,12 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	}
 	if processor == nil {
 		return nil, errors.New("worker processor is required")
+	}
+	if options.DeadLetterSink == nil {
+		return nil, errors.New("worker dead-letter sink is required")
+	}
+	if options.PasswordDecrypter == nil {
+		return nil, errors.New("worker password decrypter is required")
 	}
 	if options.MaxMessages <= 0 {
 		options.MaxMessages = 1
@@ -97,12 +141,26 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	if options.EmptyReceiveDelay <= 0 {
 		options.EmptyReceiveDelay = defaultEmptyReceiveDelay
 	}
+	if len(options.RetryBackoffs) == 0 {
+		options.RetryBackoffs = defaultRetryBackoffs
+	}
+	if options.Now == nil {
+		options.Now = time.Now
+	}
+	if options.Sleep == nil {
+		options.Sleep = sleep
+	}
 	return &Worker{
 		receiver:          receiver,
 		processor:         processor,
+		passwordDecrypter: options.PasswordDecrypter,
 		maxMessages:       options.MaxMessages,
 		settlementTimeout: options.SettlementTimeout,
 		emptyReceiveDelay: options.EmptyReceiveDelay,
+		retryBackoffs:     append([]time.Duration(nil), options.RetryBackoffs...),
+		deadLetterSink:    options.DeadLetterSink,
+		now:               options.Now,
+		sleep:             options.Sleep,
 	}, nil
 }
 
@@ -138,15 +196,7 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) waitAfterEmptyReceive(ctx context.Context) error {
-	timer := time.NewTimer(w.emptyReceiveDelay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+	return w.sleep(ctx, w.emptyReceiveDelay)
 }
 
 func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
@@ -154,14 +204,17 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	if err != nil {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
-		if settleErr := w.receiver.DeadLetterMessage(settleCtx, msg, deadLetterReasonInvalidMessageSchema, deadLetterDescriptionInvalidMessage); settleErr != nil {
-			return fmt.Errorf("dead-letter invalid worker message: %w", settleErr)
+		if settleErr := w.recordPasswordSyncFailure(settleCtx, invalidMessageDeadLetterEntry(msg, w.now())); settleErr != nil {
+			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record invalid worker message dead-letter", settleErr)
+		}
+		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
+			return fmt.Errorf("complete invalid worker message: %w", settleErr)
 		}
 		return nil
 	}
 
-	err = w.processor.ProcessPasswordSync(ctx, passwordSyncMessage)
-	if err == nil {
+	result := w.processPasswordSync(ctx, passwordSyncMessage)
+	if result.err == nil {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -170,27 +223,98 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	var permanentErr *PermanentError
-	if errors.As(err, &permanentErr) {
-		reason := permanentDeadLetterReason(permanentErr)
+	if result.retryCanceled {
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
-		if settleErr := w.receiver.DeadLetterMessage(settleCtx, msg, reason, deadLetterDescriptionPermanentError); settleErr != nil {
-			return fmt.Errorf("dead-letter permanent worker message: %w", settleErr)
+		if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
+			return fmt.Errorf("abandon worker message: %w", settleErr)
 		}
 		return nil
 	}
 
+	reason := DeadLetterReasonTransientRetriesExhausted
+	description := dlqDescriptionRetriesExhausted
+	if result.permanent {
+		reason = DeadLetterReasonPermanentProcessor
+		description = dlqDescriptionPermanentError
+	}
+
 	settleCtx, cancel := w.settlementContext()
 	defer cancel()
-	if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
-		return fmt.Errorf("abandon worker message: %w", settleErr)
+	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
+		Kind:        passwordSyncKind,
+		CN:          passwordSyncMessage.CN,
+		UPN:         passwordSyncMessage.UPN,
+		Reason:      reason,
+		Description: description,
+		Attempts:    result.attempts,
+		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
+		FailedAt:    w.now(),
+	}); settleErr != nil {
+		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr)
+	}
+	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
+		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}
 	return nil
 }
 
+type processorResult struct {
+	err           error
+	attempts      int
+	permanent     bool
+	retryCanceled bool
+}
+
+func (w *Worker) processPasswordSync(ctx context.Context, msg migration.PasswordSyncMessage) processorResult {
+	for attempts := 1; ; attempts++ {
+		plaintext, err := w.passwordDecrypter.Decrypt(ctx, passwordcrypto.Envelope{
+			Ciphertext: msg.PasswordCiphertext,
+			Nonce:      msg.PasswordNonce,
+			KeyID:      msg.PasswordKeyID,
+			Algorithm:  msg.PasswordAlg,
+		}, migration.PasswordAAD(msg.CN, msg.UPN, msg.EnqueuedAt))
+		if err != nil {
+			return processorResult{err: &PermanentError{Reason: PermanentReasonProcessorError, Err: err}, attempts: attempts, permanent: true}
+		}
+
+		msg.Password = string(plaintext)
+		err = w.processor.ProcessPasswordSync(ctx, msg)
+		msg.Password = ""
+		passwordcrypto.ZeroBytes(plaintext)
+		if err == nil {
+			return processorResult{attempts: attempts}
+		}
+
+		var permanentErr *PermanentError
+		if errors.As(err, &permanentErr) {
+			return processorResult{err: permanentErr, attempts: attempts, permanent: true}
+		}
+
+		if attempts > len(w.retryBackoffs) {
+			return processorResult{err: err, attempts: attempts}
+		}
+		if sleepErr := w.sleep(ctx, w.retryBackoffs[attempts-1]); sleepErr != nil {
+			return processorResult{err: sleepErr, attempts: attempts, retryCanceled: true}
+		}
+	}
+}
+
 func (w *Worker) settlementContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), w.settlementTimeout)
+}
+
+func (w *Worker) recordPasswordSyncFailure(ctx context.Context, entry DeadLetterEntry) error {
+	entry.Password = ""
+	return w.deadLetterSink.RecordPasswordSyncFailure(ctx, entry)
+}
+
+func (w *Worker) abandonAfterDeadLetterFailure(ctx context.Context, msg *Message, operation string, err error) error {
+	recordErr := fmt.Errorf("%s: %w", operation, err)
+	if abandonErr := w.receiver.AbandonMessage(ctx, msg); abandonErr != nil {
+		return errors.Join(recordErr, fmt.Errorf("abandon worker message after dead-letter failure: %w", abandonErr))
+	}
+	return recordErr
 }
 
 func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, error) {
@@ -211,8 +335,17 @@ func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, err
 	if strings.TrimSpace(out.UPN) == "" {
 		return migration.PasswordSyncMessage{}, errors.New("password sync message UPN is required")
 	}
-	if out.Password == "" {
-		return migration.PasswordSyncMessage{}, errors.New("password sync message password is required")
+	if strings.TrimSpace(out.PasswordCiphertext) == "" {
+		return migration.PasswordSyncMessage{}, errors.New("password sync message passwordCiphertext is required")
+	}
+	if strings.TrimSpace(out.PasswordNonce) == "" {
+		return migration.PasswordSyncMessage{}, errors.New("password sync message passwordNonce is required")
+	}
+	if strings.TrimSpace(out.PasswordKeyID) == "" {
+		return migration.PasswordSyncMessage{}, errors.New("password sync message passwordKeyId is required")
+	}
+	if strings.TrimSpace(out.PasswordAlg) == "" {
+		return migration.PasswordSyncMessage{}, errors.New("password sync message passwordAlg is required")
 	}
 	if out.EnqueuedAt.IsZero() {
 		return migration.PasswordSyncMessage{}, errors.New("password sync message EnqueuedAt is required")
@@ -222,12 +355,53 @@ func decodePasswordSyncMessage(msg *Message) (migration.PasswordSyncMessage, err
 
 func permanentDeadLetterReason(err *PermanentError) string {
 	if err == nil {
-		return deadLetterReasonPermanentProcessor
+		return dlqReasonPermanentProcessor
 	}
 	switch err.Reason {
 	case PermanentReasonProcessorError:
 		return string(err.Reason)
 	default:
-		return deadLetterReasonPermanentProcessor
+		return dlqReasonPermanentProcessor
+	}
+}
+
+func invalidMessageDeadLetterEntry(msg *Message, failedAt time.Time) DeadLetterEntry {
+	entry := DeadLetterEntry{
+		Kind:        passwordSyncKind,
+		Reason:      DeadLetterReasonInvalidMessageSchema,
+		Description: dlqDescriptionInvalidMessage,
+		Attempts:    0,
+		FailedAt:    failedAt,
+	}
+	if msg == nil {
+		return entry
+	}
+	if strings.TrimSpace(msg.Kind) != "" {
+		entry.Kind = strings.TrimSpace(msg.Kind)
+	}
+
+	var partial struct {
+		CN         string    `json:"cn"`
+		UPN        string    `json:"upn"`
+		EnqueuedAt time.Time `json:"enqueuedAt"`
+	}
+	if err := json.Unmarshal(msg.Body, &partial); err != nil {
+		return entry
+	}
+	entry.CN = partial.CN
+	entry.UPN = partial.UPN
+	entry.EnqueuedAt = partial.EnqueuedAt
+	return entry
+}
+
+func sleep(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }

@@ -220,26 +220,6 @@ func TestReceiverReceivesAndSettlesServiceBusMessage(t *testing.T) {
 	if serviceBusReceiver.completed != native {
 		t.Fatalf("completed native message = %#v, want %#v", serviceBusReceiver.completed, native)
 	}
-
-	messages, err = receiver.ReceiveMessages(ctx, 1)
-	if err != nil {
-		t.Fatalf("ReceiveMessages returned error: %v", err)
-	}
-	if err := receiver.DeadLetterMessage(ctx, messages[0], "invalid_message_schema", "invalid password sync message"); err != nil {
-		t.Fatalf("DeadLetterMessage returned error: %v", err)
-	}
-	if serviceBusReceiver.deadLettered != native {
-		t.Fatalf("deadLettered native message = %#v, want %#v", serviceBusReceiver.deadLettered, native)
-	}
-	if serviceBusReceiver.deadLetterOptions == nil {
-		t.Fatal("deadLetterOptions = nil")
-	}
-	if serviceBusReceiver.deadLetterOptions.Reason == nil || *serviceBusReceiver.deadLetterOptions.Reason != "invalid_message_schema" {
-		t.Fatalf("dead-letter reason = %v, want invalid_message_schema", serviceBusReceiver.deadLetterOptions.Reason)
-	}
-	if serviceBusReceiver.deadLetterOptions.ErrorDescription == nil || *serviceBusReceiver.deadLetterOptions.ErrorDescription != "invalid password sync message" {
-		t.Fatalf("dead-letter description = %v, want invalid password sync message", serviceBusReceiver.deadLetterOptions.ErrorDescription)
-	}
 }
 
 func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
@@ -266,8 +246,8 @@ func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
 	if serviceBusReceiver.abandoned != native {
 		t.Fatalf("abandoned native message = %#v, want %#v", serviceBusReceiver.abandoned, native)
 	}
-	if serviceBusReceiver.completed != nil || serviceBusReceiver.deadLettered != nil {
-		t.Fatalf("unexpected settlements: completed=%#v deadLettered=%#v", serviceBusReceiver.completed, serviceBusReceiver.deadLettered)
+	if serviceBusReceiver.completed != nil {
+		t.Fatalf("unexpected completed settlement: %#v", serviceBusReceiver.completed)
 	}
 }
 
@@ -287,12 +267,6 @@ func TestReceiverRejectsMessageNotReceivedByReceiver(t *testing.T) {
 		{
 			name:   "abandon",
 			settle: func() error { return receiver.AbandonMessage(ctx, msg) },
-		},
-		{
-			name: "dead-letter",
-			settle: func() error {
-				return receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message")
-			},
 		},
 	}
 
@@ -322,9 +296,6 @@ func TestReceiverWithNilNativeReceiverReturnsErrors(t *testing.T) {
 	}
 	if err := receiver.AbandonMessage(ctx, msg); err == nil || err.Error() != "service bus receiver is required" {
 		t.Fatalf("AbandonMessage error = %v, want service bus receiver is required", err)
-	}
-	if err := receiver.DeadLetterMessage(ctx, msg, "invalid_message_schema", "invalid password sync message"); err == nil || err.Error() != "service bus receiver is required" {
-		t.Fatalf("DeadLetterMessage error = %v, want service bus receiver is required", err)
 	}
 }
 
@@ -507,11 +478,8 @@ func mustNewQueueWithClient(t *testing.T, sender sender, client closer, ttl time
 type captureServiceBusReceiver struct {
 	messages []*azservicebus.ReceivedMessage
 
-	completed    *azservicebus.ReceivedMessage
-	abandoned    *azservicebus.ReceivedMessage
-	deadLettered *azservicebus.ReceivedMessage
-
-	deadLetterOptions *azservicebus.DeadLetterOptions
+	completed *azservicebus.ReceivedMessage
+	abandoned *azservicebus.ReceivedMessage
 
 	closed   int
 	closeErr error
@@ -535,12 +503,6 @@ func (r *captureServiceBusReceiver) CompleteMessage(ctx context.Context, msg *az
 
 func (r *captureServiceBusReceiver) AbandonMessage(ctx context.Context, msg *azservicebus.ReceivedMessage, options *azservicebus.AbandonMessageOptions) error {
 	r.abandoned = msg
-	return nil
-}
-
-func (r *captureServiceBusReceiver) DeadLetterMessage(ctx context.Context, msg *azservicebus.ReceivedMessage, options *azservicebus.DeadLetterOptions) error {
-	r.deadLettered = msg
-	r.deadLetterOptions = options
 	return nil
 }
 
