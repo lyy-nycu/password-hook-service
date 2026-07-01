@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -172,25 +173,28 @@ func (c *captureCloser) Close(ctx context.Context) error {
 
 func completeAppConfig() config.Config {
 	return config.Config{
-		SecretsSource:              config.SecretsSourceEnv,
-		KeyVaultURL:                "",
-		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
-		HTTPAddr:                   ":8080",
-		HMACSecret:                 "shared-secret",
-		EntraPrimaryDomain:         "nycu.edu.tw",
-		EntraFallbackDomain:        "nycu.onmicrosoft.com",
-		ProblemBaseURL:             "https://nycu.edu.tw/problems",
-		HMACClockSkew:              30 * time.Second,
-		NonceTTL:                   60 * time.Second,
-		PortalAllowedCIDRs:         nil,
-		RateLimitPerIP:             500,
-		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: testServiceBusConnectionString,
-		ServiceBusQueueName:        "password-sync",
-		PasswordMessageTTL:         300 * time.Second,
-		GraphTenantID:              "tenant-id",
-		GraphClientID:              "client-id",
-		GraphClientSecret:          "graph-client-secret",
+		SecretsSource:                 config.SecretsSourceEnv,
+		KeyVaultURL:                   "",
+		KeyVaultSecretNames:           config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret", PasswordEncryptionKey: "password-payload-encryption-key"},
+		HTTPAddr:                      ":8080",
+		HMACSecret:                    "shared-secret",
+		EntraPrimaryDomain:            "nycu.edu.tw",
+		EntraFallbackDomain:           "nycu.onmicrosoft.com",
+		ProblemBaseURL:                "https://nycu.edu.tw/problems",
+		HMACClockSkew:                 30 * time.Second,
+		NonceTTL:                      60 * time.Second,
+		PortalAllowedCIDRs:            nil,
+		RateLimitPerIP:                500,
+		RateLimitWindow:               time.Second,
+		ServiceBusConnectionString:    testServiceBusConnectionString,
+		ServiceBusQueueName:           "password-sync",
+		ServiceBusDeadLetterQueueName: "password-sync-dlq",
+		PasswordMessageTTL:            300 * time.Second,
+		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+		PasswordEncryptionKeyID:       "password-payload-key-v1",
+		GraphTenantID:                 "tenant-id",
+		GraphClientID:                 "client-id",
+		GraphClientSecret:             "graph-client-secret",
 	}
 }
 

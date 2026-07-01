@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
@@ -18,7 +19,7 @@ func TestHookEnqueuesInternalStudentID(t *testing.T) {
 	t.Parallel()
 
 	queue := &captureQueue{}
-	service := migration.NewService("nycu.edu.tw", queue)
+	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
 	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
@@ -42,7 +43,7 @@ func TestHookSkipsExternalEmailIdentity(t *testing.T) {
 	t.Parallel()
 
 	queue := &captureQueue{}
-	service := migration.NewService("nycu.edu.tw", queue)
+	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
 	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com"}`)
@@ -63,7 +64,7 @@ func TestHookRejectsUnknownCNAsBadRequest(t *testing.T) {
 	t.Parallel()
 
 	queue := &captureQueue{}
-	service := migration.NewService("nycu.edu.tw", queue)
+	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
 	body := []byte(`{"cn":"bad cn!","password":"secret","displayName":"Bad","mail":"bad@nycu.edu.tw"}`)
@@ -81,7 +82,7 @@ func TestHookRejectsUnknownCNAsBadRequest(t *testing.T) {
 func TestHookQueueFailureReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
-	service := migration.NewService("nycu.edu.tw", failingQueue{})
+	service := migration.NewService("nycu.edu.tw", failingQueue{}, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
 	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
@@ -98,7 +99,7 @@ func TestHookQueueFailureReturnsInternalError(t *testing.T) {
 func TestHookValidationProblemIncludesTraceID(t *testing.T) {
 	t.Parallel()
 
-	service := migration.NewService("nycu.edu.tw", &captureQueue{})
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
 	body := []byte(`{"password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
@@ -134,4 +135,15 @@ type failingQueue struct{}
 
 func (failingQueue) EnqueuePasswordSync(context.Context, migration.PasswordSyncMessage) error {
 	return errors.New("queue unavailable")
+}
+
+type fakePasswordEncrypter struct{}
+
+func (fakePasswordEncrypter) Encrypt(context.Context, []byte, []byte) (passwordcrypto.Envelope, error) {
+	return passwordcrypto.Envelope{
+		Ciphertext: "ciphertext",
+		Nonce:      "nonce",
+		KeyID:      "password-payload-key-v1",
+		Algorithm:  passwordcrypto.AlgorithmAES256GCM,
+	}, nil
 }
