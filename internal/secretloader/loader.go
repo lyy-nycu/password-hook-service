@@ -83,10 +83,15 @@ func resolveKeyVault(ctx context.Context, cfg config.Config, getter Getter) (con
 	if err != nil {
 		return config.Config{}, err
 	}
+	passwordEncryptionKey, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.PasswordEncryptionKey)
+	if err != nil {
+		return config.Config{}, err
+	}
 
 	cfg.HMACSecret = hmacSecret
 	cfg.ServiceBusConnectionString = serviceBusConnectionString
 	cfg.GraphClientSecret = graphClientSecret
+	cfg.PasswordEncryptionKeyB64 = passwordEncryptionKey
 	return cfg, nil
 }
 

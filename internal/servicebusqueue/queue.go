@@ -9,6 +9,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -30,7 +31,6 @@ type serviceBusReceiver interface {
 	ReceiveMessages(context.Context, int, *azservicebus.ReceiveMessagesOptions) ([]*azservicebus.ReceivedMessage, error)
 	CompleteMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.CompleteMessageOptions) error
 	AbandonMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.AbandonMessageOptions) error
-	DeadLetterMessage(context.Context, *azservicebus.ReceivedMessage, *azservicebus.DeadLetterOptions) error
 	Close(context.Context) error
 }
 
@@ -194,6 +194,7 @@ func (r *Receiver) CompleteMessage(ctx context.Context, msg *worker.Message) err
 	if err != nil {
 		return err
 	}
+	zeroReceivedBodies(msg, native)
 	if err := r.receiver.CompleteMessage(ctx, native, nil); err != nil {
 		return err
 	}
@@ -209,25 +210,8 @@ func (r *Receiver) AbandonMessage(ctx context.Context, msg *worker.Message) erro
 	if err != nil {
 		return err
 	}
+	zeroReceivedBodies(msg, native)
 	if err := r.receiver.AbandonMessage(ctx, native, nil); err != nil {
-		return err
-	}
-	delete(r.native, msg)
-	return nil
-}
-
-func (r *Receiver) DeadLetterMessage(ctx context.Context, msg *worker.Message, reason string, description string) error {
-	if err := r.ensureNativeReceiver(); err != nil {
-		return err
-	}
-	native, err := r.nativeMessage(msg)
-	if err != nil {
-		return err
-	}
-	if err := r.receiver.DeadLetterMessage(ctx, native, &azservicebus.DeadLetterOptions{
-		Reason:           &reason,
-		ErrorDescription: &description,
-	}); err != nil {
 		return err
 	}
 	delete(r.native, msg)
@@ -275,4 +259,13 @@ func messageKind(msg *azservicebus.ReceivedMessage) string {
 		return *msg.Subject
 	}
 	return ""
+}
+
+func zeroReceivedBodies(msg *worker.Message, native *azservicebus.ReceivedMessage) {
+	if msg != nil {
+		passwordcrypto.ZeroBytes(msg.Body)
+	}
+	if native != nil {
+		passwordcrypto.ZeroBytes(native.Body)
+	}
 }

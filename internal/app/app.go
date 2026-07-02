@@ -13,6 +13,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/httpserver"
 	"github.com/nycu/password-hook-service/internal/middleware"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/servicebusqueue"
 )
@@ -42,6 +43,9 @@ func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
 	if err := cfg.ValidateHTTP(); err != nil {
 		return nil, err
 	}
+	if err := validatePasswordEncryptionConfig(cfg); err != nil {
+		return nil, err
+	}
 	if queue == nil {
 		return nil, errors.New("migration queue is required")
 	}
@@ -49,7 +53,16 @@ func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
 }
 
 func newWithQueue(cfg config.Config, queue migration.Queue, closer interface{ Close(context.Context) error }) (*App, error) {
-	service := migration.NewService(cfg.EntraPrimaryDomain, queue)
+	passwordCodec, err := passwordcrypto.NewCodecFromBase64(cfg.PasswordEncryptionKeyB64, cfg.PasswordEncryptionKeyID)
+	if err != nil {
+		if closer == nil {
+			return nil, err
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), queueCloseTimeout)
+		defer cancel()
+		return nil, errors.Join(err, closer.Close(closeCtx))
+	}
+	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordCodec)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
@@ -78,6 +91,17 @@ func newWithQueue(cfg config.Config, queue migration.Queue, closer interface{ Cl
 	}, buildinfo.Current())
 
 	return &App{server: server, closer: closer}, nil
+}
+
+func validatePasswordEncryptionConfig(cfg config.Config) error {
+	switch {
+	case cfg.PasswordEncryptionKeyB64 == "":
+		return errors.New("PASSWORD_ENCRYPTION_KEY_B64 is required")
+	case cfg.PasswordEncryptionKeyID == "":
+		return errors.New("PASSWORD_ENCRYPTION_KEY_ID is required")
+	default:
+		return nil
+	}
 }
 
 func (a *App) Run(ctx context.Context) error {

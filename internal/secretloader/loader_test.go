@@ -2,6 +2,7 @@ package secretloader
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
@@ -41,10 +42,12 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
 	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
 	getter := &fakeGetter{values: map[string]string{
-		"hook-hmac-secret":     "kv-hmac",
-		"servicebus-conn-str":  "kv-servicebus",
-		"graph-client-secret":  "kv-graph-secret",
+		"hook-hmac-secret":                "kv-hmac",
+		"servicebus-conn-str":             "kv-servicebus",
+		"graph-client-secret":             "kv-graph-secret",
+		"password-payload-encryption-key": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
 	}}
 
 	got, err := Resolve(context.Background(), cfg, getter)
@@ -61,7 +64,10 @@ func TestResolveKeyVaultSourceLoadsSecretValues(t *testing.T) {
 	if got.GraphClientSecret != "kv-graph-secret" {
 		t.Fatalf("GraphClientSecret = %q", got.GraphClientSecret)
 	}
-	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str", "graph-client-secret"}
+	if got.PasswordEncryptionKeyB64 != base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")) {
+		t.Fatalf("PasswordEncryptionKeyB64 = %q", got.PasswordEncryptionKeyB64)
+	}
+	wantCalls := []string{"hook-hmac-secret", "servicebus-conn-str", "graph-client-secret", "password-payload-encryption-key"}
 	if strings.Join(getter.calls, ",") != strings.Join(wantCalls, ",") {
 		t.Fatalf("calls = %v, want %v", getter.calls, wantCalls)
 	}
@@ -76,6 +82,7 @@ func TestResolveKeyVaultSourceWrapsGetterErrorWithoutSecretValue(t *testing.T) {
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
 	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
 	getter := &fakeGetter{
 		values: map[string]string{
 			"hook-hmac-secret": "kv-hmac",
@@ -106,6 +113,7 @@ func TestResolveKeyVaultSourceIncludesSafeAzureResponseDiagnostics(t *testing.T)
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
 	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
 	getter := &fakeGetter{
 		values: map[string]string{
 			"hook-hmac-secret": "kv-hmac",
@@ -136,6 +144,7 @@ func TestResolveKeyVaultSourceRejectsBlankSecretValue(t *testing.T) {
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
 	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
 	getter := &fakeGetter{values: map[string]string{
 		"hook-hmac-secret":    "kv-hmac",
 		"servicebus-conn-str": "   ",
@@ -156,6 +165,7 @@ func TestResolveKeyVaultSourcePropagatesContextCancellation(t *testing.T) {
 	cfg.HMACSecret = ""
 	cfg.ServiceBusConnectionString = ""
 	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
 	getter := &fakeGetter{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -185,24 +195,27 @@ func (g *fakeGetter) GetSecret(ctx context.Context, name string) (string, error)
 
 func completeConfig() config.Config {
 	return config.Config{
-		SecretsSource:              config.SecretsSourceEnv,
-		KeyVaultURL:                "",
-		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
-		HTTPAddr:                   ":8080",
-		HMACSecret:                 "shared-secret",
-		EntraPrimaryDomain:         "nycu.edu.tw",
-		EntraFallbackDomain:        "nycu.onmicrosoft.com",
-		ProblemBaseURL:             "https://nycu.edu.tw/problems",
-		HMACClockSkew:              30 * time.Second,
-		NonceTTL:                   60 * time.Second,
-		PortalAllowedCIDRs:         nil,
-		RateLimitPerIP:             500,
-		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
-		ServiceBusQueueName:        "password-sync",
-		PasswordMessageTTL:         300 * time.Second,
-		GraphTenantID:              "tenant-id",
-		GraphClientID:              "client-id",
-		GraphClientSecret:          "graph-client-secret",
+		SecretsSource:                 config.SecretsSourceEnv,
+		KeyVaultURL:                   "",
+		KeyVaultSecretNames:           config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret", PasswordEncryptionKey: "password-payload-encryption-key"},
+		HTTPAddr:                      ":8080",
+		HMACSecret:                    "shared-secret",
+		EntraPrimaryDomain:            "nycu.edu.tw",
+		EntraFallbackDomain:           "nycu.onmicrosoft.com",
+		ProblemBaseURL:                "https://nycu.edu.tw/problems",
+		HMACClockSkew:                 30 * time.Second,
+		NonceTTL:                      60 * time.Second,
+		PortalAllowedCIDRs:            nil,
+		RateLimitPerIP:                500,
+		RateLimitWindow:               time.Second,
+		ServiceBusConnectionString:    "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
+		ServiceBusQueueName:           "password-sync",
+		ServiceBusDeadLetterQueueName: "password-sync-dlq",
+		PasswordMessageTTL:            300 * time.Second,
+		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		PasswordEncryptionKeyID:       "password-payload-key-v1",
+		GraphTenantID:                 "tenant-id",
+		GraphClientID:                 "client-id",
+		GraphClientSecret:             "graph-client-secret",
 	}
 }

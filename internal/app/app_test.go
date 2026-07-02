@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -52,6 +54,62 @@ func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 	}
 	if bytes.Contains(logs.Bytes(), []byte("secret")) {
 		t.Fatalf("logs leaked password: %s", logs.String())
+	}
+}
+
+func TestNewRequiresPasswordEncryptionConfig(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.PasswordEncryptionKeyB64 = ""
+
+	application, err := NewWithQueue(cfg, &captureQueue{})
+	if err == nil {
+		t.Fatal("NewWithQueue returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("NewWithQueue application = %#v, want nil", application)
+	}
+	if err.Error() != "PASSWORD_ENCRYPTION_KEY_B64 is required" {
+		t.Fatalf("NewWithQueue error = %q, want PASSWORD_ENCRYPTION_KEY_B64 is required", err.Error())
+	}
+}
+
+func TestAppHookRouteQueuesCiphertextOnlyMessage(t *testing.T) {
+	_, restore := captureDefaultLogger()
+	defer restore()
+
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	application, err := NewWithQueue(cfg, queue)
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	rec := httptest.NewRecorder()
+
+	application.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if len(queue.messages) != 1 {
+		t.Fatalf("queued %d messages, want 1", len(queue.messages))
+	}
+	got := queue.messages[0]
+	if got.Password != "" {
+		t.Fatalf("queued Password = %q, want empty", got.Password)
+	}
+	if got.PasswordCiphertext == "" || got.PasswordNonce == "" || got.PasswordKeyID != "password-payload-key-v1" || got.PasswordAlg == "" {
+		t.Fatalf("queued encrypted fields are invalid: %#v", got)
+	}
+	queuedJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal queued message returned error: %v", err)
+	}
+	if bytes.Contains(queuedJSON, []byte("cleartext-password")) || bytes.Contains(queuedJSON, []byte(`"password"`)) {
+		t.Fatalf("queued message leaks cleartext password: %s", queuedJSON)
 	}
 }
 
@@ -172,25 +230,28 @@ func (c *captureCloser) Close(ctx context.Context) error {
 
 func completeAppConfig() config.Config {
 	return config.Config{
-		SecretsSource:              config.SecretsSourceEnv,
-		KeyVaultURL:                "",
-		KeyVaultSecretNames:        config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret"},
-		HTTPAddr:                   ":8080",
-		HMACSecret:                 "shared-secret",
-		EntraPrimaryDomain:         "nycu.edu.tw",
-		EntraFallbackDomain:        "nycu.onmicrosoft.com",
-		ProblemBaseURL:             "https://nycu.edu.tw/problems",
-		HMACClockSkew:              30 * time.Second,
-		NonceTTL:                   60 * time.Second,
-		PortalAllowedCIDRs:         nil,
-		RateLimitPerIP:             500,
-		RateLimitWindow:            time.Second,
-		ServiceBusConnectionString: testServiceBusConnectionString,
-		ServiceBusQueueName:        "password-sync",
-		PasswordMessageTTL:         300 * time.Second,
-		GraphTenantID:              "tenant-id",
-		GraphClientID:              "client-id",
-		GraphClientSecret:          "graph-client-secret",
+		SecretsSource:                 config.SecretsSourceEnv,
+		KeyVaultURL:                   "",
+		KeyVaultSecretNames:           config.KeyVaultSecretNames{HMACSecret: "hook-hmac-secret", ServiceBusConnectionString: "servicebus-conn-str", GraphClientSecret: "graph-client-secret", PasswordEncryptionKey: "password-payload-encryption-key"},
+		HTTPAddr:                      ":8080",
+		HMACSecret:                    "shared-secret",
+		EntraPrimaryDomain:            "nycu.edu.tw",
+		EntraFallbackDomain:           "nycu.onmicrosoft.com",
+		ProblemBaseURL:                "https://nycu.edu.tw/problems",
+		HMACClockSkew:                 30 * time.Second,
+		NonceTTL:                      60 * time.Second,
+		PortalAllowedCIDRs:            nil,
+		RateLimitPerIP:                500,
+		RateLimitWindow:               time.Second,
+		ServiceBusConnectionString:    testServiceBusConnectionString,
+		ServiceBusQueueName:           "password-sync",
+		ServiceBusDeadLetterQueueName: "password-sync-dlq",
+		PasswordMessageTTL:            300 * time.Second,
+		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+		PasswordEncryptionKeyID:       "password-payload-key-v1",
+		GraphTenantID:                 "tenant-id",
+		GraphClientID:                 "client-id",
+		GraphClientSecret:             "graph-client-secret",
 	}
 }
 
