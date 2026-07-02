@@ -17,6 +17,7 @@ import (
 
 	"github.com/nycu/password-hook-service/internal/config"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/worker"
 )
 
 const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
@@ -166,6 +167,9 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	cfg := completeAppConfig()
 	cfg.ServiceBusConnectionString = ""
 	cfg.ServiceBusQueueName = ""
+	cfg.GraphTenantID = ""
+	cfg.GraphClientID = ""
+	cfg.GraphClientSecret = ""
 
 	application, err := NewWithQueue(cfg, &captureQueue{})
 
@@ -174,6 +178,55 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	}
 	if application == nil {
 		t.Fatal("NewWithQueue returned nil app")
+	}
+}
+
+func TestNewRequiresGraphCredentialsInFullMode(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.GraphClientSecret = ""
+
+	application, err := New(cfg)
+
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("New application = %#v, want nil", application)
+	}
+	if err.Error() != "GRAPH_CLIENT_SECRET is required" {
+		t.Fatalf("New error = %q, want GRAPH_CLIENT_SECRET is required", err.Error())
+	}
+}
+
+func TestRunStartsWorkerAndHTTPServer(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	receiver := newBlockingReceiver()
+	application, err := newWithWorkerDependencies(cfg, &captureQueue{}, receiver, &captureProcessor{}, &captureDeadLetterSink{})
+	if err != nil {
+		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run(ctx)
+	}()
+
+	select {
+	case <-receiver.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker receiver was not started")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancellation")
 	}
 }
 
@@ -203,6 +256,49 @@ func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	}
 }
 
+func TestRunClosesAllOwnedResources(t *testing.T) {
+	senderCloser := &captureCloser{}
+	receiverCloser := &captureCloser{}
+	dlqCloser := &captureCloser{}
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	application, err := newWithWorkerDependencies(
+		cfg,
+		&captureQueue{},
+		newBlockingReceiver(),
+		&captureProcessor{},
+		&captureDeadLetterSink{},
+		senderCloser,
+		receiverCloser,
+		dlqCloser,
+	)
+	if err != nil {
+		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	for name, closer := range map[string]*captureCloser{
+		"sender":   senderCloser,
+		"receiver": receiverCloser,
+		"dlq":      dlqCloser,
+	} {
+		if closer.closeCalls != 1 {
+			t.Fatalf("%s close calls = %d, want 1", name, closer.closeCalls)
+		}
+		if err := closer.closeErrs[0]; err != nil {
+			t.Fatalf("%s close context err = %v, want nil", name, err)
+		}
+		if !closer.closeHadDeadlines[0] {
+			t.Fatalf("%s close context has no deadline", name)
+		}
+	}
+}
+
 type captureQueue struct {
 	messages []migration.PasswordSyncMessage
 }
@@ -225,6 +321,44 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	c.closeErrs = append(c.closeErrs, ctx.Err())
 	_, hasDeadline := ctx.Deadline()
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
+	return nil
+}
+
+type blockingReceiver struct {
+	started chan struct{}
+}
+
+func newBlockingReceiver() *blockingReceiver {
+	return &blockingReceiver{started: make(chan struct{})}
+}
+
+func (r *blockingReceiver) ReceiveMessages(ctx context.Context, _ int) ([]*worker.Message, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (r *blockingReceiver) CompleteMessage(context.Context, *worker.Message) error {
+	return nil
+}
+
+func (r *blockingReceiver) AbandonMessage(context.Context, *worker.Message) error {
+	return nil
+}
+
+type captureProcessor struct{}
+
+func (p *captureProcessor) ProcessPasswordSync(context.Context, worker.PasswordSyncCommand) error {
+	return nil
+}
+
+type captureDeadLetterSink struct{}
+
+func (s *captureDeadLetterSink) RecordPasswordSyncFailure(context.Context, worker.DeadLetterEntry) error {
 	return nil
 }
 
