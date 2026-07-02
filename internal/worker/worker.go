@@ -218,9 +218,11 @@ func (w *Worker) waitAfterEmptyReceive(ctx context.Context) error {
 func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	passwordSyncMessage, err := decodePasswordSyncMessage(msg)
 	if err != nil {
+		entry := invalidMessageDeadLetterEntry(msg, w.now())
+		zeroMessageBody(msg)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
-		if settleErr := w.recordPasswordSyncFailure(settleCtx, invalidMessageDeadLetterEntry(msg, w.now())); settleErr != nil {
+		if settleErr := w.recordPasswordSyncFailure(settleCtx, entry); settleErr != nil {
 			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record invalid worker message dead-letter", settleErr)
 		}
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -417,6 +419,13 @@ func invalidMessageDeadLetterEntry(msg *Message, failedAt time.Time) DeadLetterE
 	entry.UPN = partial.UPN
 	entry.EnqueuedAt = partial.EnqueuedAt
 	return entry
+}
+
+func zeroMessageBody(msg *Message) {
+	if msg == nil {
+		return
+	}
+	passwordcrypto.ZeroBytes(msg.Body)
 }
 
 func sleep(ctx context.Context, delay time.Duration) error {

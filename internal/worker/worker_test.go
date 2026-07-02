@@ -85,6 +85,38 @@ func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
 	}
 }
 
+func TestWorkerInvalidMessageZerosBodyBeforeSafeDLQAndSettlement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := &Message{
+		Kind: passwordSyncKind,
+		Body: []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","password":"cleartext-password","enqueuedAt":"2026-06-27T12:00:00Z"}`),
+	}
+	receiver := &fakeReceiver{messages: []*Message{msg}}
+	receiver.onComplete = func() {
+		assertZeroedPasswordBuffer(t, msg.Body, "invalid message body before settlement")
+		cancel()
+	}
+	deadLetters := &fakeDeadLetterSink{
+		onRecord: func() {
+			assertZeroedPasswordBuffer(t, msg.Body, "invalid message body before safe DLQ")
+		},
+	}
+	worker := newTestWorker(t, receiver, &fakeProcessor{}, &fakePasswordDecrypter{}, deadLetters)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	if deadLetters.entries[0].CN != "u1234567" || deadLetters.entries[0].UPN != "u1234567@example.edu" {
+		t.Fatalf("safe DLQ identity = (%q, %q), want parsed CN and UPN", deadLetters.entries[0].CN, deadLetters.entries[0].UPN)
+	}
+}
+
 func TestWorkerRetriesTransientProcessorErrorsBeforeSuccess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

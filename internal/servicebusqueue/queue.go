@@ -9,6 +9,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -193,6 +194,7 @@ func (r *Receiver) CompleteMessage(ctx context.Context, msg *worker.Message) err
 	if err != nil {
 		return err
 	}
+	zeroReceivedBodies(msg, native)
 	if err := r.receiver.CompleteMessage(ctx, native, nil); err != nil {
 		return err
 	}
@@ -208,6 +210,7 @@ func (r *Receiver) AbandonMessage(ctx context.Context, msg *worker.Message) erro
 	if err != nil {
 		return err
 	}
+	zeroReceivedBodies(msg, native)
 	if err := r.receiver.AbandonMessage(ctx, native, nil); err != nil {
 		return err
 	}
@@ -256,4 +259,13 @@ func messageKind(msg *azservicebus.ReceivedMessage) string {
 		return *msg.Subject
 	}
 	return ""
+}
+
+func zeroReceivedBodies(msg *worker.Message, native *azservicebus.ReceivedMessage) {
+	if msg != nil {
+		passwordcrypto.ZeroBytes(msg.Body)
+	}
+	if native != nil {
+		passwordcrypto.ZeroBytes(native.Body)
+	}
 }

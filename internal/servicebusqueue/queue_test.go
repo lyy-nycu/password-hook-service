@@ -220,6 +220,8 @@ func TestReceiverReceivesAndSettlesServiceBusMessage(t *testing.T) {
 	if serviceBusReceiver.completed != native {
 		t.Fatalf("completed native message = %#v, want %#v", serviceBusReceiver.completed, native)
 	}
+	assertZeroedBytes(t, messages[0].Body, "worker message body after completion")
+	assertZeroedBytes(t, native.Body, "native message body after completion")
 }
 
 func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
@@ -249,6 +251,8 @@ func TestReceiverAbandonsServiceBusMessage(t *testing.T) {
 	if serviceBusReceiver.completed != nil {
 		t.Fatalf("unexpected completed settlement: %#v", serviceBusReceiver.completed)
 	}
+	assertZeroedBytes(t, messages[0].Body, "worker message body after abandon")
+	assertZeroedBytes(t, native.Body, "native message body after abandon")
 }
 
 func TestReceiverRejectsMessageNotReceivedByReceiver(t *testing.T) {
@@ -334,6 +338,15 @@ func TestReceiverCloseClosesReceiverAndClient(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "close service bus client") {
 		t.Fatalf("Close error = %q, want close service bus client", err.Error())
+	}
+}
+
+func assertZeroedBytes(t *testing.T, buf []byte, context string) {
+	t.Helper()
+	for i, b := range buf {
+		if b != 0 {
+			t.Fatalf("%s byte %d = %d, want 0", context, i, b)
+		}
 	}
 }
 
