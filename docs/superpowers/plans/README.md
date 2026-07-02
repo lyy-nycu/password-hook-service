@@ -21,9 +21,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-- `active/2026-07-02-worker-plaintext-lifetime-fix.md`
-
-This follow-up must complete before continuing to the Microsoft Graph slice because the worker still converts decrypted password bytes into an immutable string during processing.
+There is no active detailed plan. The next detailed plan should be created for Slice 6 Microsoft Graph Client.
 
 ## Status Labels
 
