@@ -21,7 +21,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-There is no active detailed plan. The next detailed plan should be created for Slice 6 Microsoft Graph Client.
+Current active detailed plan: not created. Next slice is Slice 7 Password Data Protection.
 
 ## Status Labels
 
