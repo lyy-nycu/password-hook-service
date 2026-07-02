@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,8 +37,8 @@ func TestWorkerSuccessCompletesAndProcessesDecryptedMessage(t *testing.T) {
 	if processor.messages[0].UPN != want.UPN {
 		t.Fatalf("processor UPN = %q, want %q", processor.messages[0].UPN, want.UPN)
 	}
-	if processor.messages[0].Password != "cleartext-password" {
-		t.Fatalf("processor Password = %q, want cleartext-password", processor.messages[0].Password)
+	if got := string(processor.passwords[0]); got != "cleartext-password" {
+		t.Fatalf("processor Password = %q, want cleartext-password", got)
 	}
 	if receiver.completed != 1 {
 		t.Fatalf("completed = %d, want 1", receiver.completed)
@@ -293,19 +292,39 @@ func TestWorkerDoesNotRetainPlaintextDuringRetryBackoff(t *testing.T) {
 	defer cancel()
 
 	decrypter := &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}
+	processor := &fakeProcessor{errs: []error{errors.New("retry"), nil}}
 	sleeper := &fakeSleeper{
 		onSleep: func() {
 			for _, plaintext := range decrypter.returnedPlaintexts {
-				if bytes.Contains(plaintext, []byte("cleartext-password")) {
-					t.Fatalf("plaintext was not cleared before retry backoff: %q", plaintext)
-				}
+				assertZeroedPasswordBuffer(t, plaintext, "decrypter plaintext before retry backoff")
+			}
+			for _, plaintext := range processor.handedOffPasswords {
+				assertZeroedPasswordBuffer(t, plaintext, "processor password before retry backoff")
 			}
 		},
 	}
 	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
 	receiver.onComplete = cancel
-	processor := &fakeProcessor{errs: []error{errors.New("retry"), nil}}
 	worker := newPolicyTestWorker(t, receiver, processor, decrypter, &fakeDeadLetterSink{}, sleeper)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestWorkerZerosProcessorPasswordBufferBeforeSettlement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	processor := &fakeProcessor{}
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onComplete = func() {
+		for _, plaintext := range processor.handedOffPasswords {
+			assertZeroedPasswordBuffer(t, plaintext, "processor password before settlement")
+		}
+		cancel()
+	}
+	worker := newTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{})
 
 	if err := worker.Run(ctx); err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -589,6 +608,15 @@ func assertSafeDLQEntry(t *testing.T, entry DeadLetterEntry) {
 	}
 }
 
+func assertZeroedPasswordBuffer(t *testing.T, buf []byte, context string) {
+	t.Helper()
+	for i, b := range buf {
+		if b != 0 {
+			t.Fatalf("%s byte %d = %d, want 0", context, i, b)
+		}
+	}
+}
+
 type fakeReceiver struct {
 	messages []*Message
 
@@ -691,16 +719,20 @@ func (d *fakePasswordDecrypter) Decrypt(ctx context.Context, env passwordcrypto.
 }
 
 type fakeProcessor struct {
-	calls     int
-	messages  []migration.PasswordSyncMessage
-	err       error
-	errs      []error
-	afterCall func()
+	calls              int
+	messages           []PasswordSyncCommand
+	passwords          [][]byte
+	handedOffPasswords [][]byte
+	err                error
+	errs               []error
+	afterCall          func()
 }
 
-func (p *fakeProcessor) ProcessPasswordSync(ctx context.Context, msg migration.PasswordSyncMessage) error {
+func (p *fakeProcessor) ProcessPasswordSync(ctx context.Context, msg PasswordSyncCommand) error {
 	p.calls++
 	p.messages = append(p.messages, msg)
+	p.passwords = append(p.passwords, append([]byte(nil), msg.Password...))
+	p.handedOffPasswords = append(p.handedOffPasswords, msg.Password)
 	if p.afterCall != nil {
 		p.afterCall()
 	}

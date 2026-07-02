@@ -41,8 +41,24 @@ type Receiver interface {
 	AbandonMessage(context.Context, *Message) error
 }
 
+// PasswordSyncCommand is the processor handoff for a decrypted password sync.
+// Password is a borrowed mutable buffer that is valid only during the
+// ProcessPasswordSync call. Processor implementations must not retain it, use
+// it asynchronously, or assume it remains readable after ProcessPasswordSync
+// returns.
+type PasswordSyncCommand struct {
+	CN          string
+	UPN         string
+	Password    []byte
+	DisplayName string
+	Mail        string
+	EnqueuedAt  time.Time
+}
+
 type Processor interface {
-	ProcessPasswordSync(context.Context, migration.PasswordSyncMessage) error
+	// ProcessPasswordSync must treat msg.Password as call-scoped borrowed
+	// memory. The worker zeroes it immediately after this method returns.
+	ProcessPasswordSync(context.Context, PasswordSyncCommand) error
 }
 
 type PasswordDecrypter interface {
@@ -278,10 +294,7 @@ func (w *Worker) processPasswordSync(ctx context.Context, msg migration.Password
 			return processorResult{err: &PermanentError{Reason: PermanentReasonProcessorError, Err: err}, attempts: attempts, permanent: true}
 		}
 
-		msg.Password = string(plaintext)
-		err = w.processor.ProcessPasswordSync(ctx, msg)
-		msg.Password = ""
-		passwordcrypto.ZeroBytes(plaintext)
+		err = w.processPasswordSyncAttempt(ctx, msg, plaintext)
 		if err == nil {
 			return processorResult{attempts: attempts}
 		}
@@ -298,6 +311,18 @@ func (w *Worker) processPasswordSync(ctx context.Context, msg migration.Password
 			return processorResult{err: sleepErr, attempts: attempts, retryCanceled: true}
 		}
 	}
+}
+
+func (w *Worker) processPasswordSyncAttempt(ctx context.Context, msg migration.PasswordSyncMessage, plaintext []byte) error {
+	defer passwordcrypto.ZeroBytes(plaintext)
+	return w.processor.ProcessPasswordSync(ctx, PasswordSyncCommand{
+		CN:          msg.CN,
+		UPN:         msg.UPN,
+		Password:    plaintext,
+		DisplayName: msg.DisplayName,
+		Mail:        msg.Mail,
+		EnqueuedAt:  msg.EnqueuedAt,
+	})
 }
 
 func (w *Worker) settlementContext() (context.Context, context.CancelFunc) {
