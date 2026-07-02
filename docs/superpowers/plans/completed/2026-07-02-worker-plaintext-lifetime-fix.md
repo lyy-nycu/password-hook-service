@@ -1,6 +1,6 @@
 # Worker Plaintext Lifetime Fix Implementation Plan
 
-> **Plan Status:** Active
+> **Plan Status:** Completed
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -42,7 +42,7 @@ The `string(plaintext)` conversion creates an immutable heap copy that cannot be
 **Files:**
 - Modify: `internal/worker/worker_test.go`
 
-- [ ] **Step 1: Update the success test expectation to use processor password bytes**
+- [x] **Step 1: Update the success test expectation to use processor password bytes**
 
 In `TestWorkerSuccessCompletesAndProcessesDecryptedMessage`, replace the current string password assertion:
 
@@ -60,7 +60,7 @@ if got := string(processor.passwords[0]); got != "cleartext-password" {
 }
 ```
 
-- [ ] **Step 2: Add a settlement lifecycle test**
+- [x] **Step 2: Add a settlement lifecycle test**
 
 Add this test after `TestWorkerDoesNotRetainPlaintextDuringRetryBackoff`:
 
@@ -87,7 +87,7 @@ func TestWorkerZerosProcessorPasswordBufferBeforeSettlement(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Strengthen the retry lifecycle test**
+- [x] **Step 3: Strengthen the retry lifecycle test**
 
 In `TestWorkerDoesNotRetainPlaintextDuringRetryBackoff`, add processor buffer checks inside `onSleep`:
 
@@ -119,7 +119,7 @@ sleeper := &fakeSleeper{
 }
 ```
 
-- [ ] **Step 4: Update fake processor fields and signature in the test only**
+- [x] **Step 4: Update fake processor fields and signature in the test only**
 
 Change the fake processor shape near the bottom of `internal/worker/worker_test.go`:
 
@@ -151,7 +151,7 @@ func (p *fakeProcessor) ProcessPasswordSync(ctx context.Context, msg PasswordSyn
 }
 ```
 
-- [ ] **Step 5: Run the focused test and confirm failure**
+- [x] **Step 5: Run the focused test and confirm failure**
 
 Run:
 
@@ -168,7 +168,7 @@ Expected: FAIL to compile because `PasswordSyncCommand` does not exist and `work
 **Files:**
 - Modify: `internal/worker/worker.go`
 
-- [ ] **Step 1: Add a byte-oriented command type**
+- [x] **Step 1: Add a byte-oriented command type**
 
 Add this type immediately above `type Processor interface`:
 
@@ -183,7 +183,7 @@ type PasswordSyncCommand struct {
 }
 ```
 
-- [ ] **Step 2: Change the processor interface**
+- [x] **Step 2: Change the processor interface**
 
 Replace:
 
@@ -201,7 +201,7 @@ type Processor interface {
 }
 ```
 
-- [ ] **Step 3: Replace the string conversion in `processPasswordSync`**
+- [x] **Step 3: Replace the string conversion in `processPasswordSync`**
 
 Replace this block:
 
@@ -224,7 +224,7 @@ if err == nil {
 }
 ```
 
-- [ ] **Step 4: Add the attempt helper that owns zeroing**
+- [x] **Step 4: Add the attempt helper that owns zeroing**
 
 Add this helper below `processPasswordSync`:
 
@@ -242,7 +242,7 @@ func (w *Worker) processPasswordSyncAttempt(ctx context.Context, msg migration.P
 }
 ```
 
-- [ ] **Step 5: Run the focused worker tests**
+- [x] **Step 5: Run the focused worker tests**
 
 Run:
 
@@ -259,7 +259,7 @@ Expected: PASS.
 **Files:**
 - Modify only if verification finds a missed reference: `internal/worker/worker.go`, `internal/worker/worker_test.go`
 
-- [ ] **Step 1: Search for forbidden worker handoff patterns**
+- [x] **Step 1: Search for forbidden worker handoff patterns**
 
 Run:
 
@@ -269,7 +269,7 @@ rg -n 'string\(plaintext\)|msg\.Password\s*=|ProcessPasswordSync\(context\.Conte
 
 Expected: no matches.
 
-- [ ] **Step 2: Search for allowed legacy message field usage**
+- [x] **Step 2: Search for allowed legacy message field usage**
 
 Run:
 
@@ -289,7 +289,7 @@ Unexpected matches to fix:
 - Any Service Bus body/properties containing `password`.
 - Any safe DLQ body/properties containing plaintext, ciphertext, nonce, or password fields.
 
-- [ ] **Step 3: Keep decrypt failure safe DLQ behavior covered**
+- [x] **Step 3: Keep decrypt failure safe DLQ behavior covered**
 
 Run:
 
@@ -306,7 +306,7 @@ Expected: PASS.
 **Files:**
 - No source changes unless verification fails.
 
-- [ ] **Step 1: Format**
+- [x] **Step 1: Format**
 
 Run:
 
@@ -314,7 +314,7 @@ Run:
 docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 gofmt -w internal/worker/worker.go internal/worker/worker_test.go
 ```
 
-- [ ] **Step 2: Run all tests**
+- [x] **Step 2: Run all tests**
 
 Run:
 
@@ -324,7 +324,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go test ./...
 
 Expected: PASS.
 
-- [ ] **Step 3: Run vet**
+- [x] **Step 3: Run vet**
 
 Run:
 
@@ -334,7 +334,7 @@ docker run --rm -v "$PWD:/src" -w /src golang:1.26.4 go vet ./...
 
 Expected: PASS.
 
-- [ ] **Step 4: Run final leak scans**
+- [x] **Step 4: Run final leak scans**
 
 Run:
 
@@ -347,6 +347,12 @@ Expected:
 
 - First scan has no worker password handoff or native Service Bus DLQ matches.
 - Second scan only shows the HTTP hook request DTO and tests/structs that intentionally verify `Password` is not serialized.
+
+---
+
+## Completion Note
+
+Completed 2026-07-02. Verified Tasks 1 and 2 were already implemented: worker processor handoff uses `PasswordSyncCommand` with `Password []byte`, no `string(plaintext)` conversion remains, and retry/settlement tests assert handed-off buffers are zeroed. Verification passed with dockerized focused worker tests, `gofmt`, full `go test ./...`, `go vet ./...`, and final leak scans.
 
 ---
 
