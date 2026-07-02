@@ -226,16 +226,32 @@ func TestValidateKeyVaultSourceRequiresPasswordEncryptionKeyName(t *testing.T) {
 	}
 }
 
-func TestValidateAllowsMissingGraphCredentials(t *testing.T) {
+func TestValidateRequiresGraphCredentials(t *testing.T) {
 	t.Parallel()
 
-	cfg := completeConfig()
-	cfg.GraphTenantID = ""
-	cfg.GraphClientID = ""
-	cfg.GraphClientSecret = ""
+	tests := []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "tenant", edit: func(cfg *Config) { cfg.GraphTenantID = "" }, want: "GRAPH_TENANT_ID is required"},
+		{name: "client", edit: func(cfg *Config) { cfg.GraphClientID = "" }, want: "GRAPH_CLIENT_ID is required"},
+		{name: "secret", edit: func(cfg *Config) { cfg.GraphClientSecret = "" }, want: "GRAPH_CLIENT_SECRET is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate returned error: %v", err)
+			cfg := completeConfig()
+			tt.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("Validate returned nil error")
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("Validate error = %q, want %q", err.Error(), tt.want)
+			}
+		})
 	}
 }
 
