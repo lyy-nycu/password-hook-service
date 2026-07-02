@@ -2,7 +2,7 @@
 
 > **Plan Status:** Superseded
 >
-> **Do Not Execute:** Use `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md` instead.
+> **Do Not Execute:** Use `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md` instead.
 >
 > **Historical Value:** This file remains design input for the realignment plan and ADR.
 

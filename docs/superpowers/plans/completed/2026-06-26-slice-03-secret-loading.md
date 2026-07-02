@@ -4,7 +4,7 @@
 >
 > **Use For:** Key Vault and local env secret loading patterns.
 >
-> **Do Not Use For:** Complete current secret requirements; password payload encryption key loading is added by `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`.
+> **Do Not Use For:** Complete current secret requirements; password payload encryption key loading is added by `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md`.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

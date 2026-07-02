@@ -33,9 +33,9 @@
 
 Current active slice:
 
-- Security Realignment: `active/2026-07-01-password-payload-encryption-realignment.md`
+- Worker Plaintext Lifetime Fix: `active/2026-07-02-worker-plaintext-lifetime-fix.md`
 
-This realignment must complete before Slice 6 because the queue payload schema and worker terminal failure behavior changed after ADR 2026-07-01. It supersedes execution of `superseded/2026-06-29-slice-05-retry-dlq-policy.md` and `superseded/2026-06-30-password-payload-encryption.md`, and it reworks the password-related assumptions from Slices 2 and 4.
+This follow-up must complete before continuing to the Microsoft Graph slice because the worker still converts decrypted password bytes into an immutable string during processing.
 
 ---
 
@@ -62,7 +62,8 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 | 2. Producer to Service Bus | Completed / Partially Superseded | `completed/2026-06-25-slice-02-producer-servicebus.md` | Producer-side Service Bus patterns remain useful; plaintext queue schema superseded by Security Realignment |
 | 3. Secret Loading | Completed / Partially Superseded | `completed/2026-06-26-slice-03-secret-loading.md` | Key Vault/Managed Identity patterns remain useful; password payload encryption key loading added by Security Realignment |
 | 4. Worker Queue Consumption | Completed / Partially Superseded | `completed/2026-06-27-slice-04-worker-queue-consumption.md` | Worker loop and receiver adapter patterns remain useful; plaintext decode/native DLQ assumptions superseded by Security Realignment |
-| Security Realignment | Done | `active/2026-07-01-password-payload-encryption-realignment.md` | Queue payloads encrypted before enqueue; worker decrypts per attempt; native DLQ removed from password sync path; verified with `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
+| Security Realignment | Done | `completed/2026-07-01-password-payload-encryption-realignment.md` | Queue payloads encrypted before enqueue; worker decrypts per attempt; native DLQ removed from password sync path; verified with `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
+| Worker Plaintext Lifetime Fix | Active | `active/2026-07-02-worker-plaintext-lifetime-fix.md` | Remove decrypted password byte-to-string conversion in worker handoff |
 | 5. Retry and DLQ Policy | Superseded | `superseded/2026-06-29-slice-05-retry-dlq-policy.md` | Do not execute; safe DLQ intent retained in Security Realignment |
 | 6. Microsoft Graph Client | Not planned | Not created |  |
 | 7. Password Data Protection | Not planned | Not created |  |

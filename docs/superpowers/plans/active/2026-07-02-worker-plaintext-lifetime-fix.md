@@ -1,5 +1,7 @@
 # Worker Plaintext Lifetime Fix Implementation Plan
 
+> **Plan Status:** Active
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove the worker's decrypted password `[]byte` to `string` conversion so plaintext can be zeroed before retry backoff, message settlement, or safe DLQ handling.

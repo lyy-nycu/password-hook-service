@@ -6,7 +6,7 @@
 >
 > **Do Not Use For:** Password sync message schema or password payload security requirements.
 >
-> **Replacement:** `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+> **Replacement:** `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md`
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

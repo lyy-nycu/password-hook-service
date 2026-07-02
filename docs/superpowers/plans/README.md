@@ -21,9 +21,9 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-- `active/2026-07-01-password-payload-encryption-realignment.md`
+- `active/2026-07-02-worker-plaintext-lifetime-fix.md`
 
-This realignment must complete before continuing to the Microsoft Graph slice because the password queue schema and terminal failure behavior changed after ADR 2026-07-01.
+This follow-up must complete before continuing to the Microsoft Graph slice because the worker still converts decrypted password bytes into an immutable string during processing.
 
 ## Status Labels
 

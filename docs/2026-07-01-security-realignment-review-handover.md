@@ -13,7 +13,7 @@ Head reviewed: `1726d0c87de80075ae557acb52f0127da4cf4f4b`
 Primary requirements:
 
 - `docs/ADR/2026-07-01-password-payload-encryption.md`
-- `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+- `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md`
 - `docs/superpowers/plans/roadmap.md`
 
 Implementation status before this handover:

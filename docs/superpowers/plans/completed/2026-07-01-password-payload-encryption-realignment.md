@@ -1016,19 +1016,19 @@ Update `docs/superpowers/plans/roadmap.md`:
 ```markdown
 Current active slice:
 
-- Security Realignment: `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+- Security Realignment: `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md`
 ```
 
 After verification passes, add a completion note:
 
 ```markdown
-| Security Realignment | Done | `active/2026-07-01-password-payload-encryption-realignment.md` | Queue payloads encrypted before enqueue; worker decrypts per attempt; native DLQ removed from password sync path; verified with `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
+| Security Realignment | Done | `completed/2026-07-01-password-payload-encryption-realignment.md` | Queue payloads encrypted before enqueue; worker decrypts per attempt; native DLQ removed from password sync path; verified with `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
 ```
 
 - [x] **Step 4: Commit**
 
 ```bash
-git add docs/superpowers/plans/roadmap.md docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md
+git add docs/superpowers/plans/roadmap.md docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md
 git commit -m "docs: plan password payload encryption realignment"
 ```
 

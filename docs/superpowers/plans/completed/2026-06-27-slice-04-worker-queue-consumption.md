@@ -6,7 +6,7 @@
 >
 > **Do Not Use For:** Password sync decode schema, decrypt behavior, or terminal failure behavior.
 >
-> **Replacement:** `docs/superpowers/plans/active/2026-07-01-password-payload-encryption-realignment.md`
+> **Replacement:** `docs/superpowers/plans/completed/2026-07-01-password-payload-encryption-realignment.md`
 
 **Goal:** Consume `password-sync` Service Bus jobs through a worker-owned receiver interface, decode `migration.PasswordSyncMessage`, dispatch to a processor interface, and settle messages according to the processor outcome.
 
