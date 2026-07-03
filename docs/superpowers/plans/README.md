@@ -21,7 +21,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-Current active detailed plan: `active/2026-07-03-slice-07-password-data-protection.md`.
+Current active detailed plan: not created. Next slice is Slice 8 Observability.
 
 ## Status Labels
 
