@@ -169,6 +169,16 @@ func TestHookInvalidUTF8DecodeDoesNotNeedToGrowPasswordBuffer(t *testing.T) {
 	assertZeroedBytes(t, decoded, "decoded invalid utf8 password")
 }
 
+func TestDecodeJSONStringBytesRejectsUnescapedQuote(t *testing.T) {
+	t.Parallel()
+
+	decoded, err := decodeJSONStringBytes([]byte(`"foo"bar"`))
+	if err == nil {
+		passwordcrypto.ZeroBytes(decoded)
+		t.Fatal("decodeJSONStringBytes returned nil error, want error for unescaped quote")
+	}
+}
+
 func TestHookInvalidJSONDoesNotEchoPassword(t *testing.T) {
 	t.Parallel()
 

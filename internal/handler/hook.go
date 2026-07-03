@@ -98,6 +98,18 @@ func (r passwordHookRequest) validate() string {
 	}
 }
 
+// passwordBytes decodes a JSON string directly into a mutable []byte instead
+// of an immutable Go string. This is required so the plaintext password can
+// be explicitly zeroed after use; a `string` result is immutable and cannot
+// be scrubbed from memory. Standard-library alternatives were rejected:
+// unmarshalling into `string`, `json.Decoder.Token`, and `strconv.Unquote`
+// all produce immutable plaintext strings; unmarshalling into `[]byte`
+// expects base64-encoded input, not a raw string; and `json.RawMessage`
+// still requires this same custom JSON-string unquote step, since
+// encoding/json's own byte-oriented unquote helper is unexported.
+// decodeJSONStringBytes therefore reimplements JSON string unquoting,
+// intentionally preserving encoding/json's behavior for null, escapes,
+// surrogate pairs, invalid UTF-8, and control characters/invalid escapes.
 type passwordBytes []byte
 
 func (p *passwordBytes) UnmarshalJSON(data []byte) error {
@@ -131,6 +143,9 @@ func decodeJSONStringBytes(data []byte) (_ []byte, err error) {
 	for i := 1; i < len(data)-1; i++ {
 		b := data[i]
 		if b != '\\' {
+			if b == '"' {
+				return nil, errors.New("password contains invalid unescaped json string terminator")
+			}
 			if b < 0x20 {
 				return nil, errors.New("password contains invalid json string control character")
 			}
