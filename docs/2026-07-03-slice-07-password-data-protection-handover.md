@@ -6,7 +6,7 @@
 
 **Branch:** `slice-7-password-data-protection-plan`
 
-**Current HEAD:** `e9c1742 fix: zero worker message bodies before settlement`
+**Current HEAD:** `7803358 test: strengthen password leak guards`
 
 **Plan:** `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
 
@@ -21,10 +21,10 @@ Completed:
 - Task 1: migration password ownership is complete and reviewed.
 - Task 2: hook mutable password decoding is complete. Final code-quality re-review over the full Task 2 range (`2247dda..e9d9f8a`) passed with no Critical or Important issues.
 - Task 3: worker message bodies are zeroed before success, retry-cancel abandon, and terminal safe-DLQ settlement. Code-quality review passed with no issues.
+- Task 4: strengthened Graph error-path body zeroing regression coverage and broadened logger sensitive-key detection. Code-quality review passed with no Critical or Important issues.
 
 Pending:
 
-- Task 4: strengthen Graph and log leak guards.
 - Task 5: final docs, roadmap completion, full verification, and leak scans.
 
 Todo state at handover:
@@ -34,7 +34,7 @@ Todo state at handover:
 | `slice7-task1-migration` | done |
 | `slice7-task2-hook` | done |
 | `slice7-task3-worker` | done |
-| `slice7-task4-guards` | pending |
+| `slice7-task4-guards` | done |
 | `slice7-task5-final` | pending |
 
 ---
@@ -53,6 +53,8 @@ Todo state at handover:
 | `e9d9f8a` | `fix: reject unescaped quote in password decoder` | Hardens `decodeJSONStringBytes` to reject an interior unescaped `"` when called directly, adds a regression test, and documents why `passwordBytes` uses a custom decoder instead of stdlib alternatives. |
 | `54e330b` | `docs: update handover for Task 2 completion` | Updates this handover file; docs-only, no code changes. |
 | `e9c1742` | `fix: zero worker message bodies before settlement` | Zeros `msg.Body` before success completion, retry-cancel abandon, and terminal safe-DLQ recording in `processMessage`. The invalid-message path already did this. Code-quality review passed with no issues. |
+| `8500549` | `docs: update handover for Task 3 completion` | Updates this handover file; docs-only, no code changes. |
+| `7803358` | `test: strengthen password leak guards` | Adds Graph request-body zeroing regression test for error responses (patch/create x permanent/transient); broadens `pkg/logger.isSensitiveKey` to substring matching so `passwordCiphertext`, `password_nonce`, `GRAPH_CLIENT_SECRET`, `clientSecret`, and `access_token` are masked, while non-sensitive keys like `requestNonce` remain visible. Code-quality review passed with no issues. |
 
 ---
 
@@ -121,6 +123,16 @@ Task 3:
   - `go build`, `go vet`, `go test ./...`, and `go test ./internal/worker -race` all pass cleanly.
 - **Task 3 is now done.**
 
+Task 4:
+
+- Implemented via TDD: added `TestUpsertUserPasswordClearsRequestBodyBufferAfterGraphError` (confirmed graphclient already passed pre-fix, as the plan anticipated) and extended `TestMaskAttrsMasksSensitiveKeys` with new key variants plus a `requestNonce` non-masked control (confirmed RED for `pkg/logger`), then broadened `isSensitiveKey` to substring matching (confirmed GREEN).
+- Code-quality review over `e9c1742..7803358` passed with **no Critical or Important issues**. Reviewer independently verified:
+  - Diff is byte-for-byte identical to the plan's Task 4 specification.
+  - The new Graph-error test exercises genuinely new code paths (error branches for both patch and create) not covered by the prior success-only test.
+  - No existing log call site in the repo is unintentionally masked by the broadened substring matcher (checked all `slog.*` call sites).
+  - One Minor, non-blocking, out-of-scope note: `isSensitiveKey` still does not match `connectionString` (e.g. `ServiceBusConnectionString`), which is a real secret structurally similar to `GraphClientSecret`. This is currently latent, not exploitable, since no code path logs config via slog today. Worth a follow-up if a future change logs config for diagnostics.
+- **Task 4 is now done.**
+
 No background agent is currently running.
 
 ---
@@ -137,6 +149,9 @@ Verified directly during this session:
 - Implemented Task 3 via TDD (RED/GREEN): `go test ./internal/worker -run 'TestWorkerZerosMessageBody' -v` failed as expected before the fix, passed after. Full `go test ./internal/worker -v -count=1` and `go test ./... -count=1` passed after commit `e9c1742`.
 - Task 3 code-quality review over `e9d9f8a..e9c1742` passed with no issues. Reviewer ran `go build`, `go vet`, `go test ./...`, and `go test ./internal/worker -race`, all clean.
 - `slice7-task3-worker` marked done in the handover todo table.
+- Implemented Task 4 via TDD (RED/GREEN): `go test ./internal/graphclient ./pkg/logger -v` showed `internal/graphclient` already passing pre-fix (as the plan anticipated) and `pkg/logger` failing on `passwordCiphertext` before the fix, passing after. Full `go test ./... -count=1` passed after commit `7803358`.
+- Task 4 code-quality review over `e9c1742..7803358` passed with no Critical or Important issues. Reviewer ran `go build`, `go vet`, `go test ./...`, all clean.
+- `slice7-task4-guards` marked done in the handover todo table.
 
 Earlier verified before this session:
 
@@ -148,16 +163,16 @@ Earlier verified before this session:
 
 ## Recommended Next Steps
 
-1. Continue with Task 4 from the active plan: strengthen Graph and log leak guards — add Graph request-body zeroing regression tests for error responses, and broaden logger sensitive-key detection to cover variants such as `passwordCiphertext`, `clientSecret`, and `access_token`. Follow TDD (RED/GREEN) for each new behavior, and request a code-quality review after Task 4 completes, before moving to Task 5.
+1. Continue with Task 5 from the active plan: final docs (README worker behavior and data protection notes), update `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md` to mark Slice 7 completed, run full verification (`go build ./...`, `go vet ./...`, `go test ./... -count=1`), run the plan's leak-focused repository scans, then move the active plan file to `docs/superpowers/plans/completed/`.
 
-2. Continue through Task 5, then move the active plan to `completed/` only after final verification and leak scans pass.
+2. Optional follow-up beyond Slice 7 scope (from the Task 4 review's Minor note): consider broadening `isSensitiveKey` in `pkg/logger/logger.go` to also match `connectionString`-style keys (e.g. `ServiceBusConnectionString`) if a future change ever logs config values via slog.
 
 ---
 
 ## Files Most Relevant for Continuation
 
-- `internal/graphclient/client.go`
-- `internal/graphclient/client_test.go`
-- `pkg/logger/logger.go`
-- `pkg/logger/logger_test.go`
+- `README.md`
+- `docs/superpowers/plans/README.md`
+- `docs/superpowers/plans/roadmap.md`
 - `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
+- `docs/superpowers/plans/completed/` (destination for the plan file once Task 5 is done)
