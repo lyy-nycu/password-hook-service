@@ -213,6 +213,55 @@ func TestUpsertUserPasswordClearsRequestBodyBufferAfterAttempt(t *testing.T) {
 	}
 }
 
+func TestUpsertUserPasswordClearsRequestBodyBufferAfterGraphError(t *testing.T) {
+	tests := []struct {
+		name       string
+		lookupCode int
+		writeCode  int
+	}{
+		{name: "patch permanent error", lookupCode: http.StatusOK, writeCode: http.StatusBadRequest},
+		{name: "patch transient error", lookupCode: http.StatusOK, writeCode: http.StatusServiceUnavailable},
+		{name: "create permanent error", lookupCode: http.StatusNotFound, writeCode: http.StatusBadRequest},
+		{name: "create transient error", lookupCode: http.StatusNotFound, writeCode: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []byte
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				if requests == 1 {
+					w.WriteHeader(tt.lookupCode)
+					return
+				}
+				w.WriteHeader(tt.writeCode)
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, server.URL, func(body []byte) {
+				captured = body
+			})
+
+			err := client.UpsertUserPassword(context.Background(), User{
+				UPN:         "311551001@nycu.edu.tw",
+				DisplayName: "Student One",
+				Mail:        "student@nycu.edu.tw",
+			}, []byte("cleartext-password"))
+
+			if err == nil {
+				t.Fatal("UpsertUserPassword returned nil error")
+			}
+			if len(captured) == 0 {
+				t.Fatal("AfterRequestBodyBuilt did not capture a body")
+			}
+			if bytes.Contains(captured, []byte("cleartext-password")) {
+				t.Fatalf("request body buffer still contains password after graph error: %q", captured)
+			}
+		})
+	}
+}
+
 type seenGraphRequest struct {
 	authorization string
 	body          []byte

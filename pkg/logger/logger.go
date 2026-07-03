@@ -55,10 +55,9 @@ func maskAttr(attr slog.Attr) slog.Attr {
 }
 
 func isSensitiveKey(key string) bool {
-	switch strings.ToLower(key) {
-	case "password", "passwd", "secret":
-		return true
-	default:
-		return false
-	}
+	normalized := strings.NewReplacer("_", "", "-", "", ".", "").Replace(strings.ToLower(key))
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token")
 }
