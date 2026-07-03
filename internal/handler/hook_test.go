@@ -147,6 +147,28 @@ func TestHookMatchesInvalidUTF8StringBehavior(t *testing.T) {
 	assertZeroedBytes(t, body.Password, "decoded invalid utf8 password")
 }
 
+func TestHookInvalidUTF8DecodeDoesNotNeedToGrowPasswordBuffer(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`"prefix-`)
+	data = append(data, 0xff)
+	data = append(data, '"')
+
+	decoded, err := decodeJSONStringBytes(data)
+	if err != nil {
+		t.Fatalf("decodeJSONStringBytes returned error: %v", err)
+	}
+	if got := string(decoded); got != "prefix-�" {
+		t.Fatalf("decoded password = %q, want prefix plus replacement rune", got)
+	}
+	wantCapacity := (len(data) - 2) * len("�")
+	if cap(decoded) < wantCapacity {
+		t.Fatalf("decoded password capacity = %d, want at least %d", cap(decoded), wantCapacity)
+	}
+	passwordcrypto.ZeroBytes(decoded)
+	assertZeroedBytes(t, decoded, "decoded invalid utf8 password")
+}
+
 func TestHookInvalidJSONDoesNotEchoPassword(t *testing.T) {
 	t.Parallel()
 

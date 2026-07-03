@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
@@ -57,6 +58,7 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 			m.writeUnauthorized(w, r, "failed to read request body")
 			return
 		}
+		defer passwordcrypto.ZeroBytes(body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		timestampHeader := r.Header.Get("X-Hook-Timestamp")

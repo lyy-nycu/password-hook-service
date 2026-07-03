@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,6 +43,40 @@ func TestHMACAllowsValidSignature(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
+}
+
+func TestHMACZerosBodyAfterNextHandler(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001","password":"cleartext-password"}`)
+	secret := "shared-secret"
+	timestamp := time.Now().Unix()
+	nonce := "11223344556677889900aabbccddeeff"
+	middleware, err := NewHMAC(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewHMAC returned error: %v", err)
+	}
+
+	var forwardedBody io.ReadCloser
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedBody = r.Body
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	rec := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(rec, signedRequest(body, timestamp, nonce, sign(secret, timestamp, nonce, body)))
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if forwardedBody == nil {
+		t.Fatal("next handler did not receive body")
+	}
+	forwarded, err := io.ReadAll(forwardedBody)
+	if err != nil {
+		t.Fatalf("read forwarded body: %v", err)
+	}
+	assertZeroedBytes(t, forwarded, "hmac forwarded body after handler")
 }
 
 func TestHMACRejectsReplayedNonce(t *testing.T) {
@@ -190,4 +225,13 @@ func sign(secret string, timestamp int64, nonce string, body []byte) string {
 	_, _ = mac.Write([]byte(fmt.Sprintf("%d.%s.", timestamp, nonce)))
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func assertZeroedBytes(t *testing.T, buf []byte, context string) {
+	t.Helper()
+	for i, b := range buf {
+		if b != 0 {
+			t.Fatalf("%s byte %d = %d, want 0", context, i, b)
+		}
+	}
 }

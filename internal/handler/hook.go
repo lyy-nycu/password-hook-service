@@ -121,7 +121,8 @@ func decodeJSONStringBytes(data []byte) (_ []byte, err error) {
 		return nil, errors.New("password must be a json string")
 	}
 
-	out := make([]byte, 0, len(data)-2)
+	const maxBytesPerInvalidUTF8Byte = len("\ufffd")
+	out := make([]byte, 0, (len(data)-2)*maxBytesPerInvalidUTF8Byte)
 	defer func() {
 		if err != nil {
 			passwordcrypto.ZeroBytes(out)
