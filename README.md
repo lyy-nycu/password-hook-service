@@ -6,7 +6,7 @@ It accepts successful LDAP login credentials from the portal, authenticates requ
 
 ## Current Scope
 
-This service currently implements the HTTP foundation and producer-side Azure Service Bus enqueueing:
+This service currently implements the HTTP hook, encrypted Service Bus queueing, worker retry/DLQ handling, and Microsoft Graph password sync path:
 
 - Go module and package structure
 - `GET /healthz`
@@ -21,8 +21,11 @@ This service currently implements the HTTP foundation and producer-side Azure Se
 - Azure Service Bus producer for eligible internal student/employee IDs
 - 300 second Service Bus message TTL for password sync jobs
 - explicit runtime secret loading from local env or Azure Key Vault
+- encrypted queue payloads for password sync messages
+- Service Bus worker consumption with retry and safe DLQ handling
+- Microsoft Graph app-only client for existing-user password patches and missing-user creation
 
-Microsoft Graph, worker consumption, retry/DLQ policy, Terraform resources, and CI/CD security gates are implemented in later slices.
+Terraform resources, observability, and CI/CD security gates are implemented in later slices.
 
 ## Local Verification
 
@@ -58,11 +61,17 @@ export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
 export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
+export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export PASSWORD_ENCRYPTION_KEY_B64="<base64-encoded-32-byte-key>"
+export PASSWORD_ENCRYPTION_KEY_ID="password-payload-key-v1"
+export GRAPH_TENANT_ID="<tenant-id>"
+export GRAPH_CLIENT_ID="<app-client-id>"
+export GRAPH_CLIENT_SECRET="<app-client-secret>"
 ```
 
-Use a queue- or topic-level Shared Access Policy with only the `Send` permission for
-the producer connection string. Do not use namespace-level manage policies for
-application runtime credentials.
+Production `app.New` requires `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, and `GRAPH_CLIENT_SECRET`. The Graph app registration needs the approved application permission `User.ReadWrite.All`.
+
+Use a queue- or topic-level Shared Access Policy with the permissions needed by this runtime to send hook messages, receive worker messages, and send safe DLQ messages. Do not use namespace-level manage policies for application runtime credentials.
 
 Optional local API protection settings:
 
@@ -83,6 +92,12 @@ docker run --rm -p 8080:8080 \
   -e HTTP_ADDR \
   -e SERVICEBUS_CONNECTION_STRING \
   -e SERVICEBUS_QUEUE_NAME \
+  -e SERVICEBUS_DEADLETTER_QUEUE_NAME \
+  -e PASSWORD_ENCRYPTION_KEY_B64 \
+  -e PASSWORD_ENCRYPTION_KEY_ID \
+  -e GRAPH_TENANT_ID \
+  -e GRAPH_CLIENT_ID \
+  -e GRAPH_CLIENT_SECRET \
   -e PORTAL_ALLOWED_CIDRS \
   -e RATE_LIMIT_PER_IP \
   password-hook-service
@@ -140,6 +155,12 @@ curl -i http://localhost:8080/api/v1/hook/password \
 
 The hook endpoint returns `202 Accepted` when the request is accepted by the service. It does not mean the password has already been migrated to Entra ID.
 
+## Worker Behavior
+
+The production app starts the HTTP server and password sync worker together. The hook encrypts accepted password payloads before enqueueing. The worker receives encrypted Service Bus messages, decrypts the password per processing attempt, calls Microsoft Graph, and zeroes plaintext buffers after use.
+
+Graph `400` and `403` responses are treated as permanent processor failures and recorded to the safe DLQ. Graph `429`, `503`, other unexpected statuses, token acquisition errors, and network errors remain retryable under the worker retry policy. Safe DLQ entries exclude plaintext passwords.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -153,11 +174,14 @@ The hook endpoint returns `202 Accepted` when the request is accepted by the ser
 | `HOOK_HMAC_SECRET` | empty | HMAC shared secret when `SECRETS_SOURCE=env` |
 | `ENTRA_PRIMARY_DOMAIN` | `nycu.edu.tw` | Domain used to build internal Entra UPNs |
 | `ENTRA_FALLBACK_DOMAIN` | empty | Optional fallback domain for later tenant bootstrap scenarios |
-| `GRAPH_TENANT_ID` | empty | Microsoft Entra tenant ID for later Graph client use |
-| `GRAPH_CLIENT_ID` | empty | App registration client ID for later Graph client use |
+| `GRAPH_TENANT_ID` | empty | Required for production; Microsoft Entra tenant ID for Graph app-only auth |
+| `GRAPH_CLIENT_ID` | empty | Required for production; app registration client ID for Graph app-only auth |
 | `GRAPH_CLIENT_SECRET` | empty | Graph app client secret when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
 | `PROBLEM_BASE_URL` | `https://nycu.edu.tw/problems` | RFC 9457 problem type base URL |
 | `SERVICEBUS_CONNECTION_STRING` | empty | Azure Service Bus connection string when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
 | `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |
+| `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
+| `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
+| `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
 | `PORTAL_ALLOWED_CIDRS` | empty | Optional comma-separated source CIDR allowlist |
 | `RATE_LIMIT_PER_IP` | `500` | Per-IP request threshold per one-second window |

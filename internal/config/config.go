@@ -99,6 +99,12 @@ func (c Config) Validate() error {
 		return errors.New("PASSWORD_ENCRYPTION_KEY_B64 is required")
 	case strings.TrimSpace(c.PasswordEncryptionKeyID) == "":
 		return errors.New("PASSWORD_ENCRYPTION_KEY_ID is required")
+	case strings.TrimSpace(c.GraphTenantID) == "":
+		return errors.New("GRAPH_TENANT_ID is required")
+	case strings.TrimSpace(c.GraphClientID) == "":
+		return errors.New("GRAPH_CLIENT_ID is required")
+	case strings.TrimSpace(c.GraphClientSecret) == "":
+		return errors.New("GRAPH_CLIENT_SECRET is required")
 	default:
 		return nil
 	}

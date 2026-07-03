@@ -17,6 +17,8 @@ import (
 
 	"github.com/nycu/password-hook-service/internal/config"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/worker"
 )
 
 const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
@@ -144,7 +146,7 @@ func TestNewWithQueueClosesOwnedQueueWhenAppWiringFails(t *testing.T) {
 	cfg.HMACSecret = ""
 	closer := &captureCloser{}
 
-	application, err := newWithQueue(cfg, &captureQueue{}, closer)
+	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)
 	if err == nil {
 		t.Fatal("newWithQueue returned nil error")
 	}
@@ -166,6 +168,9 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	cfg := completeAppConfig()
 	cfg.ServiceBusConnectionString = ""
 	cfg.ServiceBusQueueName = ""
+	cfg.GraphTenantID = ""
+	cfg.GraphClientID = ""
+	cfg.GraphClientSecret = ""
 
 	application, err := NewWithQueue(cfg, &captureQueue{})
 
@@ -177,11 +182,118 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewRequiresGraphCredentialsInFullMode(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.GraphClientSecret = ""
+
+	application, err := New(cfg)
+
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("New application = %#v, want nil", application)
+	}
+	if err.Error() != "GRAPH_CLIENT_SECRET is required" {
+		t.Fatalf("New error = %q, want GRAPH_CLIENT_SECRET is required", err.Error())
+	}
+}
+
+func TestRunStartsWorkerAndHTTPServer(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	receiver := newBlockingReceiver()
+	application, err := newWithWorkerDependencies(cfg, &captureQueue{}, receiver, &captureProcessor{}, &captureDeadLetterSink{}, mustPasswordCodec(t, cfg))
+	if err != nil {
+		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run(ctx)
+	}()
+
+	select {
+	case <-receiver.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker receiver was not started")
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+func TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker(t *testing.T) {
+	_, restore := captureDefaultLogger()
+	defer restore()
+
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	codec := &capturePasswordCodec{plaintext: []byte("worker-password")}
+	receiver := newSingleMessageReceiver(passwordSyncWorkerMessage(t))
+	processor := &captureProcessor{}
+	application, err := newWithWorkerDependencies(cfg, &captureQueue{}, receiver, processor, &captureDeadLetterSink{}, codec)
+	if err != nil {
+		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	rec := httptest.NewRecorder()
+
+	application.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if codec.encryptCalls != 1 {
+		t.Fatalf("codec encrypt calls = %d, want 1", codec.encryptCalls)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	processor.onProcess = cancel
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.Run(ctx)
+	}()
+
+	select {
+	case <-receiver.completed:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("worker message was not completed")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("Run did not return after worker processed message")
+	}
+	if codec.decryptCalls != 1 {
+		t.Fatalf("codec decrypt calls = %d, want 1", codec.decryptCalls)
+	}
+	if len(processor.passwords) != 1 || string(processor.passwords[0]) != "worker-password" {
+		t.Fatalf("processor passwords = %q, want [worker-password]", processor.passwords)
+	}
+}
+
 func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	closer := &captureCloser{}
 	cfg := completeAppConfig()
 	cfg.HTTPAddr = "127.0.0.1:0"
-	application, err := newWithQueue(cfg, &captureQueue{}, closer)
+	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)
 	if err != nil {
 		t.Fatalf("newWithQueue returned error: %v", err)
 	}
@@ -200,6 +312,50 @@ func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	}
 	if !closer.closeHadDeadlines[0] {
 		t.Fatal("close context has no deadline")
+	}
+}
+
+func TestRunClosesAllOwnedResources(t *testing.T) {
+	senderCloser := &captureCloser{}
+	receiverCloser := &captureCloser{}
+	dlqCloser := &captureCloser{}
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	application, err := newWithWorkerDependencies(
+		cfg,
+		&captureQueue{},
+		newBlockingReceiver(),
+		&captureProcessor{},
+		&captureDeadLetterSink{},
+		mustPasswordCodec(t, cfg),
+		senderCloser,
+		receiverCloser,
+		dlqCloser,
+	)
+	if err != nil {
+		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	for name, closer := range map[string]*captureCloser{
+		"sender":   senderCloser,
+		"receiver": receiverCloser,
+		"dlq":      dlqCloser,
+	} {
+		if closer.closeCalls != 1 {
+			t.Fatalf("%s close calls = %d, want 1", name, closer.closeCalls)
+		}
+		if err := closer.closeErrs[0]; err != nil {
+			t.Fatalf("%s close context err = %v, want nil", name, err)
+		}
+		if !closer.closeHadDeadlines[0] {
+			t.Fatalf("%s close context has no deadline", name)
+		}
 	}
 }
 
@@ -226,6 +382,130 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	_, hasDeadline := ctx.Deadline()
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
 	return nil
+}
+
+type blockingReceiver struct {
+	started chan struct{}
+}
+
+func newBlockingReceiver() *blockingReceiver {
+	return &blockingReceiver{started: make(chan struct{})}
+}
+
+func (r *blockingReceiver) ReceiveMessages(ctx context.Context, _ int) ([]*worker.Message, error) {
+	select {
+	case <-r.started:
+	default:
+		close(r.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (r *blockingReceiver) CompleteMessage(context.Context, *worker.Message) error {
+	return nil
+}
+
+func (r *blockingReceiver) AbandonMessage(context.Context, *worker.Message) error {
+	return nil
+}
+
+type singleMessageReceiver struct {
+	msg       *worker.Message
+	delivered bool
+	completed chan struct{}
+}
+
+func newSingleMessageReceiver(msg *worker.Message) *singleMessageReceiver {
+	return &singleMessageReceiver{msg: msg, completed: make(chan struct{})}
+}
+
+func (r *singleMessageReceiver) ReceiveMessages(ctx context.Context, _ int) ([]*worker.Message, error) {
+	if !r.delivered {
+		r.delivered = true
+		return []*worker.Message{r.msg}, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (r *singleMessageReceiver) CompleteMessage(context.Context, *worker.Message) error {
+	select {
+	case <-r.completed:
+	default:
+		close(r.completed)
+	}
+	return nil
+}
+
+func (r *singleMessageReceiver) AbandonMessage(context.Context, *worker.Message) error {
+	return nil
+}
+
+type captureProcessor struct {
+	onProcess func()
+	passwords [][]byte
+}
+
+func (p *captureProcessor) ProcessPasswordSync(_ context.Context, cmd worker.PasswordSyncCommand) error {
+	p.passwords = append(p.passwords, append([]byte(nil), cmd.Password...))
+	if p.onProcess != nil {
+		p.onProcess()
+	}
+	return nil
+}
+
+type captureDeadLetterSink struct{}
+
+func (s *captureDeadLetterSink) RecordPasswordSyncFailure(context.Context, worker.DeadLetterEntry) error {
+	return nil
+}
+
+type capturePasswordCodec struct {
+	encryptCalls int
+	decryptCalls int
+	plaintext    []byte
+}
+
+func (c *capturePasswordCodec) Encrypt(context.Context, []byte, []byte) (passwordcrypto.Envelope, error) {
+	c.encryptCalls++
+	return passwordcrypto.Envelope{
+		Ciphertext: "ciphertext",
+		Nonce:      "nonce",
+		KeyID:      "password-payload-key-v1",
+		Algorithm:  passwordcrypto.AlgorithmAES256GCM,
+	}, nil
+}
+
+func (c *capturePasswordCodec) Decrypt(context.Context, passwordcrypto.Envelope, []byte) ([]byte, error) {
+	c.decryptCalls++
+	return append([]byte(nil), c.plaintext...), nil
+}
+
+func passwordSyncWorkerMessage(t *testing.T) *worker.Message {
+	t.Helper()
+	body, err := json.Marshal(migration.PasswordSyncMessage{
+		CN:                 "311551001",
+		UPN:                "311551001@nycu.edu.tw",
+		PasswordCiphertext: "ciphertext",
+		PasswordNonce:      "nonce",
+		PasswordKeyID:      "password-payload-key-v1",
+		PasswordAlg:        passwordcrypto.AlgorithmAES256GCM,
+		EnqueuedAt:         time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("Marshal worker message: %v", err)
+	}
+	return &worker.Message{Kind: "password-sync", Body: body}
+}
+
+func mustPasswordCodec(t *testing.T, cfg config.Config) *passwordcrypto.Codec {
+	t.Helper()
+	codec, err := passwordcrypto.NewCodecFromBase64(cfg.PasswordEncryptionKeyB64, cfg.PasswordEncryptionKeyID)
+	if err != nil {
+		t.Fatalf("NewCodecFromBase64 returned error: %v", err)
+	}
+	return codec
 }
 
 func completeAppConfig() config.Config {
