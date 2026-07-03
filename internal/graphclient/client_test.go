@@ -264,6 +264,20 @@ func TestUpsertUserPasswordClearsRequestBodyBufferAfterAttempt(t *testing.T) {
 	}
 }
 
+func TestNewHTTPClientUsesBoundedDefaultHTTPClient(t *testing.T) {
+	client, err := NewHTTPClient(fakeTokenCredential{}, Options{})
+	if err != nil {
+		t.Fatalf("NewHTTPClient returned error: %v", err)
+	}
+
+	if client.httpClient == http.DefaultClient {
+		t.Fatal("default HTTP client uses http.DefaultClient")
+	}
+	if client.httpClient.Timeout <= 0 {
+		t.Fatalf("default HTTP client timeout = %v, want bounded timeout", client.httpClient.Timeout)
+	}
+}
+
 type seenGraphRequest struct {
 	authorization string
 	accept        string

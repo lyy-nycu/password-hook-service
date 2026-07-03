@@ -32,6 +32,11 @@ type appCloser interface {
 	Close(context.Context) error
 }
 
+type passwordCodec interface {
+	migration.PasswordEncrypter
+	worker.PasswordDecrypter
+}
+
 type App struct {
 	server  *httpserver.Server
 	worker  appWorker
@@ -74,7 +79,12 @@ func New(cfg config.Config) (*App, error) {
 		return nil, closeAfterWiringError(err, closers)
 	}
 
-	return newWithWorkerDependencies(cfg, queue, receiver, processor, dlq, closers...)
+	passwordCodec, err := newPasswordCodec(cfg)
+	if err != nil {
+		return nil, closeAfterWiringError(err, closers)
+	}
+
+	return newWithWorkerDependencies(cfg, queue, receiver, processor, dlq, passwordCodec, closers...)
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
@@ -87,7 +97,11 @@ func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
 	if queue == nil {
 		return nil, errors.New("migration queue is required")
 	}
-	return newWithQueue(cfg, queue)
+	passwordCodec, err := newPasswordCodec(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newWithQueue(cfg, queue, passwordCodec)
 }
 
 func newWithWorkerDependencies(
@@ -96,15 +110,15 @@ func newWithWorkerDependencies(
 	receiver worker.Receiver,
 	processor worker.Processor,
 	deadLetterSink worker.DeadLetterSink,
+	passwordCodec passwordCodec,
 	closers ...appCloser,
 ) (*App, error) {
-	application, err := newWithQueue(cfg, queue, closers...)
+	if passwordCodec == nil {
+		return nil, errors.Join(errors.New("password codec is required"), closeAppResources(context.Background(), closers))
+	}
+	application, err := newWithQueue(cfg, queue, passwordCodec, closers...)
 	if err != nil {
 		return nil, err
-	}
-	passwordCodec, err := passwordcrypto.NewCodecFromBase64(cfg.PasswordEncryptionKeyB64, cfg.PasswordEncryptionKeyID)
-	if err != nil {
-		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
 	}
 	passwordWorker, err := worker.New(receiver, processor, worker.Options{
 		DeadLetterSink:    deadLetterSink,
@@ -117,12 +131,11 @@ func newWithWorkerDependencies(
 	return application, nil
 }
 
-func newWithQueue(cfg config.Config, queue migration.Queue, closers ...appCloser) (*App, error) {
-	passwordCodec, err := passwordcrypto.NewCodecFromBase64(cfg.PasswordEncryptionKeyB64, cfg.PasswordEncryptionKeyID)
-	if err != nil {
-		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
+func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, closers ...appCloser) (*App, error) {
+	if passwordEncrypter == nil {
+		return nil, errors.Join(errors.New("password encrypter is required"), closeAppResources(context.Background(), closers))
 	}
-	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordCodec)
+	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter)
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
@@ -146,6 +159,10 @@ func newWithQueue(cfg config.Config, queue migration.Queue, closers ...appCloser
 	}, buildinfo.Current())
 
 	return &App{server: server, closers: append([]appCloser(nil), closers...)}, nil
+}
+
+func newPasswordCodec(cfg config.Config) (*passwordcrypto.Codec, error) {
+	return passwordcrypto.NewCodecFromBase64(cfg.PasswordEncryptionKeyB64, cfg.PasswordEncryptionKeyID)
 }
 
 func validatePasswordEncryptionConfig(cfg config.Config) error {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://graph.microsoft.com"
-	defaultScope   = "https://graph.microsoft.com/.default"
+	defaultBaseURL     = "https://graph.microsoft.com"
+	defaultScope       = "https://graph.microsoft.com/.default"
+	defaultHTTPTimeout = 15 * time.Second
 )
 
 type User struct {
@@ -99,7 +101,7 @@ func NewHTTPClient(credential TokenCredential, options Options) (*HTTPClient, er
 	}
 	httpClient := options.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	scope := strings.TrimSpace(options.Scope)
 	if scope == "" {
