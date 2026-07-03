@@ -60,6 +60,9 @@ func TestHookZerosDecodedPasswordAfterSubmit(t *testing.T) {
 	if len(encrypter.password) == 0 {
 		t.Fatal("encrypter did not see password bytes")
 	}
+	if got := string(encrypter.passwordCopy); got != "cleartext-password" {
+		t.Fatalf("encrypter password = %q, want cleartext-password", got)
+	}
 	assertZeroedBytes(t, encrypter.password, "decoded hook password after submit")
 }
 
@@ -77,6 +80,53 @@ func TestHookDecodesEscapedPasswordIntoBytes(t *testing.T) {
 	}
 	passwordcrypto.ZeroBytes(body.Password)
 	assertZeroedBytes(t, body.Password, "decoded escaped password")
+}
+
+func TestHookNullPasswordUsesRequiredFieldValidation(t *testing.T) {
+	t.Parallel()
+
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	hook := NewHook(service, "https://nycu.edu.tw/problems")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", strings.NewReader(`{"cn":"311551001","password":null,"displayName":"Student","mail":"student@nycu.edu.tw"}`))
+
+	hook.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "Field 'password' is required") {
+		t.Fatalf("problem response = %s, want password required validation", rec.Body.String())
+	}
+}
+
+func TestHookMatchesJSONStringSurrogateBehavior(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		json string
+		want string
+	}{
+		{name: "valid pair", json: `{"password":"\uD83D\uDE00"}`, want: "😀"},
+		{name: "unmatched high surrogate", json: `{"password":"\uD83Dx"}`, want: "�x"},
+		{name: "lone low surrogate", json: `{"password":"\uDE00"}`, want: "�"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body passwordHookRequest
+			if err := json.Unmarshal([]byte(`{"cn":"311551001","displayName":"Student","mail":"student@nycu.edu.tw",`+tt.json[1:]), &body); err != nil {
+				t.Fatalf("Unmarshal returned error: %v", err)
+			}
+			if got := string(body.Password); got != tt.want {
+				t.Fatalf("password = %q, want %q", got, tt.want)
+			}
+			passwordcrypto.ZeroBytes(body.Password)
+			assertZeroedBytes(t, body.Password, "decoded surrogate password")
+		})
+	}
 }
 
 func TestHookInvalidJSONDoesNotEchoPassword(t *testing.T) {
@@ -266,11 +316,13 @@ func (fakePasswordEncrypter) Encrypt(context.Context, []byte, []byte) (passwordc
 }
 
 type capturePasswordEncrypter struct {
-	password []byte
+	password     []byte
+	passwordCopy []byte
 }
 
 func (e *capturePasswordEncrypter) Encrypt(_ context.Context, password []byte, _ []byte) (passwordcrypto.Envelope, error) {
 	e.password = password
+	e.passwordCopy = append([]byte(nil), password...)
 	return passwordcrypto.Envelope{
 		Ciphertext: "ciphertext",
 		Nonce:      "nonce",

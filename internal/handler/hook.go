@@ -103,6 +103,10 @@ func (p *passwordBytes) UnmarshalJSON(data []byte) error {
 	passwordcrypto.ZeroBytes(*p)
 	*p = nil
 
+	if string(data) == "null" {
+		return nil
+	}
+
 	decoded, err := decodeJSONStringBytes(data)
 	if err != nil {
 		return err
@@ -175,18 +179,18 @@ func decodeUnicodeEscape(data []byte) (rune, int, error) {
 		return r, 4, nil
 	}
 	if r < 0xD800 || r > 0xDBFF {
-		return 0, 0, errors.New("password contains invalid unicode surrogate")
+		return utf8.RuneError, 4, nil
 	}
 	if len(data) < 10 || data[4] != '\\' || data[5] != 'u' {
-		return 0, 0, errors.New("password contains unmatched unicode surrogate")
+		return utf8.RuneError, 4, nil
 	}
 	low, err := hex4(data[6:10])
 	if err != nil {
-		return 0, 0, err
+		return utf8.RuneError, 4, nil
 	}
 	decoded := utf16.DecodeRune(r, low)
 	if decoded == utf8.RuneError {
-		return 0, 0, errors.New("password contains invalid unicode surrogate pair")
+		return utf8.RuneError, 4, nil
 	}
 	return decoded, 10, nil
 }
