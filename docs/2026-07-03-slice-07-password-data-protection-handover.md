@@ -6,15 +6,15 @@
 
 **Branch:** `slice-7-password-data-protection-plan`
 
-**Current HEAD:** `7803358 test: strengthen password leak guards`
+**Current HEAD:** `2f06cd5 docs: complete password data protection slice`
 
-**Plan:** `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
+**Plan:** `docs/superpowers/plans/completed/2026-07-03-slice-07-password-data-protection.md` (moved from `active/` on completion)
 
 ---
 
 ## Current Status
 
-Slice 7 implementation is **in progress**.
+Slice 7 implementation is **complete**.
 
 Completed:
 
@@ -22,10 +22,7 @@ Completed:
 - Task 2: hook mutable password decoding is complete. Final code-quality re-review over the full Task 2 range (`2247dda..e9d9f8a`) passed with no Critical or Important issues.
 - Task 3: worker message bodies are zeroed before success, retry-cancel abandon, and terminal safe-DLQ settlement. Code-quality review passed with no issues.
 - Task 4: strengthened Graph error-path body zeroing regression coverage and broadened logger sensitive-key detection. Code-quality review passed with no Critical or Important issues.
-
-Pending:
-
-- Task 5: final docs, roadmap completion, full verification, and leak scans.
+- Task 5: updated README worker behavior notes, ran full verification and leak-focused repository scans (all clean), moved the plan to `completed/`, and marked Slice 7 Done in `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md`.
 
 Todo state at handover:
 
@@ -35,7 +32,7 @@ Todo state at handover:
 | `slice7-task2-hook` | done |
 | `slice7-task3-worker` | done |
 | `slice7-task4-guards` | done |
-| `slice7-task5-final` | pending |
+| `slice7-task5-final` | done |
 
 ---
 
@@ -55,6 +52,8 @@ Todo state at handover:
 | `e9c1742` | `fix: zero worker message bodies before settlement` | Zeros `msg.Body` before success completion, retry-cancel abandon, and terminal safe-DLQ recording in `processMessage`. The invalid-message path already did this. Code-quality review passed with no issues. |
 | `8500549` | `docs: update handover for Task 3 completion` | Updates this handover file; docs-only, no code changes. |
 | `7803358` | `test: strengthen password leak guards` | Adds Graph request-body zeroing regression test for error responses (patch/create x permanent/transient); broadens `pkg/logger.isSensitiveKey` to substring matching so `passwordCiphertext`, `password_nonce`, `GRAPH_CLIENT_SECRET`, `clientSecret`, and `access_token` are masked, while non-sensitive keys like `requestNonce` remain visible. Code-quality review passed with no issues. |
+| `bfd225d` | `docs: update handover for Task 4 completion` | Updates this handover file; docs-only, no code changes. |
+| `2f06cd5` | `docs: complete password data protection slice` | Updates README worker behavior notes; runs full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans (all clean); moves the plan to `completed/` and updates its status header; marks Slice 7 Done in `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md`. |
 
 ---
 
@@ -133,6 +132,17 @@ Task 4:
   - One Minor, non-blocking, out-of-scope note: `isSensitiveKey` still does not match `connectionString` (e.g. `ServiceBusConnectionString`), which is a real secret structurally similar to `GraphClientSecret`. This is currently latent, not exploitable, since no code path logs config via slog today. Worth a follow-up if a future change logs config for diagnostics.
 - **Task 4 is now done.**
 
+Task 5:
+
+- Updated `README.md` Worker Behavior section to describe mutable password buffers end to end (hook decode -> zero, worker decrypt/Graph call -> zero before retry/DLQ/settlement) and added a sentence noting structured logging masks password/secret/token key variants.
+- Ran targeted tests (`go test ./internal/migration ./internal/handler ./internal/worker ./internal/graphclient ./pkg/logger -v`), full verification (`go test ./... -count=1`, `go vet ./...`), and all three plan-specified leak-focused `rg` scans. All clean:
+  - No runtime code assigns plaintext into an immutable password string; the only matches were the hook's `passwordBytes` JSON tag, intentional test fixtures, and the two `Password string json:"-"` compatibility fields (`internal/migration/message.go`, `internal/worker/worker.go`), which are only ever explicitly cleared to `""` in runtime code (`internal/worker/worker.go:338`, `internal/servicebusqueue/deadletter.go:54`), never assigned plaintext.
+  - No unmasked `slog.String`/`slog.Any` call with a password/secret/token key exists outside test files.
+  - No `DeadLetterEntry` or Service Bus `ApplicationProperties` in runtime code carries plaintext password, ciphertext, nonce, or password-derived material; only matches were test fixtures.
+- Moved the plan to `docs/superpowers/plans/completed/2026-07-03-slice-07-password-data-protection.md` and changed its status header from `Active` to `Completed`.
+- Updated `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md` active-plan pointers to `not created; Next slice is Slice 8 Observability`, and updated the Slice 7 roadmap completion table row to `Done`.
+- **Task 5 is now done. Slice 7 is complete.**
+
 No background agent is currently running.
 
 ---
@@ -152,6 +162,9 @@ Verified directly during this session:
 - Implemented Task 4 via TDD (RED/GREEN): `go test ./internal/graphclient ./pkg/logger -v` showed `internal/graphclient` already passing pre-fix (as the plan anticipated) and `pkg/logger` failing on `passwordCiphertext` before the fix, passing after. Full `go test ./... -count=1` passed after commit `7803358`.
 - Task 4 code-quality review over `e9c1742..7803358` passed with no Critical or Important issues. Reviewer ran `go build`, `go vet`, `go test ./...`, all clean.
 - `slice7-task4-guards` marked done in the handover todo table.
+- Ran Task 5 verification directly: `go test ./internal/migration ./internal/handler ./internal/worker ./internal/graphclient ./pkg/logger -v` passed; `go build ./...`, `go vet ./...`, `go test ./... -count=1` all passed after commit `2f06cd5`.
+- Ran all three plan-specified leak-focused `rg` scans directly; all results matched the plan's expected clean output (see Review State above for details).
+- `slice7-task5-final` marked done in the handover todo table. **Slice 7 is complete.**
 
 Earlier verified before this session:
 
@@ -163,16 +176,18 @@ Earlier verified before this session:
 
 ## Recommended Next Steps
 
-1. Continue with Task 5 from the active plan: final docs (README worker behavior and data protection notes), update `docs/superpowers/plans/README.md` and `docs/superpowers/plans/roadmap.md` to mark Slice 7 completed, run full verification (`go build ./...`, `go vet ./...`, `go test ./... -count=1`), run the plan's leak-focused repository scans, then move the active plan file to `docs/superpowers/plans/completed/`.
+Slice 7 is complete. Recommended follow-up work:
 
-2. Optional follow-up beyond Slice 7 scope (from the Task 4 review's Minor note): consider broadening `isSensitiveKey` in `pkg/logger/logger.go` to also match `connectionString`-style keys (e.g. `ServiceBusConnectionString`) if a future change ever logs config values via slog.
+1. Merge or open a PR for branch `slice-7-password-data-protection-plan` per your normal integration workflow; this handover doc does not decide that for you.
+
+2. Start Slice 8 Observability by creating its detailed plan (the roadmap and plans README now point to "not created" for the active plan).
+
+3. Optional follow-up beyond Slice 7 scope (from the Task 4 review's Minor note): consider broadening `isSensitiveKey` in `pkg/logger/logger.go` to also match `connectionString`-style keys (e.g. `ServiceBusConnectionString`) if a future change ever logs config values via slog.
 
 ---
 
 ## Files Most Relevant for Continuation
 
-- `README.md`
-- `docs/superpowers/plans/README.md`
 - `docs/superpowers/plans/roadmap.md`
-- `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
-- `docs/superpowers/plans/completed/` (destination for the plan file once Task 5 is done)
+- `docs/superpowers/plans/README.md`
+- `docs/superpowers/plans/completed/2026-07-03-slice-07-password-data-protection.md` (reference for Slice 7's final implementation)
