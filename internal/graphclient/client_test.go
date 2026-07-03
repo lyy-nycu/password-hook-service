@@ -141,26 +141,67 @@ func TestUpsertUserPasswordSendsBearerToken(t *testing.T) {
 		if req.authorization != "Bearer test-token" {
 			t.Fatalf("request %d Authorization = %q, want Bearer test-token", i+1, req.authorization)
 		}
+		assertAcceptHeader(t, req)
 	}
+	assertNoContentType(t, requests[0])
+	assertJSONContentType(t, requests[1])
+}
+
+func TestUpsertUserPasswordSendsJSONHeadersForCreate(t *testing.T) {
+	var requests []seenGraphRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, captureGraphRequest(t, r))
+		if len(requests) == 1 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, nil)
+
+	err := client.UpsertUserPassword(context.Background(), User{UPN: "311551001@nycu.edu.tw"}, []byte("cleartext-password"))
+
+	if err != nil {
+		t.Fatalf("UpsertUserPassword returned error: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	for _, req := range requests {
+		assertAcceptHeader(t, req)
+	}
+	assertNoContentType(t, requests[0])
+	assertJSONContentType(t, requests[1])
 }
 
 func TestUpsertUserPasswordClassifiesGraphStatuses(t *testing.T) {
 	tests := []struct {
-		name     string
-		status   int
-		network  bool
-		wantType any
+		name      string
+		operation graphStatusOperation
+		status    int
+		network   bool
+		wantType  any
 	}{
-		{name: "bad request", status: http.StatusBadRequest, wantType: (*PermanentError)(nil)},
-		{name: "forbidden", status: http.StatusForbidden, wantType: (*PermanentError)(nil)},
-		{name: "rate limited", status: http.StatusTooManyRequests, wantType: (*TransientError)(nil)},
-		{name: "service unavailable", status: http.StatusServiceUnavailable, wantType: (*TransientError)(nil)},
+		{name: "lookup bad request", operation: graphStatusLookup, status: http.StatusBadRequest, wantType: (*PermanentError)(nil)},
+		{name: "lookup forbidden", operation: graphStatusLookup, status: http.StatusForbidden, wantType: (*PermanentError)(nil)},
+		{name: "lookup rate limited", operation: graphStatusLookup, status: http.StatusTooManyRequests, wantType: (*TransientError)(nil)},
+		{name: "lookup service unavailable", operation: graphStatusLookup, status: http.StatusServiceUnavailable, wantType: (*TransientError)(nil)},
+		{name: "patch bad request", operation: graphStatusPatch, status: http.StatusBadRequest, wantType: (*PermanentError)(nil)},
+		{name: "patch forbidden", operation: graphStatusPatch, status: http.StatusForbidden, wantType: (*PermanentError)(nil)},
+		{name: "patch rate limited", operation: graphStatusPatch, status: http.StatusTooManyRequests, wantType: (*TransientError)(nil)},
+		{name: "patch service unavailable", operation: graphStatusPatch, status: http.StatusServiceUnavailable, wantType: (*TransientError)(nil)},
+		{name: "create bad request", operation: graphStatusCreate, status: http.StatusBadRequest, wantType: (*PermanentError)(nil)},
+		{name: "create forbidden", operation: graphStatusCreate, status: http.StatusForbidden, wantType: (*PermanentError)(nil)},
+		{name: "create rate limited", operation: graphStatusCreate, status: http.StatusTooManyRequests, wantType: (*TransientError)(nil)},
+		{name: "create service unavailable", operation: graphStatusCreate, status: http.StatusServiceUnavailable, wantType: (*TransientError)(nil)},
 		{name: "network", network: true, wantType: (*TransientError)(nil)},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := newStatusClient(t, tt.status, tt.network)
+			client := newStatusClient(t, tt.operation, tt.status, tt.network)
 
 			err := client.UpsertUserPassword(context.Background(), User{UPN: "311551001@nycu.edu.tw"}, []byte("cleartext-password"))
 
@@ -186,35 +227,47 @@ func TestUpsertUserPasswordClassifiesGraphStatuses(t *testing.T) {
 }
 
 func TestUpsertUserPasswordClearsRequestBodyBufferAfterAttempt(t *testing.T) {
-	var captured []byte
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	client := newTestClient(t, server.URL, func(body []byte) {
-		captured = body
-	})
-
-	err := client.UpsertUserPassword(context.Background(), User{UPN: "311551001@nycu.edu.tw"}, []byte("cleartext-password"))
-
-	if err != nil {
-		t.Fatalf("UpsertUserPassword returned error: %v", err)
+	tests := []struct {
+		name      string
+		operation graphStatusOperation
+		status    int
+		wantErr   bool
+	}{
+		{name: "patch success", operation: graphStatusPatch, status: http.StatusNoContent},
+		{name: "create success", operation: graphStatusCreate, status: http.StatusCreated},
+		{name: "patch failure", operation: graphStatusPatch, status: http.StatusServiceUnavailable, wantErr: true},
+		{name: "create failure", operation: graphStatusCreate, status: http.StatusServiceUnavailable, wantErr: true},
 	}
-	if len(captured) == 0 {
-		t.Fatal("AfterRequestBodyBuilt did not capture a body")
-	}
-	if bytes.Contains(captured, []byte("cleartext-password")) {
-		t.Fatalf("request body buffer still contains password after attempt: %q", captured)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var captured []byte
+			client := newStatusClientWithBodyHook(t, tt.operation, tt.status, func(body []byte) {
+				captured = body
+			})
+
+			err := client.UpsertUserPassword(context.Background(), User{UPN: "311551001@nycu.edu.tw"}, []byte("cleartext-password"))
+
+			if tt.wantErr && err == nil {
+				t.Fatal("UpsertUserPassword returned nil error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("UpsertUserPassword returned error: %v", err)
+			}
+			if len(captured) == 0 {
+				t.Fatal("AfterRequestBodyBuilt did not capture a body")
+			}
+			if bytes.Contains(captured, []byte("cleartext-password")) {
+				t.Fatalf("request body buffer still contains password after attempt: %q", captured)
+			}
+		})
 	}
 }
 
 type seenGraphRequest struct {
 	authorization string
+	accept        string
+	contentType   string
 	body          []byte
 }
 
@@ -223,7 +276,30 @@ func captureGraphRequest(t *testing.T, r *http.Request) seenGraphRequest {
 	body := readAll(t, r)
 	return seenGraphRequest{
 		authorization: r.Header.Get("Authorization"),
+		accept:        r.Header.Get("Accept"),
+		contentType:   r.Header.Get("Content-Type"),
 		body:          body,
+	}
+}
+
+func assertAcceptHeader(t *testing.T, req seenGraphRequest) {
+	t.Helper()
+	if req.accept != "application/json" {
+		t.Fatalf("Accept = %q, want application/json", req.accept)
+	}
+}
+
+func assertJSONContentType(t *testing.T, req seenGraphRequest) {
+	t.Helper()
+	if req.contentType != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", req.contentType)
+	}
+}
+
+func assertNoContentType(t *testing.T, req seenGraphRequest) {
+	t.Helper()
+	if req.contentType != "" {
+		t.Fatalf("Content-Type = %q, want empty", req.contentType)
 	}
 }
 
@@ -269,10 +345,15 @@ func newTestClient(t *testing.T, baseURL string, afterBody func([]byte)) *HTTPCl
 	return client
 }
 
-func newStatusClient(t *testing.T, status int, network bool) *HTTPClient {
+func newStatusClient(t *testing.T, operation graphStatusOperation, status int, network bool) *HTTPClient {
+	t.Helper()
+	return newStatusClientWithBodyHook(t, operation, status, nil, network)
+}
+
+func newStatusClientWithBodyHook(t *testing.T, operation graphStatusOperation, status int, afterBody func([]byte), network ...bool) *HTTPClient {
 	t.Helper()
 
-	if network {
+	if len(network) > 0 && network[0] {
 		client, err := NewHTTPClient(fakeTokenCredential{}, Options{
 			BaseURL: "https://graph.invalid",
 			HTTPClient: &http.Client{
@@ -287,12 +368,37 @@ func newStatusClient(t *testing.T, status int, network bool) *HTTPClient {
 		return client
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(status)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch operation {
+		case graphStatusLookup:
+			w.WriteHeader(status)
+		case graphStatusPatch:
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			w.WriteHeader(status)
+		case graphStatusCreate:
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(status)
+		default:
+			t.Fatalf("unsupported graph status operation %q", operation)
+		}
 	}))
 	t.Cleanup(server.Close)
-	return newTestClient(t, server.URL, nil)
+	return newTestClient(t, server.URL, afterBody)
 }
+
+type graphStatusOperation string
+
+const (
+	graphStatusLookup graphStatusOperation = "lookup"
+	graphStatusPatch  graphStatusOperation = "patch"
+	graphStatusCreate graphStatusOperation = "create"
+)
 
 type fakeTokenCredential struct{}
 
