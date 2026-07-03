@@ -19,8 +19,10 @@ type PasswordEncrypter interface {
 }
 
 type Request struct {
-	CN          string
-	Password    string
+	CN string
+	// Password is borrowed mutable memory. Submit zeroes it before returning on
+	// every success, skip, and error path; callers must not reuse it afterward.
+	Password    []byte
 	DisplayName string
 	Mail        string
 }
@@ -50,6 +52,8 @@ func NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter) 
 }
 
 func (s *Service) Submit(ctx context.Context, req Request) (Decision, error) {
+	defer passwordcrypto.ZeroBytes(req.Password)
+
 	identityType := ClassifyCN(req.CN)
 	decision := Decision{IdentityType: identityType}
 
@@ -82,9 +86,7 @@ func (s *Service) Submit(ctx context.Context, req Request) (Decision, error) {
 		Mail:        strings.TrimSpace(req.Mail),
 		EnqueuedAt:  s.now().UTC(),
 	}
-	passwordBytes := []byte(req.Password)
-	defer passwordcrypto.ZeroBytes(passwordBytes)
-	env, err := s.encrypter.Encrypt(ctx, passwordBytes, passwordAAD(msg.CN, msg.UPN, msg.EnqueuedAt))
+	env, err := s.encrypter.Encrypt(ctx, req.Password, passwordAAD(msg.CN, msg.UPN, msg.EnqueuedAt))
 	if err != nil {
 		return decision, fmt.Errorf("encrypt password payload: %w", err)
 	}
