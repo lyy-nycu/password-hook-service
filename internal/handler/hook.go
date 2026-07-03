@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"unicode/utf16"
@@ -14,6 +13,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/migration"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
+	"github.com/nycu/password-hook-service/internal/sensitiveio"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
 
@@ -35,7 +35,7 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawBody, err := io.ReadAll(r.Body)
+	rawBody, err := sensitiveio.ReadAll(r.Body)
 	defer passwordcrypto.ZeroBytes(rawBody)
 	if err != nil {
 		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be readable"))

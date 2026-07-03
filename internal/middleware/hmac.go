@@ -16,6 +16,7 @@ import (
 
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
+	"github.com/nycu/password-hook-service/internal/sensitiveio"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
 
@@ -53,12 +54,12 @@ func NewHMACWithProblemBase(secret string, nonces NonceStore, skew time.Duration
 
 func (m HMAC) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
+		body, err := sensitiveio.ReadAll(r.Body)
+		defer passwordcrypto.ZeroBytes(body)
 		if err != nil {
 			m.writeUnauthorized(w, r, "failed to read request body")
 			return
 		}
-		defer passwordcrypto.ZeroBytes(body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
 		timestampHeader := r.Header.Get("X-Hook-Timestamp")

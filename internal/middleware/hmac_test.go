@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -77,6 +78,32 @@ func TestHMACZerosBodyAfterNextHandler(t *testing.T) {
 		t.Fatalf("read forwarded body: %v", err)
 	}
 	assertZeroedBytes(t, forwarded, "hmac forwarded body after handler")
+}
+
+func TestHMACZerosBodyWhenReadFails(t *testing.T) {
+	t.Parallel()
+
+	requestBody := &readErrorBody{data: []byte(`{"cn":"311551001","password":"cleartext-password"}`)}
+	middleware, err := NewHMAC("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewHMAC returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.Body = requestBody
+
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if len(requestBody.observed) == 0 {
+		t.Fatal("read error body did not expose bytes to middleware")
+	}
+	assertZeroedBytes(t, requestBody.observed, "hmac request body after read error")
 }
 
 func TestHMACRejectsReplayedNonce(t *testing.T) {
@@ -226,6 +253,20 @@ func sign(secret string, timestamp int64, nonce string, body []byte) string {
 	_, _ = mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+type readErrorBody struct {
+	data     []byte
+	observed []byte
+}
+
+func (b *readErrorBody) Read(p []byte) (int, error) {
+	n := copy(p, b.data)
+	// Keep the read buffer alias so the test can verify middleware zeroing.
+	b.observed = p[:n]
+	return n, errors.New("read failed")
+}
+
+func (b *readErrorBody) Close() error { return nil }
 
 func assertZeroedBytes(t *testing.T, buf []byte, context string) {
 	t.Helper()
