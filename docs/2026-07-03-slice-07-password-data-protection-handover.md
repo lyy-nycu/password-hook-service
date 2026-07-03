@@ -6,7 +6,7 @@
 
 **Branch:** `slice-7-password-data-protection-plan`
 
-**Current HEAD:** `e9d9f8a fix: reject unescaped quote in password decoder`
+**Current HEAD:** `e9c1742 fix: zero worker message bodies before settlement`
 
 **Plan:** `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
 
@@ -20,10 +20,10 @@ Completed:
 
 - Task 1: migration password ownership is complete and reviewed.
 - Task 2: hook mutable password decoding is complete. Final code-quality re-review over the full Task 2 range (`2247dda..e9d9f8a`) passed with no Critical or Important issues.
+- Task 3: worker message bodies are zeroed before success, retry-cancel abandon, and terminal safe-DLQ settlement. Code-quality review passed with no issues.
 
 Pending:
 
-- Task 3: zero worker message bodies before settlement.
 - Task 4: strengthen Graph and log leak guards.
 - Task 5: final docs, roadmap completion, full verification, and leak scans.
 
@@ -33,7 +33,7 @@ Todo state at handover:
 |---|---|
 | `slice7-task1-migration` | done |
 | `slice7-task2-hook` | done |
-| `slice7-task3-worker` | pending |
+| `slice7-task3-worker` | done |
 | `slice7-task4-guards` | pending |
 | `slice7-task5-final` | pending |
 
@@ -51,6 +51,8 @@ Todo state at handover:
 | `c5d6dea` | `fix: zero hook authentication body buffers` | Adds HMAC raw body zeroing and decoder capacity regression for invalid UTF-8 expansion. |
 | `0169e14` | `fix: zero sensitive request body read buffers` | Adds `internal/sensitiveio.ReadAll`, switches hook/HMAC to it, and adds tests for growth-buffer zeroing and HMAC read-error zeroing. |
 | `e9d9f8a` | `fix: reject unescaped quote in password decoder` | Hardens `decodeJSONStringBytes` to reject an interior unescaped `"` when called directly, adds a regression test, and documents why `passwordBytes` uses a custom decoder instead of stdlib alternatives. |
+| `54e330b` | `docs: update handover for Task 2 completion` | Updates this handover file; docs-only, no code changes. |
+| `e9c1742` | `fix: zero worker message bodies before settlement` | Zeros `msg.Body` before success completion, retry-cancel abandon, and terminal safe-DLQ recording in `processMessage`. The invalid-message path already did this. Code-quality review passed with no issues. |
 
 ---
 
@@ -108,6 +110,17 @@ Task 2:
   - One Minor note (non-blocking): `TestHookInvalidUTF8DecodeDoesNotNeedToGrowPasswordBuffer` only checks a capacity lower bound, so it wouldn't catch a future regression that causes buffer growth; not required to fix now since the current capacity formula is provably tight.
 - **Task 2 is now done.**
 
+Task 3:
+
+- Implemented via TDD: added failing tests `TestWorkerZerosMessageBodyBeforeSuccessSettlement`, `TestWorkerZerosMessageBodyBeforeTerminalSafeDLQ`, `TestWorkerZerosMessageBodyBeforeRetryCancelAbandon` (confirmed RED), then added `zeroMessageBody(msg)` before the success, retry-cancel, and terminal safe-DLQ settlement paths in `processMessage` (confirmed GREEN).
+- Code-quality review over `e9d9f8a..e9c1742` passed with **no issues**. Reviewer independently verified:
+  - Diff exactly matches the plan's Task 3 Step 3 specification.
+  - All decoded-message settlement paths (invalid, success, retry-cancel, terminal) now zero `msg.Body` before settling.
+  - No use-after-zero or missed-path bug; no race between zeroing and test assertions (fakes invoke settlement callbacks synchronously).
+  - The real `servicebusqueue.Receiver` also independently zeroes buffers in `CompleteMessage`/`AbandonMessage`; the worker-level zeroing added here is an additional, implementation-independent guarantee.
+  - `go build`, `go vet`, `go test ./...`, and `go test ./internal/worker -race` all pass cleanly.
+- **Task 3 is now done.**
+
 No background agent is currently running.
 
 ---
@@ -121,6 +134,9 @@ Verified directly during this session:
 - `go test ./... -count=1` passed after `e9d9f8a` (all packages, including `internal/sensitiveio`, `internal/handler`, `internal/middleware`).
 - Task 2 final code-quality re-review over `2247dda..e9d9f8a` passed with no Critical or Important issues (see Review State above). Reviewer independently ran `go build`, `go vet`, and `go test ./... -race`, all clean.
 - `slice7-task2-hook` marked done in the handover todo table.
+- Implemented Task 3 via TDD (RED/GREEN): `go test ./internal/worker -run 'TestWorkerZerosMessageBody' -v` failed as expected before the fix, passed after. Full `go test ./internal/worker -v -count=1` and `go test ./... -count=1` passed after commit `e9c1742`.
+- Task 3 code-quality review over `e9d9f8a..e9c1742` passed with no issues. Reviewer ran `go build`, `go vet`, `go test ./...`, and `go test ./internal/worker -race`, all clean.
+- `slice7-task3-worker` marked done in the handover todo table.
 
 Earlier verified before this session:
 
@@ -132,20 +148,16 @@ Earlier verified before this session:
 
 ## Recommended Next Steps
 
-1. Continue with Task 3 from the active plan: zero worker message bodies before success, retry-cancel abandon, and terminal safe-DLQ settlement. Follow TDD (RED/GREEN) for each new behavior, and request a code-quality review after Task 3 completes, before moving to Task 4.
+1. Continue with Task 4 from the active plan: strengthen Graph and log leak guards — add Graph request-body zeroing regression tests for error responses, and broaden logger sensitive-key detection to cover variants such as `passwordCiphertext`, `clientSecret`, and `access_token`. Follow TDD (RED/GREEN) for each new behavior, and request a code-quality review after Task 4 completes, before moving to Task 5.
 
-2. Continue through Task 4 and Task 5, then move the active plan to `completed/` only after final verification and leak scans pass.
+2. Continue through Task 5, then move the active plan to `completed/` only after final verification and leak scans pass.
 
 ---
 
 ## Files Most Relevant for Continuation
 
-- `internal/migration/service.go`
-- `internal/migration/service_test.go`
-- `internal/handler/hook.go`
-- `internal/handler/hook_test.go`
-- `internal/middleware/hmac.go`
-- `internal/middleware/hmac_test.go`
-- `internal/sensitiveio/read.go`
-- `internal/sensitiveio/read_test.go`
+- `internal/graphclient/client.go`
+- `internal/graphclient/client_test.go`
+- `pkg/logger/logger.go`
+- `pkg/logger/logger_test.go`
 - `docs/superpowers/plans/active/2026-07-03-slice-07-password-data-protection.md`
