@@ -129,6 +129,24 @@ func TestHookMatchesJSONStringSurrogateBehavior(t *testing.T) {
 	}
 }
 
+func TestHookMatchesInvalidUTF8StringBehavior(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`{"cn":"311551001","password":"`)
+	data = append(data, 0xff)
+	data = append(data, []byte(`","displayName":"Student","mail":"student@nycu.edu.tw"}`)...)
+
+	var body passwordHookRequest
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if got := string(body.Password); got != "�" {
+		t.Fatalf("password = %q, want replacement rune", got)
+	}
+	passwordcrypto.ZeroBytes(body.Password)
+	assertZeroedBytes(t, body.Password, "decoded invalid utf8 password")
+}
+
 func TestHookInvalidJSONDoesNotEchoPassword(t *testing.T) {
 	t.Parallel()
 

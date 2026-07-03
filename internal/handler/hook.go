@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -103,7 +104,7 @@ func (p *passwordBytes) UnmarshalJSON(data []byte) error {
 	passwordcrypto.ZeroBytes(*p)
 	*p = nil
 
-	if string(data) == "null" {
+	if bytes.Equal(data, []byte("null")) {
 		return nil
 	}
 
@@ -132,7 +133,13 @@ func decodeJSONStringBytes(data []byte) (_ []byte, err error) {
 			if b < 0x20 {
 				return nil, errors.New("password contains invalid json string control character")
 			}
-			out = append(out, b)
+			if b < utf8.RuneSelf {
+				out = append(out, b)
+				continue
+			}
+			r, size := utf8.DecodeRune(data[i : len(data)-1])
+			out = utf8.AppendRune(out, r)
+			i += size - 1
 			continue
 		}
 
