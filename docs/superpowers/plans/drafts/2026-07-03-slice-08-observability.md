@@ -6,7 +6,7 @@
 
 **Goal:** Add operational logs, metrics, and traceability for the hook, worker, Graph processor, and queue/DLQ depth paths without logging or persisting password material.
 
-**Architecture:** Introduce a small internal observability package with event-name constants, field helpers, and a `Recorder` interface for counters/timers/gauges. Wire no-op defaults through existing app construction so tests can inject capturing recorders without requiring Azure Monitor. Keep Azure Monitor export as an adapter boundary and expose queue depth through a probe interface that infrastructure can later connect to Azure Monitor.
+**Architecture:** Introduce a small internal observability package with event-name constants, field helpers, and a `Recorder` interface for counters/timers/gauges. Wire no-op defaults through existing app construction so tests can inject capturing recorders without requiring Azure Monitor. Keep every backend integration as an adapter boundary so Azure Monitor, GCP Cloud Monitoring, Grafana/Prometheus, or OpenTelemetry can be added later without hard-coding a provider into hook, worker, Graph, or queue business logic.
 
 **Tech Stack:** Go `log/slog`, existing `requestid` context values, existing `pkg/logger` masking handler, Azure Service Bus SDK receiver/sender boundaries, unit tests with in-memory fakes.
 
@@ -17,6 +17,7 @@
 - Do not start this implementation while Slice 7 is active unless the owner explicitly confirms it is independent from Slice 7's password lifecycle changes.
 - Refresh all touched files against the latest `main` before promotion because Slice 7 may change worker, logging, or leak-test behavior.
 - Do not add OpenTelemetry, Prometheus, or Azure SDK exporter dependencies in this slice unless a later decision explicitly chooses an exporter. This slice should define stable instrumentation points and testable interfaces.
+- Observability signals must be backend-neutral. Slice 8 defines internal logs, metric names, labels, trace propagation, and queue-depth probe boundaries only. Exporters to Azure Monitor, GCP Cloud Monitoring, Grafana/Prometheus, or OpenTelemetry must be adapters over `observability.Recorder`, not direct dependencies from hook, worker, Graph processor, or queue business logic.
 - Do not record cleartext passwords, password ciphertext, password nonce, password key IDs, request bodies, Service Bus message bodies, Graph authorization headers, or Graph request bodies in logs or metrics labels.
 
 ## Current Context
@@ -534,6 +535,8 @@ Provide methods that call `Recorder.SetGauge(ctx, "queue_depth", count, Labels{"
 
 Do not invent Azure management-plane credentials in this slice. Production can wire depth probes later from infrastructure/runtime config. This slice should make the hook point testable and documented.
 
+Do not couple the depth reporter to Azure Monitor. The reporter should publish backend-neutral gauges through `observability.Recorder`; provider-specific exporters can consume those gauges in a later slice.
+
 - [ ] **Step 5: Run focused tests**
 
 Run: `/usr/local/go/bin/go test ./internal/servicebusqueue`
@@ -598,6 +601,10 @@ Metrics:
 
 Safety:
 - passwords, ciphertext, nonce, key IDs, request bodies, Graph tokens, and Graph request bodies are not logged or used as metric labels
+
+Backend portability:
+- hook, worker, Graph, and queue packages depend only on internal observability interfaces
+- Azure Monitor, GCP Cloud Monitoring, Grafana/Prometheus, and OpenTelemetry integrations are exporter adapters, not business-logic dependencies
 ```
 
 - [ ] **Step 5: Run focused tests**
@@ -665,7 +672,7 @@ git commit -m "docs: promote slice 8 observability plan"
 
 ## Draft Self-Review
 
-- Spec coverage: covers structured JSON audit logs, trace IDs, hook/worker success/failure/skip counters, queue depth, safe DLQ depth, and Graph latency from design section 9.
+- Spec coverage: covers structured JSON audit logs, trace IDs, hook/worker success/failure/skip counters, queue depth, safe DLQ depth, Graph latency, and backend-neutral observability adapter boundaries from design section 9 and later platform portability requirements.
 - Scope control: excludes alert rules, dashboards, Azure Monitor exporter implementation, OpenTelemetry dependency selection, and infrastructure provisioning. Those remain later-slice work unless explicitly pulled forward.
 - Type consistency: uses one `observability.Recorder` interface and one `observability.Labels` type across hook, worker, graph processor, and queue depth probes.
 - Secret safety: labels and logs intentionally exclude passwords, ciphertext, nonce, key IDs, request bodies, Graph tokens, and Graph request bodies.
