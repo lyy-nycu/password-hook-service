@@ -21,7 +21,8 @@
 | 5 | Retry and DLQ Policy | Implement the failure policy from the design. | Slice 4 | Transient Graph-like failures retry with 1s/2s/4s backoff; permanent failures go to DLQ; DLQ payload excludes password. |
 | 6 | Microsoft Graph Client | Create or update Entra users and passwords. | Slice 4 | Existing users are patched; missing users are created; Graph 400/403/429/503/network errors classify correctly. |
 | 7 | Password Data Protection | Enforce no persistence and memory cleanup behavior. | Slices 2, 4, 6 | Password fields are zeroed after enqueue/process; logs and DLQ never contain password; tests cover leak-prone paths. |
-| 8 | Observability | Add operational logs, metrics, and traceability. | Slices 1, 2, 4, 6 | Structured logs include trace IDs; success/failure/skip counters exist; queue/DLQ depth hooks are available for Azure Monitor. |
+| 7A | Portal Password Event Semantics and Sync Status | Replace the "every successful login" story with explicit `login_bootstrap`/`password_change`/`password_recovery` events and a worker-owned sync-status model. | Slices 2, 4, 6, 7 | API accepts an event type; `login_bootstrap` no-ops once an account is worker-confirmed `synced`; `password_change`/`password_recovery` always enqueue; synced state is only set after Graph success; leak-focused tests still pass. |
+| 8 | Observability | Add operational logs, metrics, and traceability. | Slices 1, 2, 4, 6, 7A | Structured logs include trace IDs; success/failure/skip counters exist; queue/DLQ depth hooks are available for Azure Monitor; metrics include event-type and sync-status labels per Slice 7A. |
 | 9 | API Protection | Harden ingress for production traffic patterns. | Slice 1 | Portal source allowlist is enforced; anomalous traffic returns 429; non-allowed sources return 401; behavior is documented. |
 | 10 | Infrastructure | Implement deployable Azure resources. | Slices 2, 3, 4 | Terraform provisions ACA, Service Bus, Key Vault, ACR, identities, and scaling rules matching the design. |
 | 11 | CI/CD and Security Gates | Match the design's pull request and deployment controls. | Infrastructure shape | CI runs tests, vet, gosec, govulncheck, trivy, and gitleaks; CD builds image and supports staging deployment. |
@@ -31,7 +32,7 @@
 
 ## Active Detailed Plan
 
-Current active detailed plan: not created. Next slice is Slice 8 Observability.
+Current active detailed plan: not created. Next slice is Slice 7A Portal Password Event Semantics and Sync Status. A draft exists at `docs/superpowers/plans/drafts/2026-07-03-portal-password-event-sync-story.md` but is not yet promoted: it must be refreshed against the final Slice 7 implementation, the source design must be updated, and the owner must confirm the event/sync-status semantics before a detailed active plan is created.
 
 ---
 
@@ -46,6 +47,8 @@ Slices 4 and 5 can be implemented before the real Graph client by using a proces
 Slice 6 should isolate Microsoft Graph API behavior behind a client package and test with HTTP test servers where possible.
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
+
+Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because those drafts assume the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed.
 
 ---
 
@@ -63,6 +66,7 @@ Slices 10-12 should happen after the application behavior is stable enough that 
 | 5. Retry and DLQ Policy | Superseded | `superseded/2026-06-29-slice-05-retry-dlq-policy.md` | Do not execute; safe DLQ intent retained in Security Realignment |
 | 6. Microsoft Graph Client | Done | `completed/2026-07-02-slice-06-microsoft-graph-client.md` | Existing users patch, missing users create, and Graph failure classification implemented; verified with focused package tests, full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
 | 7. Password Data Protection | Done | `completed/2026-07-03-slice-07-password-data-protection.md` | Producer plaintext decoded into mutable buffers and zeroed on all paths; worker and Graph buffers covered by cleanup tests; log masking guards password/secret/token variants; verified with focused tests, full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
+| 7A. Portal Password Event Semantics and Sync Status | Draft, not promoted | `drafts/2026-07-03-portal-password-event-sync-story.md` | Awaiting refresh against final Slice 7 implementation, source design update, and owner confirmation of event/sync-status semantics before promotion to `active/` |
 | 8. Observability | Not planned | Not created |  |
 | 9. API Protection | Not planned | Not created |  |
 | 10. Infrastructure | Not planned | Not created |  |
