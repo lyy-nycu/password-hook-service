@@ -456,7 +456,7 @@ func (l *RateLimiter) rateKey(sourceIP net.IP) string {
 }
 ```
 
-Remove `forwardedClientIP` if no other code uses it. Slice 9 keys the anomaly limiter by immediate portal web-server source IP so it catches retry loops and aggregate bursts from `41.155` or `41.177` instead of spreading the limit across end-user forwarded addresses.
+Remove `forwardedClientIP` if no other code uses it. Slice 9 keys the anomaly limiter by immediate portal web-server source IP so it catches retry loops and aggregate bursts from `<portal-egress-ip-1>` or `<portal-egress-ip-2>` instead of spreading the limit across end-user forwarded addresses.
 
 - [ ] **Step 4: Run middleware tests and verify they pass**
 
