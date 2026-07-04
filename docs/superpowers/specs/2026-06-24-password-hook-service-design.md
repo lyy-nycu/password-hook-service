@@ -15,13 +15,36 @@ NYCU's on-prem portal currently authenticates users against OpenLDAP. The goal i
 
 ### 1.2 Phase 1 Goal (Deadline: 2026-07-14)
 
-Passively collect cleartext credentials from successful logins for **internal workforce accounts only** and silently sync them to Entra ID. Phase 1 includes accounts whose LDAP `cn` is a student ID or employee ID.
+Passively collect cleartext credentials from moments when the portal has just validated or set an LDAP password for **internal workforce accounts only**, and silently sync them to Entra ID. Phase 1 includes accounts whose LDAP `cn` is a student ID or employee ID. See §1.2.1 for the exact set of portal-triggering events; it is a superset of "successful login" corrected in Slice 7A.
 
 This approach:
 
 - Does **not** disrupt existing portal login UX or performance (async, fire-and-forget)
-- Covers active students and employees naturally over time as they log in
+- Covers active students and employees naturally over time as they log in, change their password, or recover their password
 - Is the minimum required step before switching authentication to Entra ID
+
+### 1.2.1 Amendment (Slice 7A, 2026-07-04): Portal Password Event Model
+
+> This subsection supersedes any earlier wording in this document that describes the hook as firing only "on every successful login." It was added when Slice 7A (Portal Password Event Semantics and Sync Status) was promoted from a draft. Where other sections still say "login" for brevity, read it as shorthand for the `login_bootstrap` event defined here, not as the only supported trigger.
+
+The password hook is a password-event ingestion service, not a "sync on every login" service. The portal calls it whenever it legitimately holds a fresh cleartext password after a successful LDAP operation:
+
+| Event (`eventType`) | Portal trigger | Hook behavior |
+|---|---|---|
+| `login_bootstrap` | A user successfully logs in and the portal has a valid LDAP password. | Enqueue only if the account's hook-owned sync status is `unsynced`, `sync_failed`, or stale `sync_pending`. If already `synced`, or actively `sync_pending` within the pending TTL, return `202` without enqueueing. |
+| `password_change` | The user successfully changes their LDAP password in the portal. | Always enqueue for eligible internal identities — this is a new password value that must reach Entra ID regardless of prior sync status. |
+| `password_recovery` | The user completes recovery and successfully sets a new LDAP password. | Always enqueue for eligible internal identities, for the same reason as `password_change`. |
+
+The hook service and worker — not the portal — own the authoritative sync-status state, because only the worker knows whether a Microsoft Graph create/patch call actually succeeded:
+
+| Status | Meaning | `login_bootstrap` effect |
+|---|---|---|
+| `unsynced` | No worker-confirmed successful Graph create/patch exists for this account's UPN. | Enqueues. |
+| `sync_pending` | A password event was accepted/enqueued, but Graph success is not yet confirmed. | Returns `202` without duplicate enqueue while pending is fresh; a stale pending (older than the pending TTL) falls through and enqueues again. |
+| `synced` | The worker confirmed a Microsoft Graph create/patch succeeded for the latest accepted event. | Returns `202` without enqueueing. |
+| `sync_failed` | The worker exhausted retries or wrote a password-safe DLQ record for the latest accepted event. | Enqueues, so a later login can retry the sync. |
+
+A `synced` transition is created only by the worker after a successful Graph create/patch call. Enqueue acceptance, `202 Accepted`, transient Graph errors, and safe DLQ writes never create a `synced` transition. External email identities are unaffected by this amendment — they remain skipped without enqueue regardless of `eventType`, per §7.
 
 ### 1.3 Out of Scope (Phase 1)
 
@@ -200,6 +223,7 @@ X-Hook-Signature: sha256={hmac_sha256_hex}
 | `password` | ✅ | Cleartext password (TLS-protected in transit) |
 | `displayName` | ✅ | User's display name from LDAP `givenName` or `cn` |
 | `mail` | ✅ | LDAP `mail` attribute — preserved as contact metadata for migrated internal accounts |
+| `eventType` | ✅ | One of `login_bootstrap`, `password_change`, `password_recovery` (see §1.2.1). Controls hook-side sync-status dedupe. |
 
 **Responses:**
 
@@ -269,7 +293,7 @@ Implemented in `pkg/problem/` for reuse across services.
 
 ### 5.2 Message TTL Expiry
 
-If the worker is down and a message sits in the queue for > 300 seconds, Service Bus automatically deletes it. Only ciphertext is deleted because cleartext passwords are never stored in Service Bus. The account will be synced on the user's next login.
+If the worker is down and a message sits in the queue for > 300 seconds, Service Bus automatically deletes it. Only ciphertext is deleted because cleartext passwords are never stored in Service Bus. Per §1.2.1, no `synced` transition was ever recorded for this attempt, so the account remains `unsynced`/`sync_pending`-stale and a later `login_bootstrap`, `password_change`, or `password_recovery` event will enqueue it again.
 
 ### 5.3 Failure Path
 
@@ -557,11 +581,14 @@ Add the following **after** a successful LDAP bind (fire-and-forget, non-blockin
 
 ```php
 // After successful LDAP auth + user data query
+// eventType is "login_bootstrap" here; use "password_change" or
+// "password_recovery" at the corresponding portal flows instead (§1.2.1).
 $payload = json_encode([
     'cn'          => $ldapUser['cn'][0],
     'password'    => $password,          // cleartext, protected by TLS
     'displayName' => $ldapUser['givenname'][0] ?? $ldapUser['cn'][0],
     'mail'        => $ldapUser['mail'][0] ?? '',
+    'eventType'   => 'login_bootstrap',
 ]);
 $timestamp = time();
 $nonce     = bin2hex(random_bytes(16));
