@@ -233,6 +233,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 
 	result := w.processPasswordSync(ctx, passwordSyncMessage)
 	if result.err == nil {
+		zeroMessageBody(msg)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -242,6 +243,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	}
 
 	if result.retryCanceled {
+		zeroMessageBody(msg)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
@@ -257,6 +259,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		description = dlqDescriptionPermanentError
 	}
 
+	zeroMessageBody(msg)
 	settleCtx, cancel := w.settlementContext()
 	defer cancel()
 	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{

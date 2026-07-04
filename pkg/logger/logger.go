@@ -54,11 +54,17 @@ func maskAttr(attr slog.Attr) slog.Attr {
 	return attr
 }
 
+// keyNormalizer strips common separators so key variants like "user_password"
+// or "user-password" are detected the same as "userpassword". It is built
+// once at package init and reused, since constructing a strings.Replacer on
+// every isSensitiveKey call (a per-log-attribute hot path) would otherwise
+// allocate repeatedly for no benefit.
+var keyNormalizer = strings.NewReplacer("_", "", "-", "", ".", "")
+
 func isSensitiveKey(key string) bool {
-	switch strings.ToLower(key) {
-	case "password", "passwd", "secret":
-		return true
-	default:
-		return false
-	}
+	normalized := keyNormalizer.Replace(strings.ToLower(key))
+	return strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "passwd") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token")
 }

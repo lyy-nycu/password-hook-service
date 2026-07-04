@@ -1,13 +1,19 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
+	"github.com/nycu/password-hook-service/internal/sensitiveio"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
 
@@ -29,8 +35,17 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rawBody, err := sensitiveio.ReadAll(r.Body)
+	defer passwordcrypto.ZeroBytes(rawBody)
+	if err != nil {
+		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be readable"))
+		return
+	}
+
 	var body passwordHookRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	err = json.Unmarshal(rawBody, &body)
+	defer passwordcrypto.ZeroBytes(body.Password)
+	if err != nil {
 		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be valid json"))
 		return
 	}
@@ -39,9 +54,9 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err := h.service.Submit(r.Context(), migration.Request{
+	_, err = h.service.Submit(r.Context(), migration.Request{
 		CN:          body.CN,
-		Password:    body.Password,
+		Password:    []byte(body.Password),
 		DisplayName: body.DisplayName,
 		Mail:        body.Mail,
 	})
@@ -62,17 +77,17 @@ func (h *Hook) writeProblem(w http.ResponseWriter, _ *http.Request, p problem.Pr
 }
 
 type passwordHookRequest struct {
-	CN          string `json:"cn"`
-	Password    string `json:"password"`
-	DisplayName string `json:"displayName"`
-	Mail        string `json:"mail"`
+	CN          string        `json:"cn"`
+	Password    passwordBytes `json:"password"`
+	DisplayName string        `json:"displayName"`
+	Mail        string        `json:"mail"`
 }
 
 func (r passwordHookRequest) validate() string {
 	switch {
 	case strings.TrimSpace(r.CN) == "":
 		return "Field 'cn' is required"
-	case r.Password == "":
+	case len(r.Password) == 0:
 		return "Field 'password' is required"
 	case strings.TrimSpace(r.DisplayName) == "":
 		return "Field 'displayName' is required"
@@ -81,4 +96,142 @@ func (r passwordHookRequest) validate() string {
 	default:
 		return ""
 	}
+}
+
+// passwordBytes decodes a JSON string directly into a mutable []byte instead
+// of an immutable Go string. This is required so the plaintext password can
+// be explicitly zeroed after use; a `string` result is immutable and cannot
+// be scrubbed from memory. Standard-library alternatives were rejected:
+// unmarshalling into `string`, `json.Decoder.Token`, and `strconv.Unquote`
+// all produce immutable plaintext strings; unmarshalling into `[]byte`
+// expects base64-encoded input, not a raw string; and `json.RawMessage`
+// still requires this same custom JSON-string unquote step, since
+// encoding/json's own byte-oriented unquote helper is unexported.
+// decodeJSONStringBytes therefore reimplements JSON string unquoting,
+// intentionally preserving encoding/json's behavior for null, escapes,
+// surrogate pairs, invalid UTF-8, and control characters/invalid escapes.
+type passwordBytes []byte
+
+func (p *passwordBytes) UnmarshalJSON(data []byte) error {
+	passwordcrypto.ZeroBytes(*p)
+	*p = nil
+
+	if bytes.Equal(data, []byte("null")) {
+		return nil
+	}
+
+	decoded, err := decodeJSONStringBytes(data)
+	if err != nil {
+		return err
+	}
+	*p = decoded
+	return nil
+}
+
+func decodeJSONStringBytes(data []byte) (_ []byte, err error) {
+	if len(data) < 2 || data[0] != '"' || data[len(data)-1] != '"' {
+		return nil, errors.New("password must be a json string")
+	}
+
+	const maxBytesPerInvalidUTF8Byte = len("\ufffd")
+	out := make([]byte, 0, (len(data)-2)*maxBytesPerInvalidUTF8Byte)
+	defer func() {
+		if err != nil {
+			passwordcrypto.ZeroBytes(out)
+		}
+	}()
+	for i := 1; i < len(data)-1; i++ {
+		b := data[i]
+		if b != '\\' {
+			if b == '"' {
+				return nil, errors.New("password contains invalid unescaped json string terminator")
+			}
+			if b < 0x20 {
+				return nil, errors.New("password contains invalid json string control character")
+			}
+			if b < utf8.RuneSelf {
+				out = append(out, b)
+				continue
+			}
+			r, size := utf8.DecodeRune(data[i : len(data)-1])
+			out = utf8.AppendRune(out, r)
+			i += size - 1
+			continue
+		}
+
+		i++
+		if i >= len(data)-1 {
+			return nil, errors.New("password contains invalid json escape")
+		}
+		switch data[i] {
+		case '"', '\\', '/':
+			out = append(out, data[i])
+		case 'b':
+			out = append(out, '\b')
+		case 'f':
+			out = append(out, '\f')
+		case 'n':
+			out = append(out, '\n')
+		case 'r':
+			out = append(out, '\r')
+		case 't':
+			out = append(out, '\t')
+		case 'u':
+			r, consumed, err := decodeUnicodeEscape(data[i+1 : len(data)-1])
+			if err != nil {
+				return nil, err
+			}
+			i += consumed
+			out = utf8.AppendRune(out, r)
+		default:
+			return nil, fmt.Errorf("password contains invalid json escape %q", data[i])
+		}
+	}
+	return out, nil
+}
+
+func decodeUnicodeEscape(data []byte) (rune, int, error) {
+	if len(data) < 4 {
+		return 0, 0, errors.New("password contains short unicode escape")
+	}
+	r, err := hex4(data[:4])
+	if err != nil {
+		return 0, 0, err
+	}
+	if !utf16.IsSurrogate(r) {
+		return r, 4, nil
+	}
+	if r < 0xD800 || r > 0xDBFF {
+		return utf8.RuneError, 4, nil
+	}
+	if len(data) < 10 || data[4] != '\\' || data[5] != 'u' {
+		return utf8.RuneError, 4, nil
+	}
+	low, err := hex4(data[6:10])
+	if err != nil {
+		return utf8.RuneError, 4, nil
+	}
+	decoded := utf16.DecodeRune(r, low)
+	if decoded == utf8.RuneError {
+		return utf8.RuneError, 4, nil
+	}
+	return decoded, 10, nil
+}
+
+func hex4(data []byte) (rune, error) {
+	var r rune
+	for _, b := range data {
+		r <<= 4
+		switch {
+		case b >= '0' && b <= '9':
+			r += rune(b - '0')
+		case b >= 'a' && b <= 'f':
+			r += rune(b-'a') + 10
+		case b >= 'A' && b <= 'F':
+			r += rune(b-'A') + 10
+		default:
+			return 0, fmt.Errorf("password contains invalid unicode escape byte %q", b)
+		}
+	}
+	return r, nil
 }

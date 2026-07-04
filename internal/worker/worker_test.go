@@ -363,6 +363,64 @@ func TestWorkerZerosProcessorPasswordBufferBeforeSettlement(t *testing.T) {
 	}
 }
 
+func TestWorkerZerosMessageBodyBeforeSuccessSettlement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := workerMessage(t, validPasswordSyncMessage())
+	receiver := &fakeReceiver{messages: []*Message{msg}}
+	receiver.onComplete = func() {
+		assertZeroedPasswordBuffer(t, msg.Body, "worker message body before success settlement")
+		cancel()
+	}
+	worker := newTestWorker(t, receiver, &fakeProcessor{}, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{})
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestWorkerZerosMessageBodyBeforeTerminalSafeDLQ(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := workerMessage(t, validPasswordSyncMessage())
+	receiver := &fakeReceiver{messages: []*Message{msg}}
+	receiver.onComplete = cancel
+	deadLetters := &fakeDeadLetterSink{
+		onRecord: func() {
+			assertZeroedPasswordBuffer(t, msg.Body, "worker message body before terminal safe DLQ")
+		},
+	}
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	worker := newPolicyTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, deadLetters, &fakeSleeper{})
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestWorkerZerosMessageBodyBeforeRetryCancelAbandon(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := workerMessage(t, validPasswordSyncMessage())
+	receiver := &fakeReceiver{messages: []*Message{msg}}
+	receiver.onAbandon = func() {
+		assertZeroedPasswordBuffer(t, msg.Body, "worker message body before retry-cancel abandon")
+		cancel()
+	}
+	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
+	worker := newPolicyTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{}, &fakeSleeper{err: context.Canceled})
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestDecodePasswordSyncMessageRejectsMissingEncryptedFields(t *testing.T) {
 	tests := []struct {
 		name    string

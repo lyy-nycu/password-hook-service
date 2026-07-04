@@ -157,9 +157,11 @@ The hook endpoint returns `202 Accepted` when the request is accepted by the ser
 
 ## Worker Behavior
 
-The production app starts the HTTP server and password sync worker together. The hook encrypts accepted password payloads before enqueueing. The worker receives encrypted Service Bus messages, decrypts the password per processing attempt, calls Microsoft Graph, and zeroes plaintext buffers after use.
+The production app starts the HTTP server and password sync worker together. The hook reads password JSON into mutable buffers, encrypts accepted password payloads before enqueueing, and zeroes plaintext buffers before returning. The worker receives encrypted Service Bus messages, decrypts the password per processing attempt, calls Microsoft Graph with borrowed plaintext bytes, and zeroes plaintext/message buffers before retry, DLQ, or settlement.
 
 Graph `400` and `403` responses are treated as permanent processor failures and recorded to the safe DLQ. Graph `429`, `503`, other unexpected statuses, token acquisition errors, and network errors remain retryable under the worker retry policy. Safe DLQ entries exclude plaintext passwords.
+
+Structured logging masks password, password-derived, secret, and token fields by key before records are emitted.
 
 ## Configuration
 

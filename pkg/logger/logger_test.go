@@ -15,6 +15,12 @@ func TestMaskAttrsMasksSensitiveKeys(t *testing.T) {
 		slog.String("password", "cleartext"),
 		slog.String("passwd", "cleartext"),
 		slog.String("secret", "client-secret"),
+		slog.String("passwordCiphertext", "ciphertext"),
+		slog.String("password_nonce", "nonce"),
+		slog.String("GRAPH_CLIENT_SECRET", "client-secret"),
+		slog.String("clientSecret", "client-secret"),
+		slog.String("access_token", "token"),
+		slog.String("requestNonce", "nonce-for-replay-defense"),
 	}
 
 	got := MaskAttrs(attrs...)
@@ -27,7 +33,10 @@ func TestMaskAttrsMasksSensitiveKeys(t *testing.T) {
 	if values["cn"] != "311551001" {
 		t.Fatalf("cn = %q, want original value", values["cn"])
 	}
-	for _, key := range []string{"password", "passwd", "secret"} {
+	if values["requestNonce"] != "nonce-for-replay-defense" {
+		t.Fatalf("requestNonce = %q, want nonce preserved", values["requestNonce"])
+	}
+	for _, key := range []string{"password", "passwd", "secret", "passwordCiphertext", "password_nonce", "GRAPH_CLIENT_SECRET", "clientSecret", "access_token"} {
 		if values[key] != "****" {
 			t.Fatalf("%s = %q, want masked value", key, values[key])
 		}
