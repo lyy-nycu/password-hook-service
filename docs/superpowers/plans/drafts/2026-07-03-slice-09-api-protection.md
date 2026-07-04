@@ -24,7 +24,7 @@
 
 ## Current Context
 
-- Current portal topology is `nginx simple load balancer -> two portal web servers -> password hook service`. The login API runs on the two portal web servers, so hook API calls are expected to originate from the two portal web-server egress IPs, currently described as `41.155` and `41.177`.
+- Current portal topology is `nginx simple load balancer -> two portal web servers -> password hook service`. The login API runs on the two portal web servers, so hook API calls are expected to originate from the two portal web-server egress IPs, currently described as `<portal-egress-ip-1>` and `<portal-egress-ip-2>`.
 - `internal/middleware/ratelimit.go` already combines source allowlist and fixed-window per-IP rate limiting.
 - `internal/config/config.go` currently loads `PORTAL_ALLOWED_CIDRS` and `RATE_LIMIT_PER_IP`, but the allowlist is optional and `RateLimitWindow` is fixed at one second.
 - `internal/app/app.go` already wires middleware in the useful runtime order: request ID, access log, recovery, source/rate limiter, HMAC, hook.
