@@ -1084,7 +1084,7 @@ If the application still uses one Service Bus connection string, create that SAS
 terraform -chdir=deploy/terraform fmt -recursive
 terraform -chdir=deploy/terraform init
 terraform -chdir=deploy/terraform validate
-terraform -chdir=deploy/terraform plan -var-file=examples/staging.tfvars
+terraform -chdir=deploy/terraform plan -var-file=examples/staging.tfvars.example
 ```
 
 ## Secret Injection
