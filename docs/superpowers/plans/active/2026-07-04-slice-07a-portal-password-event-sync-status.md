@@ -40,7 +40,7 @@
 
 Slice 7 (password data protection: AES-GCM encryption, HMAC request signing, replay protection) is complete and merged (`docs/superpowers/plans/completed/2026-07-03-slice-07-password-data-protection.md`). The design spec (`docs/superpowers/specs/2026-06-24-password-hook-service-design.md`) has already been amended in this working tree (§1.2.1 Amendment section, updated API contract table with `eventType`, updated Message TTL Expiry section, updated §11.3 PHP example) to correct an earlier false assumption that the hook fires "on every successful login" — it actually fires on `login_bootstrap` (post-SSO bootstrap), `password_change`, and `password_recovery` events from the portal. This plan implements the code changes that make that corrected model real.
 
-The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-password-event-sync-story.md`; its "Acceptance Criteria For Promotion" section is fully covered by Task 4's nine new service-level tests (in particular: resync-after-`sync_failed`, and always-resync for `password_recovery` even when already synced).
+The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-password-event-sync-story.md`; its "Acceptance Criteria For Promotion" section is fully covered by Task 4's ten new service-level tests (in particular: `TestServiceEnqueuesLoginBootstrapAfterSyncFailed` for resync-after-`sync_failed`, and always-resync for `password_recovery` even when already synced).
 
 ## File Structure
 
@@ -51,7 +51,7 @@ The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-passwo
 - Create: `internal/syncstatus/status.go` — `Status` type, `Record`, `Store` interface, `MemoryStore` implementation.
 - Create: `internal/syncstatus/status_test.go` — `MemoryStore` behavior tests.
 - Modify: `internal/migration/service.go` — `ServiceOptions`, `SyncStatusStore` interface, dedupe logic in `Submit`.
-- Modify: `internal/migration/service_test.go` — update 5 existing `NewService` call sites, add 9 new tests + `fakeSyncStatusStore`.
+- Modify: `internal/migration/service_test.go` — update 5 existing `NewService` call sites, add 10 new tests + `fakeSyncStatusStore`.
 - Modify: `internal/handler/hook.go` — `EventType` field + validation + wiring into `migration.Request`.
 - Modify: `internal/handler/hook_test.go` — update 9 `NewService` call sites, add `eventType` to 5 JSON bodies, add 2 new tests.
 - Modify: `internal/worker/worker.go` — `SyncStatusRecorder` interface, `Options` field, `processMessage` hooks.
@@ -605,7 +605,7 @@ func (f *fakeSyncStatusStore) setRecord(upn string, status syncstatus.Status, up
 }
 ```
 
-Then add these 9 new test functions to `internal/migration/service_test.go` (all use `t.Parallel()` matching the file's existing style, and `"nycu.edu.tw"` as the primary domain so the resulting UPN matches the rest of the file's fixtures):
+Then add these 10 new test functions to `internal/migration/service_test.go` (all use `t.Parallel()` matching the file's existing style, and `"nycu.edu.tw"` as the primary domain so the resulting UPN matches the rest of the file's fixtures):
 
 ```go
 func TestServiceRejectsInvalidEventType(t *testing.T) {
@@ -715,6 +715,35 @@ func TestServiceEnqueuesLoginBootstrapWhenPendingStale(t *testing.T) {
 	}
 	if !decision.Enqueued {
 		t.Error("decision.Enqueued = false, want true (stale pending sync should re-enqueue)")
+	}
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
+	}
+}
+
+func TestServiceEnqueuesLoginBootstrapAfterSyncFailed(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	upn := "311551001@nycu.edu.tw"
+	store.setRecord(upn, syncstatus.StatusFailed, time.Now())
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if !decision.Enqueued {
+		t.Error("decision.Enqueued = false, want true (a previously failed sync must re-enqueue on next login)")
 	}
 	if len(queue.messages) != 1 {
 		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
