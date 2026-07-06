@@ -1,5 +1,7 @@
 # Slice 7A: Portal Password Event Semantics and Sync Status Implementation Plan
 
+> **Plan Status:** Active
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the hook explicit about *why* it was called (`eventType`), and stop redundantly re-syncing already-synced accounts on every `login_bootstrap` call while still always syncing real password changes.
@@ -45,7 +47,7 @@ The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-passwo
 - Create: `internal/migration/event.go` — `EventType` type, event constants, validation.
 - Create: `internal/migration/event_test.go` — validation tests.
 - Modify: `internal/migration/message.go` — add `EventType` field to `PasswordSyncMessage`.
-- Create: `internal/migration/message_test.go` — round-trip and backward-compat decode tests.
+- Create: `internal/migration/message_test.go` — round-trip, backward-compat decode, and never-serializes-password tests.
 - Create: `internal/syncstatus/status.go` — `Status` type, `Record`, `Store` interface, `MemoryStore` implementation.
 - Create: `internal/syncstatus/status_test.go` — `MemoryStore` behavior tests.
 - Modify: `internal/migration/service.go` — `ServiceOptions`, `SyncStatusStore` interface, dedupe logic in `Submit`.
@@ -168,17 +170,18 @@ git commit -m "feat(migration): add EventType with validation"
 
 **Interfaces:**
 - Consumes: `EventType` from Task 1.
-- Produces: `PasswordSyncMessage.EventType EventType` field with JSON tag `"eventType"`. Task 4's `Submit` sets this field when building the message; Task 6's worker reads `passwordSyncMessage.EventType` is NOT required (worker only needs `.UPN`), but the field must round-trip correctly through the queue for forward compatibility.
+- Produces: `PasswordSyncMessage.EventType EventType` field with JSON tag `"eventType"`. Task 4's `Submit` sets this field when building the message; the worker never reads `.EventType` (only `.UPN`), but the field must round-trip correctly through the queue for forward compatibility, and it must never cause the plaintext `Password` field to become visible in JSON output.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `internal/migration/message_test.go`:
+Create `internal/migration/message_test.go`. Ground truth from the current `internal/migration/message.go`: `Password` is tagged `json:"-"` (never serialized) and no field uses `,omitempty` — the new `EventType` field must follow that same no-omitempty style:
 
 ```go
 package migration
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -219,29 +222,47 @@ func TestPasswordSyncMessageDecodesWithoutEventType(t *testing.T) {
 		t.Errorf("decoded.EventType = %q, want empty string", decoded.EventType)
 	}
 }
+
+func TestPasswordSyncMessageNeverSerializesPassword(t *testing.T) {
+	msg := PasswordSyncMessage{
+		CN:        "jdoe",
+		UPN:       "jdoe@example.edu",
+		EventType: EventPasswordChange,
+		Password:  "cleartext-password",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	if strings.Contains(string(data), "cleartext-password") || strings.Contains(string(data), `"password"`) {
+		t.Fatalf("marshaled message leaks password: %s", data)
+	}
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `go test ./internal/migration/... -run TestPasswordSyncMessage -v`
-Expected: FAIL — `decoded.EventType` undefined (field doesn't exist yet).
+Expected: FAIL — `decoded.EventType`/`msg.EventType` undefined (field doesn't exist yet).
 
 - [ ] **Step 3: Write minimal implementation**
 
-Modify `internal/migration/message.go` — add the `EventType` field to the `PasswordSyncMessage` struct, inserted after `UPN` and before `Password`:
+Modify `internal/migration/message.go` — add the `EventType` field to the `PasswordSyncMessage` struct, inserted after `UPN` and before `Password`. This is the exact current struct with only the new field added — no other field or tag changes:
 
 ```go
 type PasswordSyncMessage struct {
 	CN                 string    `json:"cn"`
 	UPN                string    `json:"upn"`
 	EventType          EventType `json:"eventType"`
-	Password           string    `json:"password,omitempty"`
-	PasswordCiphertext string    `json:"passwordCiphertext,omitempty"`
-	PasswordNonce      string    `json:"passwordNonce,omitempty"`
-	PasswordKeyID      string    `json:"passwordKeyId,omitempty"`
-	PasswordAlg        string    `json:"passwordAlg,omitempty"`
-	DisplayName        string    `json:"displayName,omitempty"`
-	Mail               string    `json:"mail,omitempty"`
+	Password           string    `json:"-"`
+	PasswordCiphertext string    `json:"passwordCiphertext"`
+	PasswordNonce      string    `json:"passwordNonce"`
+	PasswordKeyID      string    `json:"passwordKeyId"`
+	PasswordAlg        string    `json:"passwordAlg"`
+	DisplayName        string    `json:"displayName"`
+	Mail               string    `json:"mail"`
 	EnqueuedAt         time.Time `json:"enqueuedAt"`
 }
 ```
@@ -251,7 +272,7 @@ type PasswordSyncMessage struct {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./internal/migration/... -run TestPasswordSyncMessage -v`
-Expected: PASS
+Expected: PASS (all 3 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -269,8 +290,10 @@ git commit -m "feat(migration): add EventType field to PasswordSyncMessage"
 - Create: `internal/syncstatus/status_test.go`
 
 **Interfaces:**
-- Consumes: nothing (standalone package; `context`, `sync`, `time` stdlib only).
-- Produces: `type Status string` with constants `StatusUnsynced`, `StatusSyncPending`, `StatusSynced`, `StatusSyncFailed`; `type Record struct { Status Status; UpdatedAt time.Time }`; `type Store interface { Get(ctx context.Context, upn string) (Record, bool, error); MarkPending(ctx context.Context, upn string) error; MarkSynced(ctx context.Context, upn string) error; MarkFailed(ctx context.Context, upn string) error }`; `type MemoryStore struct{...}` (unexported fields) implementing `Store`; `func NewMemoryStore() *MemoryStore`. Task 4 consumes `Store.Get`/`MarkPending` via a package-local narrower interface. Task 6 consumes `MarkSynced`/`MarkFailed` via a package-local narrower interface. Task 7 constructs `*MemoryStore` via `NewMemoryStore()` and passes the same instance to both.
+- Consumes: nothing (standalone package; `context`, `sync`, `time` stdlib only — zero repo-internal imports, so `migration` and `worker` can both import it without any import-cycle risk).
+- Produces: `type Status string` with constants `StatusUnsynced`, `StatusPending`, `StatusSynced`, `StatusFailed`; `type Record struct { Status Status; UpdatedAt time.Time; SourceEnqueuedAt time.Time }`; `type Store interface { Get(ctx context.Context, upn string) (Record, error); MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error; MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error; MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error }`; `type MemoryStore struct{...}` (unexported fields) implementing `Store`; `func NewMemoryStore() *MemoryStore`. `Get` on an unknown UPN returns `(Record{}, nil)` — i.e. the zero-value `Record` (whose `Status` is the zero value `StatusUnsynced`), not an error. Task 4 consumes `Store.Get`/`MarkPending` via a package-local narrower interface, passing `msg.EnqueuedAt` as `sourceEnqueuedAt`. Task 6 consumes `MarkSynced`/`MarkFailed` via a package-local narrower interface, passing `passwordSyncMessage.EnqueuedAt` as `sourceEnqueuedAt`. Task 7 constructs `*MemoryStore` via `NewMemoryStore()` and passes the same instance to both, so `sourceEnqueuedAt` ordering is compared against writes from both call paths.
+
+**Design note — out-of-order completions:** a naive `{Status, UpdatedAt}` model lets an older, slow-to-process event (e.g. a `login_bootstrap` retry) complete *after* a newer event (e.g. a `password_change`) already completed, silently overwriting the correct state with stale data. The fix: every write carries the triggering message's own `EnqueuedAt` timestamp as `sourceEnqueuedAt`, and `MemoryStore` ignores any write whose `sourceEnqueuedAt` is before the currently-stored record's `SourceEnqueuedAt` — the latest accepted event always wins, regardless of completion order.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -286,50 +309,56 @@ import (
 	"time"
 )
 
-func TestMemoryStoreGetReturnsNotFoundInitially(t *testing.T) {
+func TestMemoryStoreGetReturnsUnsyncedInitially(t *testing.T) {
 	store := NewMemoryStore()
 
-	_, found, err := store.Get(context.Background(), "jdoe@example.edu")
+	rec, err := store.Get(context.Background(), "jdoe@example.edu")
 	if err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if found {
-		t.Error("Get() found = true on empty store, want false")
+	if rec.Status != StatusUnsynced {
+		t.Errorf("Get() on unknown upn Status = %q, want %q", rec.Status, StatusUnsynced)
+	}
+	if !rec.UpdatedAt.IsZero() || !rec.SourceEnqueuedAt.IsZero() {
+		t.Errorf("Get() on unknown upn = %+v, want zero-value timestamps", rec)
 	}
 }
 
 func TestMemoryStoreTracksLifecycle(t *testing.T) {
 	store := NewMemoryStore()
 	upn := "jdoe@example.edu"
+	ctx := context.Background()
 
 	fixedNow := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return fixedNow }
+	enqueuedAt := time.Date(2026, 7, 4, 11, 59, 0, 0, time.UTC)
 
-	ctx := context.Background()
-
-	if err := store.MarkPending(ctx, upn); err != nil {
+	if err := store.MarkPending(ctx, upn, enqueuedAt); err != nil {
 		t.Fatalf("MarkPending() error = %v", err)
 	}
-	rec, found, err := store.Get(ctx, upn)
-	if err != nil || !found {
-		t.Fatalf("Get() after MarkPending: found=%v err=%v, want found=true err=nil", found, err)
+	rec, err := store.Get(ctx, upn)
+	if err != nil {
+		t.Fatalf("Get() after MarkPending error = %v", err)
 	}
-	if rec.Status != StatusSyncPending {
-		t.Errorf("Status after MarkPending = %q, want %q", rec.Status, StatusSyncPending)
+	if rec.Status != StatusPending {
+		t.Errorf("Status after MarkPending = %q, want %q", rec.Status, StatusPending)
 	}
 	if !rec.UpdatedAt.Equal(fixedNow) {
 		t.Errorf("UpdatedAt = %v, want %v", rec.UpdatedAt, fixedNow)
+	}
+	if !rec.SourceEnqueuedAt.Equal(enqueuedAt) {
+		t.Errorf("SourceEnqueuedAt = %v, want %v", rec.SourceEnqueuedAt, enqueuedAt)
 	}
 
 	laterNow := fixedNow.Add(time.Minute)
 	store.now = func() time.Time { return laterNow }
 
-	if err := store.MarkSynced(ctx, upn); err != nil {
+	if err := store.MarkSynced(ctx, upn, enqueuedAt); err != nil {
 		t.Fatalf("MarkSynced() error = %v", err)
 	}
-	rec, found, err = store.Get(ctx, upn)
-	if err != nil || !found {
-		t.Fatalf("Get() after MarkSynced: found=%v err=%v", found, err)
+	rec, err = store.Get(ctx, upn)
+	if err != nil {
+		t.Fatalf("Get() after MarkSynced error = %v", err)
 	}
 	if rec.Status != StatusSynced {
 		t.Errorf("Status after MarkSynced = %q, want %q", rec.Status, StatusSynced)
@@ -337,44 +366,63 @@ func TestMemoryStoreTracksLifecycle(t *testing.T) {
 	if !rec.UpdatedAt.Equal(laterNow) {
 		t.Errorf("UpdatedAt = %v, want %v", rec.UpdatedAt, laterNow)
 	}
+}
 
-	evenLaterNow := laterNow.Add(time.Minute)
-	store.now = func() time.Time { return evenLaterNow }
+func TestMemoryStoreIgnoresOutOfOrderCompletion(t *testing.T) {
+	store := NewMemoryStore()
+	upn := "jdoe@example.edu"
+	ctx := context.Background()
 
-	if err := store.MarkFailed(ctx, upn); err != nil {
+	olderEnqueuedAt := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	newerEnqueuedAt := olderEnqueuedAt.Add(time.Minute)
+
+	// The newer event (e.g. password_change) completes first...
+	if err := store.MarkSynced(ctx, upn, newerEnqueuedAt); err != nil {
+		t.Fatalf("MarkSynced() error = %v", err)
+	}
+	// ...then the older, slower event (e.g. a login_bootstrap retry) reports
+	// failure. This stale write must be silently dropped, not applied.
+	if err := store.MarkFailed(ctx, upn, olderEnqueuedAt); err != nil {
 		t.Fatalf("MarkFailed() error = %v", err)
 	}
-	rec, found, err = store.Get(ctx, upn)
-	if err != nil || !found {
-		t.Fatalf("Get() after MarkFailed: found=%v err=%v", found, err)
+
+	rec, err := store.Get(ctx, upn)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
 	}
-	if rec.Status != StatusSyncFailed {
-		t.Errorf("Status after MarkFailed = %q, want %q", rec.Status, StatusSyncFailed)
+	if rec.Status != StatusSynced {
+		t.Errorf("Status = %q, want %q (out-of-order failure must not overwrite newer success)", rec.Status, StatusSynced)
+	}
+	if !rec.SourceEnqueuedAt.Equal(newerEnqueuedAt) {
+		t.Errorf("SourceEnqueuedAt = %v, want %v", rec.SourceEnqueuedAt, newerEnqueuedAt)
 	}
 }
 
 func TestMemoryStoreIsSafeForConcurrentUse(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()
+	upn := "user@example.edu"
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			upn := "user@example.edu"
-			_ = store.MarkPending(ctx, upn)
-			_, _, _ = store.Get(ctx, upn)
-			_ = store.MarkSynced(ctx, upn)
+			enqueuedAt := time.Now()
+			_ = store.MarkPending(ctx, upn, enqueuedAt)
+			_, _ = store.Get(ctx, upn)
+			_ = store.MarkSynced(ctx, upn, enqueuedAt)
 		}(i)
 	}
 	wg.Wait()
 
-	if _, found, err := store.Get(ctx, "user@example.edu"); err != nil || !found {
-		t.Fatalf("Get() after concurrent use: found=%v err=%v", found, err)
+	if rec, err := store.Get(ctx, upn); err != nil || rec.Status == StatusUnsynced {
+		t.Fatalf("Get() after concurrent use = %+v, err=%v, want a recorded status", rec, err)
 	}
 }
 ```
+
+Run with `-race` (see Step 4) to make the concurrent-use test meaningful.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -402,43 +450,51 @@ import (
 	"time"
 )
 
-// Status represents the last known sync outcome for a UPN.
+// Status represents the last known sync outcome for a UPN. The zero value,
+// StatusUnsynced, is also what Get returns for a UPN with no record yet.
 type Status string
 
 const (
-	// StatusUnsynced means no sync has ever been attempted (or the store
-	// has no record — Get's second return value distinguishes these, but
-	// callers that already know a record exists can use this value too).
-	StatusUnsynced Status = "unsynced"
-	// StatusSyncPending means a sync message was enqueued and the worker
-	// has not yet reported an outcome.
-	StatusSyncPending Status = "sync_pending"
+	// StatusUnsynced means no sync has ever completed or is in flight for
+	// this UPN (or the store simply has no record for it yet).
+	StatusUnsynced Status = ""
+	// StatusPending means a sync message was enqueued and the worker has
+	// not yet reported an outcome.
+	StatusPending Status = "sync_pending"
 	// StatusSynced means the worker successfully processed the sync.
 	StatusSynced Status = "synced"
-	// StatusSyncFailed means the worker exhausted retries or hit a
-	// permanent error while processing the sync.
-	StatusSyncFailed Status = "sync_failed"
+	// StatusFailed means the worker exhausted retries or hit a permanent
+	// error while processing the sync.
+	StatusFailed Status = "sync_failed"
 )
 
 // Record is a snapshot of a UPN's sync status at a point in time.
+// SourceEnqueuedAt is the EnqueuedAt timestamp of the message that produced
+// this record, used to reject stale, out-of-order writes.
 type Record struct {
-	Status    Status
-	UpdatedAt time.Time
+	Status           Status
+	UpdatedAt        time.Time
+	SourceEnqueuedAt time.Time
 }
 
 // Store tracks per-UPN sync status. Implementations must be safe for
-// concurrent use.
+// concurrent use. Every Mark* method accepts the triggering message's own
+// sourceEnqueuedAt timestamp; implementations must ignore (not error on) a
+// write whose sourceEnqueuedAt is older than the currently-stored record's
+// SourceEnqueuedAt, so a slow, out-of-order completion can never overwrite
+// a newer outcome.
 type Store interface {
-	// Get returns the current record for upn. found is false if no record
-	// exists yet.
-	Get(ctx context.Context, upn string) (Record, bool, error)
+	// Get returns the current record for upn. A UPN with no record yet
+	// returns the zero-value Record (Status == StatusUnsynced), not an
+	// error.
+	Get(ctx context.Context, upn string) (Record, error)
 	// MarkPending records that a sync message was just enqueued for upn.
-	MarkPending(ctx context.Context, upn string) error
+	MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
 	// MarkSynced records that upn was successfully synced.
-	MarkSynced(ctx context.Context, upn string) error
+	MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
 	// MarkFailed records that syncing upn failed permanently or after
 	// exhausting retries.
-	MarkFailed(ctx context.Context, upn string) error
+	MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
 }
 
 // MemoryStore is an in-process, non-durable Store implementation backed by
@@ -457,37 +513,42 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) Get(_ context.Context, upn string) (Record, bool, error) {
+func (s *MemoryStore) Get(_ context.Context, upn string) (Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, found := s.records[upn]
-	return rec, found, nil
+	return s.records[upn], nil
 }
 
-func (s *MemoryStore) MarkPending(ctx context.Context, upn string) error {
-	return s.set(ctx, upn, StatusSyncPending)
+func (s *MemoryStore) MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	return s.set(ctx, upn, StatusPending, sourceEnqueuedAt)
 }
 
-func (s *MemoryStore) MarkSynced(ctx context.Context, upn string) error {
-	return s.set(ctx, upn, StatusSynced)
+func (s *MemoryStore) MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	return s.set(ctx, upn, StatusSynced, sourceEnqueuedAt)
 }
 
-func (s *MemoryStore) MarkFailed(ctx context.Context, upn string) error {
-	return s.set(ctx, upn, StatusSyncFailed)
+func (s *MemoryStore) MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	return s.set(ctx, upn, StatusFailed, sourceEnqueuedAt)
 }
 
-func (s *MemoryStore) set(_ context.Context, upn string, status Status) error {
+// set applies the ordering guard described on the Store interface: a write
+// whose sourceEnqueuedAt is older than the stored record's SourceEnqueuedAt
+// is silently dropped rather than applied or reported as an error.
+func (s *MemoryStore) set(_ context.Context, upn string, status Status, sourceEnqueuedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records[upn] = Record{Status: status, UpdatedAt: s.now()}
+	if existing, found := s.records[upn]; found && sourceEnqueuedAt.Before(existing.SourceEnqueuedAt) {
+		return nil
+	}
+	s.records[upn] = Record{Status: status, UpdatedAt: s.now(), SourceEnqueuedAt: sourceEnqueuedAt}
 	return nil
 }
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `go test ./internal/syncstatus/... -v`
-Expected: PASS (all 3 tests)
+Run: `go test ./internal/syncstatus/... -race -v`
+Expected: PASS (all 4 tests)
 
 - [ ] **Step 5: Commit**
 
@@ -505,145 +566,148 @@ git commit -m "feat(syncstatus): add in-process sync status store"
 - Modify: `internal/migration/service_test.go`
 
 **Interfaces:**
-- Consumes: `EventType`/`ValidEventType`/`ErrInvalidEventType` from Task 1; `syncstatus.Record`, `syncstatus.Status` constants from Task 3 (imports `github.com/nycu/password-hook-service/internal/syncstatus` — confirm exact module path via `go.mod` before writing the import).
-- Produces: `type ServiceOptions struct { SyncStatusStore SyncStatusStore; PendingTTL time.Duration }`; `type SyncStatusStore interface { Get(ctx context.Context, upn string) (syncstatus.Record, bool, error); MarkPending(ctx context.Context, upn string) error }`; `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ServiceOptions) *Service` (signature change: 4th parameter added); `Request.EventType EventType` field. Task 5 (hook.go) calls `migration.NewService(..., migration.ServiceOptions{...})` and sets `migration.Request{EventType: ...}`. Task 7 (app.go) constructs `migration.ServiceOptions{SyncStatusStore: syncStatusStore}` where `syncStatusStore` is `*syncstatus.MemoryStore` (structurally satisfies `SyncStatusStore`).
+- Consumes: `EventType`/`ValidEventType`/`ErrInvalidEventType` from Task 1; `syncstatus.Record`, `syncstatus.Status` constants from Task 3 (imports `github.com/nycu/password-hook-service/internal/syncstatus`).
+- Produces: `type ServiceOptions struct { SyncStatusStore SyncStatusStore; PendingTTL time.Duration }`; `type SyncStatusStore interface { Get(ctx context.Context, upn string) (syncstatus.Record, error); MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error }`; `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ...ServiceOptions) *Service` (variadic — existing 3-argument call sites keep compiling unchanged); `Request.EventType EventType` field. Task 5 (hook.go) sets `migration.Request{EventType: ...}` but does **not** need to touch any `migration.NewService(...)` call site, since the new parameter is variadic. Task 7 (app.go) constructs `migration.ServiceOptions{SyncStatusStore: syncStatusStore}` where `syncStatusStore` is `*syncstatus.MemoryStore` (structurally satisfies `SyncStatusStore`).
 
-- [ ] **Step 1: Confirm the module path**
+Ground truth from the current `internal/migration/service.go` (re-verified): `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter) *Service` takes exactly 3 args today. `Submit`'s current flow: `defer passwordcrypto.ZeroBytes(req.Password)` → `ClassifyCN` → external email: set `decision.Skipped`/`decision.Reason = "cn_is_external_email"`, return `decision, nil` → unknown identity: return `decision, ErrUnknownIdentity` → `BuildUPN` (sets `decision.UPN = upn`) → nil-checks for `s.queue`/`s.encrypter` → build `PasswordSyncMessage` literal (`CN`, `UPN`, `DisplayName`, `Mail`, `EnqueuedAt: s.now().UTC()`) → `Encrypt` → set ciphertext fields → `EnqueuePasswordSync` → `decision.Enqueued = true`. The 5 existing tests in `service_test.go` construct their fakes as `&captureQueue{}` / `&captureEncrypter{}` / `failingEncrypter{...}` / `failingQueue{...}` (not `fakeQueue`/`fakeEncrypter` — use the real names).
 
-Run: `head -1 go.mod`
-Expected output: `module github.com/nycu/password-hook-service` (or record the actual value and substitute it in the import path below if different).
+- [ ] **Step 1: Write the failing tests**
 
-- [ ] **Step 2: Write the failing tests**
-
-Add to `internal/migration/service_test.go` — first, a `fakeSyncStatusStore` test double (place near existing fakes in the file):
+Add to `internal/migration/service_test.go` — first, a `fakeSyncStatusStore` test double (place near the existing `captureQueue`/`captureEncrypter` fakes; unsynchronized since each test uses its own private instance):
 
 ```go
 type fakeSyncStatusStore struct {
-	mu          sync.Mutex
 	records     map[string]syncstatus.Record
-	getErr      error
-	markErr     error
-	markPending []string
+	markPending []markPendingCall
+}
+
+type markPendingCall struct {
+	upn              string
+	sourceEnqueuedAt time.Time
 }
 
 func newFakeSyncStatusStore() *fakeSyncStatusStore {
 	return &fakeSyncStatusStore{records: make(map[string]syncstatus.Record)}
 }
 
-func (f *fakeSyncStatusStore) Get(_ context.Context, upn string) (syncstatus.Record, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.getErr != nil {
-		return syncstatus.Record{}, false, f.getErr
-	}
-	rec, found := f.records[upn]
-	return rec, found, nil
+func (f *fakeSyncStatusStore) Get(_ context.Context, upn string) (syncstatus.Record, error) {
+	return f.records[upn], nil
 }
 
-func (f *fakeSyncStatusStore) MarkPending(_ context.Context, upn string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.markPending = append(f.markPending, upn)
-	if f.markErr != nil {
-		return f.markErr
-	}
-	f.records[upn] = syncstatus.Record{Status: syncstatus.StatusSyncPending, UpdatedAt: time.Now()}
+func (f *fakeSyncStatusStore) MarkPending(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	f.markPending = append(f.markPending, markPendingCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
+	f.records[upn] = syncstatus.Record{Status: syncstatus.StatusPending, UpdatedAt: time.Now(), SourceEnqueuedAt: sourceEnqueuedAt}
 	return nil
 }
 
 func (f *fakeSyncStatusStore) setRecord(upn string, status syncstatus.Status, updatedAt time.Time) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.records[upn] = syncstatus.Record{Status: status, UpdatedAt: updatedAt}
 }
 ```
 
-Then add these 9 new test functions to `internal/migration/service_test.go`:
+Then add these 9 new test functions to `internal/migration/service_test.go` (all use `t.Parallel()` matching the file's existing style, and `"nycu.edu.tw"` as the primary domain so the resulting UPN matches the rest of the file's fixtures):
 
 ```go
 func TestServiceRejectsInvalidEventType(t *testing.T) {
-	queue := &fakeQueue{}
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{})
+	t.Parallel()
 
-	_, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
+	queue := &captureQueue{}
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{})
+
+	_, err := service.Submit(context.Background(), Request{
+		CN:        "311551001",
 		EventType: EventType("bogus"),
+		Password:  []byte("secret"),
 	})
 
 	if !errors.Is(err, ErrInvalidEventType) {
 		t.Fatalf("Submit() error = %v, want ErrInvalidEventType", err)
 	}
-	if len(queue.enqueued) != 0 {
-		t.Errorf("queue.enqueued = %d messages, want 0", len(queue.enqueued))
+	if len(queue.messages) != 0 {
+		t.Errorf("queue.messages = %d, want 0", len(queue.messages))
 	}
 }
 
 func TestServiceSkipsLoginBootstrapWhenAlreadySynced(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
+	t.Parallel()
 
-	upn := "jdoe@example.edu"
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	upn := "311551001@nycu.edu.tw"
 	store.setRecord(upn, syncstatus.StatusSynced, time.Now())
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
 		t.Fatalf("Submit() error = %v, want nil", err)
 	}
-	if !decision.Enqueued == false {
-		// decision.Enqueued must be false for a skip; assert directly below.
+	if !decision.Skipped {
+		t.Error("decision.Skipped = false, want true (already-synced login_bootstrap should skip)")
 	}
-	if decision.Enqueued {
-		t.Error("decision.Enqueued = true, want false (should skip already-synced login_bootstrap)")
+	if decision.Reason != "already_synced" {
+		t.Errorf("decision.Reason = %q, want %q", decision.Reason, "already_synced")
 	}
-	if len(queue.enqueued) != 0 {
-		t.Errorf("queue.enqueued = %d messages, want 0", len(queue.enqueued))
+	if len(queue.messages) != 0 {
+		t.Errorf("queue.messages = %d, want 0", len(queue.messages))
 	}
 }
 
 func TestServiceSkipsLoginBootstrapWhenPendingFresh(t *testing.T) {
-	queue := &fakeQueue{}
+	t.Parallel()
+
+	queue := &captureQueue{}
 	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store, PendingTTL: 5 * time.Minute})
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store, PendingTTL: 5 * time.Minute})
 
-	upn := "jdoe@example.edu"
-	store.setRecord(upn, syncstatus.StatusSyncPending, time.Now().Add(-1*time.Minute))
+	upn := "311551001@nycu.edu.tw"
+	store.setRecord(upn, syncstatus.StatusPending, time.Now().Add(-1*time.Minute))
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
 		t.Fatalf("Submit() error = %v, want nil", err)
 	}
-	if decision.Enqueued {
-		t.Error("decision.Enqueued = true, want false (fresh pending sync should skip)")
+	if !decision.Skipped {
+		t.Error("decision.Skipped = false, want true (fresh pending sync should skip)")
 	}
-	if len(queue.enqueued) != 0 {
-		t.Errorf("queue.enqueued = %d messages, want 0", len(queue.enqueued))
+	if decision.Reason != "sync_pending" {
+		t.Errorf("decision.Reason = %q, want %q", decision.Reason, "sync_pending")
+	}
+	if len(queue.messages) != 0 {
+		t.Errorf("queue.messages = %d, want 0", len(queue.messages))
 	}
 }
 
 func TestServiceEnqueuesLoginBootstrapWhenPendingStale(t *testing.T) {
-	queue := &fakeQueue{}
+	t.Parallel()
+
+	queue := &captureQueue{}
 	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store, PendingTTL: 5 * time.Minute})
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store, PendingTTL: 5 * time.Minute})
 
-	upn := "jdoe@example.edu"
-	store.setRecord(upn, syncstatus.StatusSyncPending, time.Now().Add(-10*time.Minute))
+	upn := "311551001@nycu.edu.tw"
+	store.setRecord(upn, syncstatus.StatusPending, time.Now().Add(-10*time.Minute))
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
@@ -652,48 +716,27 @@ func TestServiceEnqueuesLoginBootstrapWhenPendingStale(t *testing.T) {
 	if !decision.Enqueued {
 		t.Error("decision.Enqueued = false, want true (stale pending sync should re-enqueue)")
 	}
-	if len(queue.enqueued) != 1 {
-		t.Errorf("queue.enqueued = %d messages, want 1", len(queue.enqueued))
-	}
-}
-
-func TestServiceEnqueuesLoginBootstrapAfterSyncFailed(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
-
-	upn := "jdoe@example.edu"
-	store.setRecord(upn, syncstatus.StatusSyncFailed, time.Now())
-
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
-	})
-
-	if err != nil {
-		t.Fatalf("Submit() error = %v, want nil", err)
-	}
-	if !decision.Enqueued {
-		t.Error("decision.Enqueued = false, want true (sync_failed should re-enqueue on next login_bootstrap)")
-	}
-	if len(queue.enqueued) != 1 {
-		t.Errorf("queue.enqueued = %d messages, want 1", len(queue.enqueued))
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
 	}
 }
 
 func TestServiceAlwaysEnqueuesPasswordChangeEvenWhenSynced(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
+	t.Parallel()
 
-	upn := "jdoe@example.edu"
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	upn := "311551001@nycu.edu.tw"
 	store.setRecord(upn, syncstatus.StatusSynced, time.Now())
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("newsecret"),
-		EventType: EventPasswordChange,
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventPasswordChange,
+		Password:    []byte("newsecret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
@@ -702,23 +745,27 @@ func TestServiceAlwaysEnqueuesPasswordChangeEvenWhenSynced(t *testing.T) {
 	if !decision.Enqueued {
 		t.Error("decision.Enqueued = false, want true (password_change always resyncs)")
 	}
-	if len(queue.enqueued) != 1 {
-		t.Errorf("queue.enqueued = %d messages, want 1", len(queue.enqueued))
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
 	}
 }
 
 func TestServiceAlwaysEnqueuesPasswordRecoveryEvenWhenSynced(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
+	t.Parallel()
 
-	upn := "jdoe@example.edu"
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	upn := "311551001@nycu.edu.tw"
 	store.setRecord(upn, syncstatus.StatusSynced, time.Now())
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("recoveredsecret"),
-		EventType: EventPasswordRecovery,
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventPasswordRecovery,
+		Password:    []byte("recoveredsecret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
@@ -727,73 +774,123 @@ func TestServiceAlwaysEnqueuesPasswordRecoveryEvenWhenSynced(t *testing.T) {
 	if !decision.Enqueued {
 		t.Error("decision.Enqueued = false, want true (password_recovery always resyncs)")
 	}
-	if len(queue.enqueued) != 1 {
-		t.Errorf("queue.enqueued = %d messages, want 1", len(queue.enqueued))
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
 	}
 }
 
-func TestServiceMarksPendingAfterSuccessfulEnqueue(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
+func TestServiceMarksPendingWithSourceEnqueuedAtAfterSuccessfulEnqueue(t *testing.T) {
+	t.Parallel()
 
-	_, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+	fixedNow := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixedNow }
+
+	_, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
 		t.Fatalf("Submit() error = %v, want nil", err)
 	}
-	if len(store.markPending) != 1 || store.markPending[0] != "jdoe@example.edu" {
-		t.Errorf("store.markPending = %v, want [\"jdoe@example.edu\"]", store.markPending)
+	if len(store.markPending) != 1 {
+		t.Fatalf("store.markPending = %d calls, want 1", len(store.markPending))
+	}
+	call := store.markPending[0]
+	if call.upn != "311551001@nycu.edu.tw" {
+		t.Errorf("markPending upn = %q, want %q", call.upn, "311551001@nycu.edu.tw")
+	}
+	if !call.sourceEnqueuedAt.Equal(fixedNow) {
+		t.Errorf("markPending sourceEnqueuedAt = %v, want %v (must equal msg.EnqueuedAt)", call.sourceEnqueuedAt, fixedNow)
 	}
 }
 
-func TestServiceSyncStatusStoreErrorFailsOpen(t *testing.T) {
-	queue := &fakeQueue{}
-	store := newFakeSyncStatusStore()
-	store.getErr = errors.New("store unavailable")
-	svc := NewService("example.edu", queue, &fakeEncrypter{}, ServiceOptions{SyncStatusStore: store})
+func TestServiceNilSyncStatusStoreBehavesLikeNoDedupe(t *testing.T) {
+	t.Parallel()
 
-	decision, err := svc.Submit(context.Background(), Request{
-		CN:        "jdoe",
-		Password:  []byte("secret"),
-		EventType: EventLoginBootstrap,
+	queue := &captureQueue{}
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{})
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
 	})
 
 	if err != nil {
-		t.Fatalf("Submit() error = %v, want nil (store errors must fail open)", err)
+		t.Fatalf("Submit() error = %v, want nil", err)
 	}
 	if !decision.Enqueued {
-		t.Error("decision.Enqueued = false, want true (store Get error must not block enqueue)")
+		t.Error("decision.Enqueued = false, want true (nil store must not block enqueue)")
 	}
-	if len(queue.enqueued) != 1 {
-		t.Errorf("queue.enqueued = %d messages, want 1", len(queue.enqueued))
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
+	}
+}
+
+func TestServiceDecisionUPNPopulatedOnSkip(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	upn := "311551001@nycu.edu.tw"
+	store.setRecord(upn, syncstatus.StatusSynced, time.Now())
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if !decision.Skipped {
+		t.Fatal("decision.Skipped = false, want true")
+	}
+	if decision.UPN != upn {
+		t.Errorf("decision.UPN = %q, want %q (UPN must be populated even on a skip)", decision.UPN, upn)
 	}
 }
 ```
 
-Add `"sync"` and `"github.com/nycu/password-hook-service/internal/syncstatus"` to the test file's import block if not already present (adjust the module path per Step 1's confirmed value).
+Add `"github.com/nycu/password-hook-service/internal/syncstatus"` to the test file's import block.
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/migration/... -v`
-Expected: FAIL — build error. The new tests call `NewService` with a 4th `ServiceOptions{}` argument, but the current 3-argument `NewService` signature doesn't accept it, and `Request.EventType`/`ServiceOptions`/`SyncStatusStore` don't exist yet.
+Expected: FAIL — build error. `ServiceOptions`/`SyncStatusStore`/`Request.EventType` don't exist yet.
 
-- [ ] **Step 4: Rewrite service.go**
+- [ ] **Step 3: Rewrite service.go**
 
-Modify `internal/migration/service.go`. Add the import (adjust module path per Step 1):
+Modify `internal/migration/service.go`. Add the import:
 
 ```go
 import (
-	// ...existing imports...
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/syncstatus"
 )
 ```
 
-Add near the top of the file, after existing const/var declarations:
+Add after the `PasswordEncrypter` interface declaration:
 
 ```go
 // defaultPendingTTL bounds how long a sync_pending record suppresses a
@@ -806,15 +903,15 @@ const defaultPendingTTL = 300 * time.Second
 // SyncStatusStore is the narrow view of syncstatus.Store that Service
 // needs. *syncstatus.MemoryStore satisfies this interface.
 type SyncStatusStore interface {
-	Get(ctx context.Context, upn string) (syncstatus.Record, bool, error)
-	MarkPending(ctx context.Context, upn string) error
+	Get(ctx context.Context, upn string) (syncstatus.Record, error)
+	MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
 }
 
 // ServiceOptions configures optional Service behavior.
 type ServiceOptions struct {
 	// SyncStatusStore, if non-nil, enables login_bootstrap dedupe. If nil,
 	// every login_bootstrap event is enqueued unconditionally (dedupe
-	// disabled).
+	// disabled) -- this keeps existing callers backward compatible.
 	SyncStatusStore SyncStatusStore
 	// PendingTTL bounds how long a sync_pending record suppresses a repeat
 	// login_bootstrap enqueue. Defaults to defaultPendingTTL when <= 0.
@@ -822,24 +919,47 @@ type ServiceOptions struct {
 }
 ```
 
-Add `EventType EventType` to the `Request` struct (place it next to the other request fields, e.g. after `CN`):
+Add `EventType EventType` to the `Request` struct, right after `CN`:
 
 ```go
 type Request struct {
-	CN        string
+	CN string
+	// EventType identifies why the caller invoked Submit. Must be one of
+	// the EventType constants; Submit rejects any other value.
 	EventType EventType
-	Password  []byte
-	// ...existing fields unchanged...
+	// Password is borrowed mutable memory. Submit zeroes it before returning on
+	// every success, skip, and error path; callers must not reuse it afterward.
+	Password    []byte
+	DisplayName string
+	Mail        string
 }
 ```
 
-Add `syncStatusStore SyncStatusStore` and `pendingTTL time.Duration` fields to the `Service` struct.
-
-Change `NewService`'s signature and body:
+Add `syncStatusStore SyncStatusStore` and `pendingTTL time.Duration` fields to the `Service` struct:
 
 ```go
-func NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ServiceOptions) *Service {
-	pendingTTL := opts.PendingTTL
+type Service struct {
+	primaryDomain   string
+	queue           Queue
+	encrypter       PasswordEncrypter
+	now             func() time.Time
+	syncStatusStore SyncStatusStore
+	pendingTTL      time.Duration
+}
+```
+
+Change `NewService` to a variadic-options signature, so all existing 3-argument call sites (in `service_test.go`, `hook_test.go`, and `app.go`) keep compiling unchanged:
+
+```go
+// NewService constructs a Service. opts is variadic so existing call sites
+// (which pass no options) keep compiling unchanged; passing more than one
+// ServiceOptions is invalid usage and only the first is honored.
+func NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ...ServiceOptions) *Service {
+	var opt ServiceOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	pendingTTL := opt.PendingTTL
 	if pendingTTL <= 0 {
 		pendingTTL = defaultPendingTTL
 	}
@@ -847,58 +967,83 @@ func NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, 
 		primaryDomain:   primaryDomain,
 		queue:           queue,
 		encrypter:       encrypter,
-		syncStatusStore: opts.SyncStatusStore,
+		now:             time.Now,
+		syncStatusStore: opt.SyncStatusStore,
 		pendingTTL:      pendingTTL,
 	}
 }
 ```
 
-(Keep all other existing fields in the returned `&Service{...}` literal exactly as they currently are — only add the two new ones.)
-
-In `Submit`, immediately after `defer ZeroBytes(req.Password)`, add event type validation as the very first check:
+In `Submit`, add event-type validation as the very first check, right after `defer passwordcrypto.ZeroBytes(req.Password)`:
 
 ```go
 func (s *Service) Submit(ctx context.Context, req Request) (Decision, error) {
-	defer ZeroBytes(req.Password)
+	defer passwordcrypto.ZeroBytes(req.Password)
 
+	// Defense-in-depth only: internal/handler/hook.go already rejects an
+	// invalid/missing eventType before calling Submit, so this path is
+	// normally unreachable via the HTTP hook, but must exist for any other
+	// future caller of this package.
 	if !ValidEventType(req.EventType) {
 		return Decision{}, ErrInvalidEventType
 	}
 
-	// ...existing ClassifyCN / external-email / unknown-identity / BuildUPN logic unchanged...
+	identityType := ClassifyCN(req.CN)
+	// ...existing external-email / unknown-identity / BuildUPN logic unchanged...
 ```
 
-After the existing `BuildUPN` call succeeds (i.e., once `upn` is known) and before the existing queue/encrypter nil checks, add the dedupe check:
+After the existing `decision.UPN = upn` line and before the existing `s.queue`/`s.encrypter` nil checks, add the dedupe check. This mirrors the existing external-email skip pattern (`decision.Skipped` + `decision.Reason`, return `decision, nil`) rather than a bare `Decision{Enqueued: false}` literal, so `decision.UPN` (and `decision.IdentityType`) stay populated on a skip:
 
 ```go
+	upn, err := BuildUPN(req.CN, s.primaryDomain)
+	if err != nil {
+		return decision, err
+	}
+	decision.UPN = upn
+
 	if req.EventType == EventLoginBootstrap && s.syncStatusStore != nil {
-		if skip, _ := s.skipLoginBootstrap(ctx, upn); skip {
-			return Decision{Enqueued: false}, nil
+		if skip, reason := s.skipLoginBootstrap(ctx, upn); skip {
+			decision.Skipped = true
+			decision.Reason = reason
+			return decision, nil
 		}
 	}
 
-	// ...existing queue/encrypter nil checks, message building, encrypt, enqueue...
+	if s.queue == nil {
+		return decision, errors.New("migration queue is not configured")
+	}
+	// ...existing encrypter nil check unchanged...
 ```
 
-Add the `EventType` field to the message-building literal (wherever `PasswordSyncMessage{...}` is constructed in `Submit`):
+Add `EventType: req.EventType` to the `PasswordSyncMessage{...}` literal:
 
 ```go
 	msg := PasswordSyncMessage{
-		CN:        cn,
-		UPN:       upn,
-		EventType: req.EventType,
-		// ...existing fields unchanged...
+		CN:          strings.TrimSpace(req.CN),
+		UPN:         upn,
+		EventType:   req.EventType,
+		DisplayName: strings.TrimSpace(req.DisplayName),
+		Mail:        strings.TrimSpace(req.Mail),
+		EnqueuedAt:  s.now().UTC(),
 	}
 ```
 
-After a successful enqueue (right before `Submit`'s final `return Decision{Enqueued: true}, nil` or equivalent success path), add the best-effort pending mark:
+After `EnqueuePasswordSync` succeeds and before the final `decision.Enqueued = true; return decision, nil`, add the best-effort pending mark, reusing `msg.EnqueuedAt` (already computed via `s.now().UTC()`) as `sourceEnqueuedAt` rather than calling `s.now()` again:
 
 ```go
-	if s.syncStatusStore != nil {
-		_ = s.syncStatusStore.MarkPending(ctx, upn)
+	if err := s.queue.EnqueuePasswordSync(ctx, msg); err != nil {
+		return decision, err
 	}
 
-	return Decision{Enqueued: true}, nil
+	if s.syncStatusStore != nil {
+		// Best-effort: a status-tracking write failure must never fail an
+		// otherwise-successful enqueue.
+		_ = s.syncStatusStore.MarkPending(ctx, upn, msg.EnqueuedAt)
+	}
+
+	decision.Enqueued = true
+	return decision, nil
+}
 ```
 
 Add the new helper method at the end of the file:
@@ -906,18 +1051,18 @@ Add the new helper method at the end of the file:
 ```go
 // skipLoginBootstrap reports whether a login_bootstrap event for upn should
 // be skipped because the account is already synced or has a fresh pending
-// sync in flight. Store errors are treated as "no record" (fail-open): a
-// sync-status outage must never block logins from bootstrapping.
+// sync in flight. A store error is treated the same as "no record" (fail
+// open): a sync-status outage must never block logins from bootstrapping.
 func (s *Service) skipLoginBootstrap(ctx context.Context, upn string) (bool, string) {
-	rec, found, err := s.syncStatusStore.Get(ctx, upn)
-	if err != nil || !found {
+	rec, err := s.syncStatusStore.Get(ctx, upn)
+	if err != nil {
 		return false, ""
 	}
 	switch rec.Status {
 	case syncstatus.StatusSynced:
 		return true, "already_synced"
-	case syncstatus.StatusSyncPending:
-		if time.Since(rec.UpdatedAt) < s.pendingTTL {
+	case syncstatus.StatusPending:
+		if s.now().Sub(rec.UpdatedAt) < s.pendingTTL {
 			return true, "sync_pending"
 		}
 		return false, ""
@@ -927,36 +1072,28 @@ func (s *Service) skipLoginBootstrap(ctx context.Context, upn string) (bool, str
 }
 ```
 
-- [ ] **Step 5: Run tests to verify the new failures shift**
+- [ ] **Step 4: Update the 5 pre-existing `Request` literals**
 
-Run: `go test ./internal/migration/... -v`
-Expected: FAIL — the 9 new tests should now build and mostly pass, but the 5 pre-existing `NewService(...)` call sites (3-argument form) in `service_test.go` now fail to compile, since `NewService` requires 4 arguments.
-
-- [ ] **Step 6: Update the 5 pre-existing call sites**
-
-In `internal/migration/service_test.go`, update each of the 5 existing `NewService(primaryDomain, queue, encrypter)` calls (originally at lines 24, 63, 88, 114, 135) to pass a 4th argument, `ServiceOptions{}`:
+`NewService`'s 3-argument call sites in `service_test.go` (lines 24, 63, 88, 114, 135) need **no changes** — the new 4th parameter is variadic. But each of the 5 corresponding `Request{...}` literals now needs a valid `EventType`, since `Submit` rejects an empty one before ever reaching `ClassifyCN`. Add `EventType: EventPasswordChange` to each (chosen so these pre-existing tests keep exercising unconditional-enqueue behavior, independent of the new dedupe logic):
 
 ```go
-svc := NewService("example.edu", queue, encrypter, ServiceOptions{})
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventPasswordChange,
+		Password:    []byte("cleartext-password"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
 ```
 
-And add `EventType: EventLoginBootstrap` to each of the corresponding 5 `Request{...}` literals (originally at lines 27, 66, 90, 116, 138) so the existing tests keep exercising valid requests:
+Apply the same `EventType: EventPasswordChange` addition to the `Request` literals in `TestServiceZerosPasswordAfterSuccessfulEnqueue`, `TestServiceZerosPasswordWhenSkippingExternalEmail`, `TestServiceZerosPasswordWhenEncryptFails`, and `TestServiceZerosPasswordWhenQueueFails`.
 
-```go
-req := Request{
-	CN:        "jdoe",
-	EventType: EventLoginBootstrap,
-	Password:  []byte("secret"),
-	// ...existing fields unchanged...
-}
-```
+- [ ] **Step 5: Run all migration tests to verify they pass**
 
-- [ ] **Step 7: Run all migration tests to verify they pass**
+Run: `go test ./internal/migration/... -race -v`
+Expected: PASS (all tests, old and new).
 
-Run: `go test ./internal/migration/... -v`
-Expected: PASS (all tests, old and new)
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/migration/service.go internal/migration/service_test.go
@@ -972,21 +1109,27 @@ git commit -m "feat(migration): dedupe login_bootstrap syncs via syncstatus stor
 - Modify: `internal/handler/hook_test.go`
 
 **Interfaces:**
-- Consumes: `migration.EventType`, `migration.ValidEventType`, `migration.ErrInvalidEventType`, `migration.Request.EventType`, `migration.ServiceOptions` (all from Task 4).
+- Consumes: `migration.EventType`, `migration.ValidEventType`, `migration.ErrInvalidEventType`, `migration.Request.EventType` (all from Task 1/Task 4). `migration.NewService` is now variadic (Task 4), so none of the 9 existing `migration.NewService(primaryDomain, queue, encrypter)` call sites in `hook_test.go` need any changes.
 - Produces: `passwordHookRequest.EventType migration.EventType` (JSON tag `eventType`). No new exported functions — this task only changes request validation and the `migration.Request{}` literal inside the existing `ServeHTTP` handler.
+
+Ground truth from the current `internal/handler/hook.go` (re-verified): `validate()` is a method with signature `func (r passwordHookRequest) validate() string` — it returns a **plain string** (empty means valid), not a struct; each case in its `switch` returns a literal string like `"Field 'cn' is required"`. `ServeHTTP`'s error routing is `if errors.Is(err, migration.ErrUnknownIdentity) || errors.Is(err, migration.ErrExternalIdentity) { ...400... }` followed by a 500 fallback. There is no `newSignedHookRequest`/`newTestHookHandler` helper anywhere in `hook_test.go` — every existing test builds its own `service := migration.NewService(...)`, `hook := NewHook(service, "https://nycu.edu.tw/problems")`, and `req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))` inline; the two new tests below follow that same pattern.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `internal/handler/hook_test.go`:
+Add to `internal/handler/hook_test.go`, following the existing inline construction style (e.g. `TestHookRejectsUnknownCNAsBadRequest`):
 
 ```go
 func TestHookRejectsMissingEventType(t *testing.T) {
-	body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu"}`)
-	req := newSignedHookRequest(t, body)
-	rec := httptest.NewRecorder()
+	t.Parallel()
 
-	handler := newTestHookHandler(t)
-	handler.ServeHTTP(rec, req)
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	hook := NewHook(service, "https://nycu.edu.tw/problems")
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+
+	hook.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -997,12 +1140,16 @@ func TestHookRejectsMissingEventType(t *testing.T) {
 }
 
 func TestHookRejectsInvalidEventType(t *testing.T) {
-	body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu","eventType":"password_reset"}`)
-	req := newSignedHookRequest(t, body)
-	rec := httptest.NewRecorder()
+	t.Parallel()
 
-	handler := newTestHookHandler(t)
-	handler.ServeHTTP(rec, req)
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	hook := NewHook(service, "https://nycu.edu.tw/problems")
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"password_reset"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+
+	hook.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -1013,94 +1160,95 @@ func TestHookRejectsInvalidEventType(t *testing.T) {
 }
 ```
 
-Note: adjust `newSignedHookRequest`/`newTestHookHandler` to the actual helper names already used elsewhere in `hook_test.go` (re-check the file for the exact existing helper names and call conventions before pasting — the two new tests must follow the same construction pattern as neighboring tests like `TestHookRejectsUnknownCNAsBadRequest`).
-
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/handler/... -run TestHookRejects -v`
-Expected: FAIL — `TestHookRejectsMissingEventType` and `TestHookRejectsInvalidEventType` fail because the handler doesn't yet validate `eventType` (missing/invalid eventType bodies currently succeed or fail for unrelated reasons).
+Expected: FAIL — `TestHookRejectsMissingEventType` gets 202 (empty `eventType` is currently accepted, since `passwordHookRequest` has no `EventType` field yet and `validate()` never checks one), and `TestHookRejectsInvalidEventType` also gets 202 for the same reason.
 
 - [ ] **Step 3: Update hook.go**
 
-Modify `internal/handler/hook.go`. Add `EventType` to the `passwordHookRequest` struct:
+Modify `internal/handler/hook.go`. Add `EventType` to the `passwordHookRequest` struct, right after `CN`:
 
 ```go
 type passwordHookRequest struct {
 	CN          string              `json:"cn"`
 	EventType   migration.EventType `json:"eventType"`
-	Password    string              `json:"password"`
+	Password    passwordBytes       `json:"password"`
 	DisplayName string              `json:"displayName"`
 	Mail        string              `json:"mail"`
 }
 ```
 
-In the `validate()` method's switch statement, append two new cases at the end (after the existing cn/password/displayName/mail checks), before the `default: return nil` (or equivalent terminal case):
+In the `validate()` method, append two new cases to the switch, after the existing `mail` check and before `default`:
 
 ```go
+func (r passwordHookRequest) validate() string {
+	switch {
+	case strings.TrimSpace(r.CN) == "":
+		return "Field 'cn' is required"
+	case len(r.Password) == 0:
+		return "Field 'password' is required"
+	case strings.TrimSpace(r.DisplayName) == "":
+		return "Field 'displayName' is required"
+	case strings.TrimSpace(r.Mail) == "":
+		return "Field 'mail' is required"
 	case strings.TrimSpace(string(r.EventType)) == "":
-		return &problemDetail{Title: "Invalid request", Detail: "Field 'eventType' is required"}
+		return "Field 'eventType' is required"
 	case !migration.ValidEventType(r.EventType):
-		return &problemDetail{Title: "Invalid request", Detail: "Field 'eventType' must be one of login_bootstrap, password_change, password_recovery"}
+		return "Field 'eventType' must be one of login_bootstrap, password_change, password_recovery"
+	default:
+		return ""
+	}
+}
 ```
-
-(Match the exact existing `problemDetail`/return-type shape already used by the other cases in this switch — copy the surrounding case's error-construction style verbatim rather than introducing a new pattern.)
 
 In `ServeHTTP`, add `EventType: body.EventType` to the `migration.Request{...}` literal:
 
 ```go
-	req := migration.Request{
-		CN:        body.CN,
-		EventType: body.EventType,
-		Password:  []byte(body.Password),
-		// ...existing fields unchanged...
-	}
+	_, err = h.service.Submit(r.Context(), migration.Request{
+		CN:          body.CN,
+		EventType:   body.EventType,
+		Password:    []byte(body.Password),
+		DisplayName: body.DisplayName,
+		Mail:        body.Mail,
+	})
 ```
 
-In the error-handling `errors.Is` chain that maps `Submit` errors to HTTP status codes, add the new sentinel:
+`migration.ErrInvalidEventType` does not need to be added to the `errors.Is` chain: an invalid/missing `eventType` is now rejected by `validate()` before `Submit` is ever called, so `Submit`'s own `ErrInvalidEventType` return path (added in Task 4 as defense-in-depth) is unreachable from this handler. Leave the existing `errors.Is(err, migration.ErrUnknownIdentity) || errors.Is(err, migration.ErrExternalIdentity)` chain unchanged.
 
-```go
-	if errors.Is(err, migration.ErrExternalIdentity) || errors.Is(err, migration.ErrUnknownIdentity) || errors.Is(err, migration.ErrInvalidEventType) {
-		// existing 400 handling unchanged
-	}
-```
+- [ ] **Step 4: Add eventType to the 5 JSON body fixtures that must keep succeeding**
 
-(Match this to the exact existing chain structure in the file — the goal is just to route `ErrInvalidEventType` to the same 400-response path as the other validation sentinels.)
+In `internal/handler/hook_test.go`, add `,"eventType":"login_bootstrap"` to the JSON body strings in these 5 tests (originally at lines 26, 51, 266, 287, 305) so they continue to reach and pass the full validation chain:
 
-- [ ] **Step 4: Update the 9 existing NewService call sites**
+- `TestHookEnqueuesInternalStudentID` (line 26):
+  ```go
+  body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+  ```
+- `TestHookZerosDecodedPasswordAfterSubmit` (line 51):
+  ```go
+  body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+  ```
+- `TestHookSkipsExternalEmailIdentity` (line 266):
+  ```go
+  body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
+  ```
+- `TestHookRejectsUnknownCNAsBadRequest` (line 287):
+  ```go
+  body := []byte(`{"cn":"bad cn!","password":"secret","displayName":"Bad","mail":"bad@nycu.edu.tw","eventType":"login_bootstrap"}`)
+  ```
+- `TestHookQueueFailureReturnsInternalError` (line 305):
+  ```go
+  body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+  ```
 
-In `internal/handler/hook_test.go`, each of the 9 `migration.NewService(primaryDomain, queue, encrypter)` calls (originally at lines 23, 48, 88, 185, 204, 263, 284, 302, 319) needs a 4th argument appended:
+Do not modify any other JSON body in the file (e.g. lines 73, 92, 120, 135, 189, 207, 322) — those tests either fail at an earlier validation step (missing `cn`/`password`) or bypass `ServeHTTP`/`validate()` entirely (direct `json.Unmarshal` into `passwordHookRequest`, or `decodeJSONStringBytes` calls), so `eventType` is irrelevant to their expected outcome.
 
-```go
-svc := migration.NewService(primaryDomain, queue, encrypter, migration.ServiceOptions{})
-```
+- [ ] **Step 5: Run all handler tests to verify they pass**
 
-- [ ] **Step 5: Add eventType to the 5 JSON body fixtures that must keep succeeding**
+Run: `go test ./internal/handler/... -race -v`
+Expected: PASS (all tests, old and new).
 
-In `internal/handler/hook_test.go`, add `"eventType":"login_bootstrap"` to the JSON body strings in these 5 tests (originally at lines 26, 51, 266, 287, 305) so they continue to reach and pass the full validation chain:
-
-- `TestHookEnqueuesInternalStudentID` (line 26)
-- `TestHookZerosDecodedPasswordAfterSubmit` (line 51)
-- `TestHookSkipsExternalEmailIdentity` (line 266)
-- `TestHookRejectsUnknownCNAsBadRequest` (line 287)
-- `TestHookQueueFailureReturnsInternalError` (line 305)
-
-Example transformation:
-
-```go
-// before
-body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu"}`)
-// after
-body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu","eventType":"login_bootstrap"}`)
-```
-
-Do not modify the other JSON bodies in the file (lines 73, 92, 120, 135, 189, 207, 322 and similar) — those tests fail at an earlier validation step or bypass `validate()` entirely, so they don't need `eventType` to keep their current expected outcome.
-
-- [ ] **Step 6: Run all handler tests to verify they pass**
-
-Run: `go test ./internal/handler/... -v`
-Expected: PASS (all tests, old and new)
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add internal/handler/hook.go internal/handler/hook_test.go
@@ -1116,98 +1264,68 @@ git commit -m "feat(handler): validate and forward eventType on password hook"
 - Modify: `internal/worker/worker_test.go`
 
 **Interfaces:**
-- Consumes: nothing new from prior tasks (only needs `passwordSyncMessage.UPN`, already present).
-- Produces: `type SyncStatusRecorder interface { MarkSynced(ctx context.Context, upn string) error; MarkFailed(ctx context.Context, upn string) error }`; `Options.SyncStatusRecorder SyncStatusRecorder` (required, validated non-nil in `New`). Task 7 (app.go) passes `*syncstatus.MemoryStore` here (it structurally satisfies this interface).
+- Consumes: `syncstatus.Record`/`syncstatus.Status` are not referenced directly by this package — only `passwordSyncMessage.UPN` and `passwordSyncMessage.EnqueuedAt` (both already present on `migration.PasswordSyncMessage`).
+- Produces: `type SyncStatusRecorder interface { MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error; MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error }`; `Options.SyncStatusRecorder SyncStatusRecorder` (required, validated non-nil in `New`). Task 7 (app.go) passes the same `*syncstatus.MemoryStore` instance used by `migration.ServiceOptions.SyncStatusStore` here — it structurally satisfies this interface too, since its `MarkSynced`/`MarkFailed` methods already take a `sourceEnqueuedAt time.Time` parameter (Task 3).
+
+Ground truth from the current `internal/worker/worker.go` (re-verified): `New(receiver Receiver, processor Processor, options Options) (*Worker, error)` — `receiver`/`processor` are **positional parameters**, not `Options` struct fields. `New`'s nil-checks are sequential `if` statements in this exact order: `receiver == nil` → `"worker receiver is required"`, `processor == nil` → `"worker processor is required"`, `options.DeadLetterSink == nil` → `"worker dead-letter sink is required"`, `options.PasswordDecrypter == nil` → `"worker password decrypter is required"`. `TestNewValidatesDependencies` (currently at line ~608) is **not table-driven** — it's 4 sequential `if _, err := New(...); err == nil || err.Error() != "..." { t.Fatalf(...) }` statements. Test helpers `newTestWorker(t, receiver, processor, decrypter, deadLetters)` (5 params) and `newPolicyTestWorker(t, receiver, processor, decrypter, deadLetters, sleeper)` (6 params) are used by 18 existing test call sites combined — none of them need to change if the helpers default `SyncStatusRecorder` internally (see Step 3). `workerMessage(t, msg migration.PasswordSyncMessage) *Message` takes a `PasswordSyncMessage` value, not `[]byte`. `validPasswordSyncMessage() migration.PasswordSyncMessage` takes **no `t` parameter** and returns `CN: "u1234567"`, `UPN: "u1234567@example.edu"`, `EnqueuedAt: time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)`. Every existing test drives the worker via `worker.Run(ctx)` with a `*fakeReceiver` whose `onComplete`/`onAbandon` callback cancels the context (via `fakeDeadLetterSink.onRecord` for DLQ-writing paths) — none of the existing tests call the unexported `processMessage` directly, so the new tests below follow that same `Run`-based convention rather than introducing a new pattern.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `internal/worker/worker_test.go` a `fakeSyncStatusRecorder` (unsynchronized, matching `fakeDeadLetterSink`'s convention):
+Add to `internal/worker/worker_test.go` a `fakeSyncStatusRecorder` (unsynchronized, matching the file's other fakes; place it near `fakeDeadLetterSink`):
 
 ```go
 type fakeSyncStatusRecorder struct {
-	synced []string
-	failed []string
+	synced []syncStatusCall
+	failed []syncStatusCall
 	err    error
 }
 
-func (f *fakeSyncStatusRecorder) MarkSynced(_ context.Context, upn string) error {
-	f.synced = append(f.synced, upn)
+type syncStatusCall struct {
+	upn              string
+	sourceEnqueuedAt time.Time
+}
+
+func (f *fakeSyncStatusRecorder) MarkSynced(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	f.synced = append(f.synced, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
 	return f.err
 }
 
-func (f *fakeSyncStatusRecorder) MarkFailed(_ context.Context, upn string) error {
-	f.failed = append(f.failed, upn)
+func (f *fakeSyncStatusRecorder) MarkFailed(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	f.failed = append(f.failed, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
 	return f.err
 }
 ```
 
-Update `newTestWorker` and `newPolicyTestWorker` (the shared helper constructors) to pass `SyncStatusRecorder: &fakeSyncStatusRecorder{}` inside their `Options{...}` literals. Update the direct `New(...)` call in `TestWorkerEmptyReceiveWaitsBeforePollingAgain` the same way.
-
-Rewrite `TestNewValidatesDependencies` so each of the 4 existing nil-dependency sub-cases also includes `SyncStatusRecorder: &fakeSyncStatusRecorder{}` in its `Options{}` (so each sub-case still trips only its own dependency-under-test), and add a 5th sub-case for the new dependency:
-
-```go
-func TestNewValidatesDependencies(t *testing.T) {
-	baseOptions := func() Options {
-		return Options{
-			Receiver:           &fakeReceiver{},
-			Processor:          &fakeProcessor{},
-			PasswordDecrypter:  &fakePasswordDecrypter{},
-			DeadLetterSink:     &fakeDeadLetterSink{},
-			SyncStatusRecorder: &fakeSyncStatusRecorder{},
-			// ...any other existing required fields from the current struct literal, unchanged...
-		}
-	}
-
-	tests := []struct {
-		name    string
-		mutate  func(*Options)
-		wantErr string
-	}{
-		{"missing receiver", func(o *Options) { o.Receiver = nil }, "receiver is required"},
-		{"missing processor", func(o *Options) { o.Processor = nil }, "processor is required"},
-		{"missing password decrypter", func(o *Options) { o.PasswordDecrypter = nil }, "password decrypter is required"},
-		{"missing dead letter sink", func(o *Options) { o.DeadLetterSink = nil }, "dead letter sink is required"},
-		{"missing sync status recorder", func(o *Options) { o.SyncStatusRecorder = nil }, "worker sync status recorder is required"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			opts := baseOptions()
-			tt.mutate(&opts)
-
-			_, err := New(opts)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("New() error = %v, want containing %q", err, tt.wantErr)
-			}
-		})
-	}
-}
-```
-
-(Reconcile the exact existing error-message strings and any other required `Options` fields against the current file content before finalizing — copy the current test's exact wording for the first 4 cases rather than retyping from memory, and only add the 5th case and the `SyncStatusRecorder` field verbatim as shown.)
-
-Add 3 new standalone tests using direct `New(...)` calls:
+Add 3 new standalone tests, following the file's existing `Run`-based convention:
 
 ```go
 func TestWorkerMarksSyncedOnSuccess(t *testing.T) {
-	recorder := &fakeSyncStatusRecorder{}
-	msg := workerMessage(t, validPasswordSyncMessage(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	w, err := New(Options{
-		Receiver:           &fakeReceiver{},
-		Processor:          &fakeProcessor{},
-		PasswordDecrypter:  &fakePasswordDecrypter{},
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	receiver.onComplete = cancel
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, &fakeProcessor{}, Options{
+		MaxMessages:        10,
 		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("cleartext-password")},
 		SyncStatusRecorder: recorder,
 	})
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("New returned error: %v", err)
 	}
 
-	w.processMessage(context.Background(), msg)
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 
-	if len(recorder.synced) != 1 || recorder.synced[0] != validPasswordSyncMessage(t).UPN {
-		t.Errorf("recorder.synced = %v, want [%q]", recorder.synced, validPasswordSyncMessage(t).UPN)
+	if len(recorder.synced) != 1 || recorder.synced[0].upn != want.UPN {
+		t.Fatalf("recorder.synced = %v, want [{upn: %q}]", recorder.synced, want.UPN)
+	}
+	if !recorder.synced[0].sourceEnqueuedAt.Equal(want.EnqueuedAt) {
+		t.Errorf("recorder.synced[0].sourceEnqueuedAt = %v, want %v", recorder.synced[0].sourceEnqueuedAt, want.EnqueuedAt)
 	}
 	if len(recorder.failed) != 0 {
 		t.Errorf("recorder.failed = %v, want empty", recorder.failed)
@@ -1215,120 +1333,240 @@ func TestWorkerMarksSyncedOnSuccess(t *testing.T) {
 }
 
 func TestWorkerMarksFailedOnPermanentProcessorError(t *testing.T) {
-	recorder := &fakeSyncStatusRecorder{}
-	dlq := &fakeDeadLetterSink{}
-	msg := workerMessage(t, validPasswordSyncMessage(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	w, err := New(Options{
-		Receiver:           &fakeReceiver{},
-		Processor:          &fakeProcessor{err: &PermanentError{Err: errors.New("boom")}},
-		PasswordDecrypter:  &fakePasswordDecrypter{},
-		DeadLetterSink:     dlq,
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	deadLetters := &fakeDeadLetterSink{}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
 		SyncStatusRecorder: recorder,
 	})
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("New returned error: %v", err)
 	}
 
-	w.processMessage(context.Background(), msg)
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 
-	if len(recorder.failed) != 1 || recorder.failed[0] != validPasswordSyncMessage(t).UPN {
-		t.Errorf("recorder.failed = %v, want [%q]", recorder.failed, validPasswordSyncMessage(t).UPN)
+	if len(recorder.failed) != 1 || recorder.failed[0].upn != want.UPN {
+		t.Fatalf("recorder.failed = %v, want [{upn: %q}]", recorder.failed, want.UPN)
+	}
+	if !recorder.failed[0].sourceEnqueuedAt.Equal(want.EnqueuedAt) {
+		t.Errorf("recorder.failed[0].sourceEnqueuedAt = %v, want %v", recorder.failed[0].sourceEnqueuedAt, want.EnqueuedAt)
 	}
 	if len(recorder.synced) != 0 {
 		t.Errorf("recorder.synced = %v, want empty", recorder.synced)
 	}
-	if len(dlq.entries) != 1 {
-		t.Errorf("dlq.entries = %d, want 1", len(dlq.entries))
+	if len(deadLetters.entries) != 1 {
+		t.Errorf("dlq entries = %d, want 1", len(deadLetters.entries))
 	}
 }
 
 func TestWorkerInvalidMessageDoesNotRecordSyncStatus(t *testing.T) {
-	recorder := &fakeSyncStatusRecorder{}
-	dlq := &fakeDeadLetterSink{}
-	malformed := workerMessage(t, []byte(`{"cn":"jdoe"}`)) // missing upn, malformed for decodePasswordSyncMessage's requirements
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	w, err := New(Options{
-		Receiver:           &fakeReceiver{},
-		Processor:          &fakeProcessor{},
+	// Missing passwordKeyId/passwordAlg/enqueuedAt: decodePasswordSyncMessage
+	// fails before a UPN is ever resolved into scope, matching the existing
+	// TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal fixture.
+	body := []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","passwordCiphertext":"ciphertext","passwordNonce":"nonce"}`)
+	receiver := &fakeReceiver{messages: []*Message{{Kind: passwordSyncKind, Body: body}}}
+	receiver.onComplete = cancel
+	deadLetters := &fakeDeadLetterSink{}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, &fakeProcessor{}, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
 		PasswordDecrypter:  &fakePasswordDecrypter{},
-		DeadLetterSink:     dlq,
 		SyncStatusRecorder: recorder,
 	})
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("New returned error: %v", err)
 	}
 
-	w.processMessage(context.Background(), malformed)
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
 
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
 	if len(recorder.synced) != 0 || len(recorder.failed) != 0 {
 		t.Errorf("recorder calls = synced:%v failed:%v, want both empty", recorder.synced, recorder.failed)
-	}
-	if len(dlq.entries) != 1 {
-		t.Errorf("dlq.entries = %d, want 1", len(dlq.entries))
 	}
 }
 ```
 
-(Reconcile `workerMessage`/`validPasswordSyncMessage`/`fakeProcessor`/`fakeDeadLetterSink` field/parameter names against the actual current file content before pasting — use the exact helper signatures already present in `worker_test.go`. The "malformed" message body must match whatever `decodePasswordSyncMessage` actually requires to fail in the current implementation — check that function's exact validation before finalizing this fixture.)
+Update the direct `New(...)` call in `TestWorkerEmptyReceiveWaitsBeforePollingAgain` to add `SyncStatusRecorder: &fakeSyncStatusRecorder{}`:
+
+```go
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        1,
+		EmptyReceiveDelay:  50 * time.Millisecond,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{},
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+	})
+```
+
+Add a 5th case to `TestNewValidatesDependencies`, right after the existing 4 (which stay exactly as they are):
+
+```go
+func TestNewValidatesDependencies(t *testing.T) {
+	processor := &fakeProcessor{}
+	receiver := &fakeReceiver{}
+
+	if _, err := New(nil, processor, Options{DeadLetterSink: &fakeDeadLetterSink{}, PasswordDecrypter: &fakePasswordDecrypter{}}); err == nil || err.Error() != "worker receiver is required" {
+		t.Fatalf("New with nil receiver error = %v", err)
+	}
+	if _, err := New(receiver, nil, Options{DeadLetterSink: &fakeDeadLetterSink{}, PasswordDecrypter: &fakePasswordDecrypter{}}); err == nil || err.Error() != "worker processor is required" {
+		t.Fatalf("New with nil processor error = %v", err)
+	}
+	if _, err := New(receiver, processor, Options{PasswordDecrypter: &fakePasswordDecrypter{}}); err == nil || err.Error() != "worker dead-letter sink is required" {
+		t.Fatalf("New without DLQ sink error = %v", err)
+	}
+	if _, err := New(receiver, processor, Options{DeadLetterSink: &fakeDeadLetterSink{}}); err == nil || err.Error() != "worker password decrypter is required" {
+		t.Fatalf("New without decrypter error = %v", err)
+	}
+	if _, err := New(receiver, processor, Options{DeadLetterSink: &fakeDeadLetterSink{}, PasswordDecrypter: &fakePasswordDecrypter{}}); err == nil || err.Error() != "worker sync status recorder is required" {
+		t.Fatalf("New without sync status recorder error = %v", err)
+	}
+}
+```
+
+Update `newTestWorker` and `newPolicyTestWorker` to default `SyncStatusRecorder` to a fresh throwaway `&fakeSyncStatusRecorder{}` internally. This keeps every one of the other 18 existing call sites of these two helpers compiling unchanged, since none of them need to inspect sync-status recording:
+
+```go
+func newTestWorker(t *testing.T, receiver Receiver, processor Processor, decrypter PasswordDecrypter, deadLetters DeadLetterSink) *Worker {
+	t.Helper()
+
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  decrypter,
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return worker
+}
+
+func newPolicyTestWorker(t *testing.T, receiver Receiver, processor Processor, decrypter PasswordDecrypter, deadLetters *fakeDeadLetterSink, sleeper *fakeSleeper) *Worker {
+	t.Helper()
+
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  decrypter,
+		Sleep:              sleeper.Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return worker
+}
+```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/worker/... -v`
-Expected: FAIL — build error, `SyncStatusRecorder`/`Options.SyncStatusRecorder`/`fakeSyncStatusRecorder` undefined.
+Expected: FAIL — build error. `SyncStatusRecorder`/`Options.SyncStatusRecorder`/`fakeSyncStatusRecorder` don't exist yet.
 
 - [ ] **Step 3: Update worker.go**
 
-Modify `internal/worker/worker.go`. Add the interface definition (near other interface definitions like `Processor`, `DeadLetterSink`):
+Modify `internal/worker/worker.go`. Add the interface definition near the other interface definitions (e.g. after `DeadLetterSink`):
 
 ```go
 // SyncStatusRecorder records the outcome of processing a password sync
 // message, so that migration.Service can dedupe future login_bootstrap
-// events for the same UPN. *syncstatus.MemoryStore implements this.
+// events for the same UPN. *syncstatus.MemoryStore implements this — its
+// MarkSynced/MarkFailed methods already take a sourceEnqueuedAt parameter
+// (see internal/syncstatus), which this package forwards from
+// passwordSyncMessage.EnqueuedAt so out-of-order message completions can
+// never overwrite a newer outcome with stale data.
 type SyncStatusRecorder interface {
-	MarkSynced(ctx context.Context, upn string) error
-	MarkFailed(ctx context.Context, upn string) error
+	MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
+	MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
 }
 ```
 
-Add `SyncStatusRecorder SyncStatusRecorder` to the `Options` struct. In `New`, add a nil-check immediately after the existing `PasswordDecrypter` nil-check:
+Add `SyncStatusRecorder SyncStatusRecorder` to the `Options` struct (after `PasswordDecrypter`). In `New`, add a nil-check immediately after the existing `PasswordDecrypter` nil-check:
 
 ```go
-	if opts.PasswordDecrypter == nil {
+	if options.PasswordDecrypter == nil {
 		return nil, errors.New("worker password decrypter is required")
 	}
-	if opts.SyncStatusRecorder == nil {
+	if options.SyncStatusRecorder == nil {
 		return nil, errors.New("worker sync status recorder is required")
 	}
 ```
 
-Add `syncStatusRecorder SyncStatusRecorder` field to the `Worker` struct, and set it in the constructor's returned struct literal:
+Add a `syncStatusRecorder SyncStatusRecorder` field to the `Worker` struct (after `passwordDecrypter`), and set it in `New`'s returned struct literal:
 
 ```go
 	return &Worker{
-		// ...existing fields unchanged...
-		syncStatusRecorder: opts.SyncStatusRecorder,
+		receiver:           receiver,
+		processor:          processor,
+		passwordDecrypter:  options.PasswordDecrypter,
+		syncStatusRecorder: options.SyncStatusRecorder,
+		maxMessages:        options.MaxMessages,
+		settlementTimeout:  options.SettlementTimeout,
+		emptyReceiveDelay:  options.EmptyReceiveDelay,
+		retryBackoffs:      append([]time.Duration(nil), options.RetryBackoffs...),
+		deadLetterSink:     options.DeadLetterSink,
+		now:                options.Now,
+		sleep:              options.Sleep,
 	}, nil
 ```
 
-In `processMessage`, on the success branch (where `result.err == nil`, right after `settleCtx` is created and before `CompleteMessage` is called), add:
+In `processMessage`'s success branch (`result.err == nil`), add the `MarkSynced` call right after `zeroMessageBody(msg)` and before the settlement context is created (so it's still covered by the same code path, but doesn't consume the settlement timeout):
 
 ```go
-	_ = w.syncStatusRecorder.MarkSynced(settleCtx, passwordSyncMessage.UPN)
+	result := w.processPasswordSync(ctx, passwordSyncMessage)
+	if result.err == nil {
+		zeroMessageBody(msg)
+		_ = w.syncStatusRecorder.MarkSynced(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
+		settleCtx, cancel := w.settlementContext()
+		defer cancel()
+		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
+			return fmt.Errorf("complete worker message: %w", settleErr)
+		}
+		return nil
+	}
 ```
 
-On the combined transient-exhausted/permanent-failure branch (right before `recordPasswordSyncFailure` is called, using the same `settleCtx`), add:
+On the combined transient-exhausted/permanent-failure branch (the one that builds the `DeadLetterEntry` with `reason`/`description`), add the `MarkFailed` call right after `zeroMessageBody(msg)`, before the settlement context is created:
 
 ```go
-	_ = w.syncStatusRecorder.MarkFailed(settleCtx, passwordSyncMessage.UPN)
+	zeroMessageBody(msg)
+	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
+	settleCtx, cancel := w.settlementContext()
+	defer cancel()
+	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
 ```
 
-Do not add any call on the invalid-message-schema path or the retry-canceled/abandon path — those don't have a resolved `UPN` to record against, or don't represent a final outcome.
+Do not add any call on the invalid-message-schema path (top of `processMessage`, where `decodePasswordSyncMessage` fails) or the retry-canceled/abandon path — the former never has a `passwordSyncMessage.UPN` resolved into scope (decoding failed before that variable was populated), and the latter isn't a final/terminal outcome (the message will be retried by the queue).
+
+Both new calls use `ctx` (the original processing context), not `settleCtx` — `settleCtx` is a short-lived timeout scoped only to the final receiver settlement (`CompleteMessage`/`AbandonMessage`/DLQ write) and is created *after* these calls in the source, so reusing `ctx` here avoids restructuring the existing control flow just to move a context's construction earlier.
 
 - [ ] **Step 4: Run all worker tests to verify they pass**
 
-Run: `go test ./internal/worker/... -v`
-Expected: PASS (all tests, old and new)
+Run: `go test ./internal/worker/... -race -v`
+Expected: PASS (all tests, old and new).
 
 - [ ] **Step 5: Commit**
 
@@ -1347,7 +1585,9 @@ git commit -m "feat(worker): record sync status after processing password sync m
 
 **Interfaces:**
 - Consumes: `syncstatus.NewMemoryStore()` (Task 3), `migration.ServiceOptions.SyncStatusStore` (Task 4), `worker.Options.SyncStatusRecorder` (Task 6).
-- Produces: `newWithQueue`'s signature gains a 4th positional parameter `syncStatusStore migration.SyncStatusStore` (before the variadic `closers ...appCloser`). No change to `NewWithQueue`'s or `newWithWorkerDependencies`'s public signatures.
+- Produces: `newWithQueue`'s signature gains a 4th positional parameter `syncStatusStore migration.SyncStatusStore` (inserted before the variadic `closers ...appCloser`). No change to `NewWithQueue`'s or `newWithWorkerDependencies`'s public signatures — both already exist and stay exactly as-is.
+
+Ground truth from the current `internal/app/app.go` (re-verified): `NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error)` takes exactly **2 parameters** today — it builds its own `passwordCodec` internally via `newPasswordCodec(cfg)` and calls `newWithQueue(cfg, queue, passwordCodec)`. `newWithWorkerDependencies(cfg, queue, receiver, processor, deadLetterSink, passwordCodec, closers...)` calls `newWithQueue(cfg, queue, passwordCodec, closers...)` internally, then separately calls `worker.New(receiver, processor, worker.Options{DeadLetterSink: deadLetterSink, PasswordDecrypter: passwordCodec})`. From `internal/app/app_test.go` (re-verified): exactly 2 direct `newWithQueue(...)` call sites, at lines 149 and 296, both of the form `newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)`; 3 `newWithWorkerDependencies(...)` call sites at lines 206, 243, 324 (these need no changes — the function's public signature is unchanged); JSON bodies needing `eventType` are at lines 37, 89, 129, 248 (`TestAppHookRouteEnqueuesInternalIdentity`, `TestAppHookRouteQueuesCiphertextOnlyMessage`, `TestAppHookRouteSkipsExternalEmailWithoutEnqueue`, `TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker`).
 
 - [ ] **Step 1: Update app.go**
 
@@ -1355,89 +1595,167 @@ Modify `internal/app/app.go`. Add the import:
 
 ```go
 import (
-	// ...existing imports...
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/nycu/password-hook-service/internal/buildinfo"
+	"github.com/nycu/password-hook-service/internal/config"
+	"github.com/nycu/password-hook-service/internal/graphclient"
+	"github.com/nycu/password-hook-service/internal/graphprocessor"
+	"github.com/nycu/password-hook-service/internal/handler"
+	"github.com/nycu/password-hook-service/internal/httpserver"
+	"github.com/nycu/password-hook-service/internal/middleware"
+	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/requestid"
+	"github.com/nycu/password-hook-service/internal/servicebusqueue"
 	"github.com/nycu/password-hook-service/internal/syncstatus"
+	"github.com/nycu/password-hook-service/internal/worker"
 )
 ```
 
-Change `newWithQueue`'s signature to accept the new parameter (insert before the variadic `closers`):
+Change `NewWithQueue` to construct a `*syncstatus.MemoryStore` and pass it through:
 
 ```go
-func newWithQueue(cfg Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, syncStatusStore migration.SyncStatusStore, closers ...appCloser) (*App, error) {
-```
-
-Inside `newWithQueue`, change the `migration.NewService(...)` call to pass the new options:
-
-```go
-	migrationService := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{SyncStatusStore: syncStatusStore})
-```
-
-In `NewWithQueue` (the public constructor that calls `newWithQueue`), construct a store and pass it:
-
-```go
-func NewWithQueue(cfg Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, closers ...appCloser) (*App, error) {
-	syncStatusStore := syncstatus.NewMemoryStore()
-	return newWithQueue(cfg, queue, passwordEncrypter, syncStatusStore, closers...)
-}
-```
-
-(Match this to the exact current body of `NewWithQueue` — only the store construction and the extra argument are new; everything else in the function stays as-is.)
-
-In `newWithWorkerDependencies`, construct its own store instance and thread it into both the `newWithQueue` call and the `worker.New` call, so hook and worker share the same in-memory state for that assembly path:
-
-```go
-func newWithWorkerDependencies(/* existing parameters unchanged */) (*App, error) {
-	syncStatusStore := syncstatus.NewMemoryStore()
-
-	application, err := newWithQueue(cfg, queue, passwordEncrypter, syncStatusStore /* , existing closers args unchanged */)
+func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
+	if err := cfg.ValidateHTTP(); err != nil {
+		return nil, err
+	}
+	if err := validatePasswordEncryptionConfig(cfg); err != nil {
+		return nil, err
+	}
+	if queue == nil {
+		return nil, errors.New("migration queue is required")
+	}
+	passwordCodec, err := newPasswordCodec(cfg)
 	if err != nil {
 		return nil, err
 	}
-
-	w, err := worker.New(worker.Options{
-		// ...existing fields unchanged...
-		SyncStatusRecorder: syncStatusStore,
-	})
-	// ...existing error handling and remaining body unchanged...
+	return newWithQueue(cfg, queue, passwordCodec, syncstatus.NewMemoryStore())
 }
 ```
 
-(Reconcile this against the exact current body of `newWithWorkerDependencies` — the only changes are: declare `syncStatusStore`, pass it as `newWithQueue`'s 4th arg, and add `SyncStatusRecorder: syncStatusStore` to the `worker.Options{}` literal. All other existing logic, error handling, and parameters remain unchanged.)
+Change `newWithWorkerDependencies` to construct its own store instance and thread the same instance into both the `newWithQueue` call and the `worker.New` call, so the hook and the worker share sync-status state for that assembly path:
+
+```go
+func newWithWorkerDependencies(
+	cfg config.Config,
+	queue migration.Queue,
+	receiver worker.Receiver,
+	processor worker.Processor,
+	deadLetterSink worker.DeadLetterSink,
+	passwordCodec passwordCodec,
+	closers ...appCloser,
+) (*App, error) {
+	if passwordCodec == nil {
+		return nil, errors.Join(errors.New("password codec is required"), closeAppResources(context.Background(), closers))
+	}
+	syncStatusStore := syncstatus.NewMemoryStore()
+	application, err := newWithQueue(cfg, queue, passwordCodec, syncStatusStore, closers...)
+	if err != nil {
+		return nil, err
+	}
+	passwordWorker, err := worker.New(receiver, processor, worker.Options{
+		DeadLetterSink:     deadLetterSink,
+		PasswordDecrypter:  passwordCodec,
+		SyncStatusRecorder: syncStatusStore,
+	})
+	if err != nil {
+		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
+	}
+	application.worker = passwordWorker
+	return application, nil
+}
+```
+
+Change `newWithQueue` to accept and use the new parameter:
+
+```go
+func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, syncStatusStore migration.SyncStatusStore, closers ...appCloser) (*App, error) {
+	if passwordEncrypter == nil {
+		return nil, errors.Join(errors.New("password encrypter is required"), closeAppResources(context.Background(), closers))
+	}
+	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{SyncStatusStore: syncStatusStore})
+	hook := handler.NewHook(service, cfg.ProblemBaseURL)
+	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
+	if err != nil {
+		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
+	}
+	rateLimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
+		AllowedCIDRs: cfg.PortalAllowedCIDRs,
+		LimitPerIP:   cfg.RateLimitPerIP,
+		Window:       cfg.RateLimitWindow,
+		ProblemBase:  cfg.ProblemBaseURL,
+	})
+
+	hookHandler := hmacMiddleware.Wrap(hook)
+	hookHandler = rateLimiter.Wrap(hookHandler)
+	hookHandler = middleware.RecoveryWithProblemBase(slog.Default(), cfg.ProblemBaseURL)(hookHandler)
+	hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
+	hookHandler = requestid.Middleware(hookHandler)
+
+	server := httpserver.New(cfg.HTTPAddr, httpserver.Routes{
+		Hook: hookHandler,
+	}, buildinfo.Current())
+
+	return &App{server: server, closers: append([]appCloser(nil), closers...)}, nil
+}
+```
+
+(Note: `migration.ServiceOptions{SyncStatusStore: syncStatusStore}` is safe even when `syncStatusStore` is a nil interface value — `migration.Service.Submit` only calls into it after checking `s.syncStatusStore != nil`, per Task 4.)
 
 - [ ] **Step 2: Update app_test.go**
 
-In `internal/app/app_test.go`, update the 2 direct `newWithQueue(...)` call sites (originally at lines 149 and 296) to pass `nil` as the new 4th positional argument (before the trailing closer/closers args), since neither test exercises sync-status behavior:
+In `internal/app/app_test.go`, update the 2 direct `newWithQueue(...)` call sites (at lines 149 and 296) to pass `nil` as the new 4th positional argument, before the trailing closer argument, since neither test exercises sync-status behavior:
 
 ```go
-// before
-application, err := newWithQueue(cfg, queue, passwordEncrypter, closer)
-// after
-application, err := newWithQueue(cfg, queue, passwordEncrypter, nil, closer)
+// TestNewWithQueueClosesOwnedQueueWhenAppWiringFails (line 149)
+application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), nil, closer)
 ```
-
-(Match the exact trailing arguments already present at each of the two call sites — only insert `nil` as the new 4th positional argument, keep everything else unchanged.)
-
-The 3 `newWithWorkerDependencies(...)` call sites (originally at lines 206, 243, 324) need no changes, since that function's public signature is unchanged.
-
-Add `"eventType":"login_bootstrap"` to the 4 JSON body fixtures that drive the full HMAC-signed HTTP path and expect success (originally at lines 37, 89, 129, 248):
 
 ```go
-// before
-body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu"}`)
-// after
-body := []byte(`{"cn":"jdoe","password":"secret123","displayName":"Jane Doe","mail":"jdoe@example.edu","eventType":"login_bootstrap"}`)
+// TestRunClosesQueueWithBoundedContextFromCallerContext (line 296)
+application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), nil, closer)
 ```
 
-The `passwordSyncWorkerMessage(t)` fixture helper does not need any change — `decodePasswordSyncMessage` never requires `EventType`.
+The 3 `newWithWorkerDependencies(...)` call sites (lines 206, 243, 324) need no changes, since that function's public signature is unchanged.
+
+Add `,"eventType":"login_bootstrap"` to the 4 JSON body fixtures that drive the full HMAC-signed HTTP path and expect a `202 Accepted`:
+
+```go
+// TestAppHookRouteEnqueuesInternalIdentity (line 37)
+body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+```
+
+```go
+// TestAppHookRouteQueuesCiphertextOnlyMessage (line 89)
+body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+```
+
+```go
+// TestAppHookRouteSkipsExternalEmailWithoutEnqueue (line 129)
+body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
+```
+
+```go
+// TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker (line 248)
+body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+```
+
+The `passwordSyncWorkerMessage(t)` fixture helper (used by the worker side of `TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker`) does not need any change — it builds a `migration.PasswordSyncMessage` directly, and `decodePasswordSyncMessage` (Task 6) never requires `EventType`.
 
 - [ ] **Step 3: Run all app tests to verify they pass**
 
-Run: `go test ./internal/app/... -v`
-Expected: PASS (all tests)
+Run: `go test ./internal/app/... -race -v`
+Expected: PASS (all tests).
 
 - [ ] **Step 4: Run the full test suite to catch any missed call sites**
 
-Run: `go build ./... && go test ./...`
+Run: `go build ./... && go test ./... -race`
 Expected: PASS with no build errors anywhere in the module.
 
 - [ ] **Step 5: Commit**
@@ -1461,11 +1779,21 @@ git commit -m "feat(app): wire syncstatus store into hook and worker assembly"
 
 - [ ] **Step 1: Update the example request body in README.md**
 
-In `README.md`, find the example curl `--data` body under the "Local HMAC Request" section (currently around line 153) and add `"eventType":"login_bootstrap"` to the JSON payload shown, matching the same style as the existing fields (`cn`, `password`, `displayName`, `mail`).
+In `README.md`, the "Local HMAC Request" section's curl example (currently line 153) reads:
+
+```bash
+  --data '{"cn":"311551001","password":"cleartext_password","displayName":"Test User","mail":"test@nycu.edu.tw"}'
+```
+
+Add `"eventType":"login_bootstrap"` to the JSON payload, matching the same style as the existing fields:
+
+```bash
+  --data '{"cn":"311551001","password":"cleartext_password","displayName":"Test User","mail":"test@nycu.edu.tw","eventType":"login_bootstrap"}'
+```
 
 - [ ] **Step 2: Add an "Event Types and Sync Status" section**
 
-In `README.md`, insert a new section after the existing `## Worker Behavior` section and before `## Configuration`:
+In `README.md`, insert a new section after the existing `## Worker Behavior` section (currently ends at line 164, right before `## Configuration` at line 166):
 
 ```markdown
 ## Event Types and Sync Status
@@ -1481,20 +1809,29 @@ Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked 
 
 - [ ] **Step 3: Update the PHP example**
 
-In `docs/examples/sign-hook-request.php`, add `eventType` to the payload array, with a comment noting valid values:
+The current `docs/examples/sign-hook-request.php` builds its JSON payload with `json_encode` directly (no intermediate array variable):
 
 ```php
-$payload = [
-    'cn' => 'jdoe',
-    // eventType must be one of: login_bootstrap, password_change, password_recovery
-    'eventType' => 'login_bootstrap',
-    'password' => 'S3cr3tPassw0rd!',
-    'displayName' => 'Jane Doe',
-    'mail' => 'jdoe@example.edu',
-];
+$payload = json_encode([
+    'cn' => '311551001',
+    'password' => 'cleartext_password',
+    'displayName' => 'Test User',
+    'mail' => 'test@nycu.edu.tw',
+]);
 ```
 
-(Match the exact existing array key order and style already used in the file — only insert the new `eventType` line and its comment; do not reorder or rewrite the other keys.)
+Add `eventType` as the last key, with a comment above it noting the valid values. Keep every other line (including the surrounding `$timestamp`/`$nonce`/`$secret`/`$signature`/`echo` lines) exactly as-is:
+
+```php
+$payload = json_encode([
+    'cn' => '311551001',
+    'password' => 'cleartext_password',
+    'displayName' => 'Test User',
+    'mail' => 'test@nycu.edu.tw',
+    // eventType must be one of: login_bootstrap, password_change, password_recovery
+    'eventType' => 'login_bootstrap',
+]);
+```
 
 - [ ] **Step 4: Commit**
 
@@ -1507,7 +1844,14 @@ git commit -m "docs: document eventType and sync status behavior"
 
 ### Task 9: Full verification and plan completion
 
-**Files:** none (verification only, plus final bookkeeping).
+**Files:**
+- Modify: `docs/superpowers/plans/roadmap.md`
+- Modify: `docs/superpowers/plans/README.md`
+- Move: `docs/superpowers/plans/active/2026-07-04-slice-07a-portal-password-event-sync-status.md` → `docs/superpowers/plans/completed/2026-07-04-slice-07a-portal-password-event-sync-status.md`
+
+**Interfaces:**
+- Consumes: nothing (verification and bookkeeping only).
+- Produces: nothing (final task in the plan).
 
 - [ ] **Step 1: Build**
 
@@ -1521,8 +1865,8 @@ Expected: no output, exit code 0.
 
 - [ ] **Step 3: Full test suite**
 
-Run: `go test ./...`
-Expected: all packages PASS.
+Run: `go test ./... -race`
+Expected: all packages `ok`, no failures.
 
 - [ ] **Step 4: Format check**
 
@@ -1531,25 +1875,72 @@ Expected: no output (no files need formatting).
 
 - [ ] **Step 5: Leak scan**
 
-This slice doesn't touch password-handling/encryption code paths directly (only adds an `eventType` field and sync-status bookkeeping), so this is a lighter check than Slice 7's: confirm no new code logs raw password material or `eventType`-adjacent PII.
+This slice doesn't touch password-handling/encryption code paths directly (it only adds an `eventType` field and sync-status bookkeeping keyed by UPN), so this is a lighter check than Slice 7's: confirm no new code logs raw password material.
 
 Run: `grep -rn "log\." internal/syncstatus internal/migration/event.go internal/migration/message.go | grep -iv test`
-Expected: no matches, or only unrelated log statements that don't reference `Password`, `password`, or raw UPN/CN values beyond what Slice 7 already logs.
+Expected: no matches, or only unrelated log statements that don't reference `Password`, `password`, or raw password bytes.
 
 - [ ] **Step 6: Mark this plan completed**
 
+Edit this file's header line (before moving it) to change:
+
+```markdown
+> **Plan Status:** Active
+```
+
+to:
+
+```markdown
+> **Plan Status:** Completed
+```
+
+Then move it into `completed/`:
+
 ```bash
-mkdir -p docs/superpowers/plans/completed
 git mv docs/superpowers/plans/active/2026-07-04-slice-07a-portal-password-event-sync-status.md docs/superpowers/plans/completed/2026-07-04-slice-07a-portal-password-event-sync-status.md
 ```
 
-Edit the moved file's header line to change `> **Plan Status:** Active` to `> **Plan Status:** Completed`.
+- [ ] **Step 7: Update roadmap.md**
 
-- [ ] **Step 7: Update roadmap and README**
+In `docs/superpowers/plans/roadmap.md`, update the "Active Detailed Plan" section (currently line 35):
 
-Update `docs/superpowers/plans/roadmap.md` and `docs/superpowers/plans/README.md`: move the Slice 7A entry from "Active"/"In progress" to "Completed", update its path to point at `completed/2026-07-04-slice-07a-portal-password-event-sync-status.md`.
+```markdown
+Current active detailed plan: `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` (Slice 7A Portal Password Event Semantics and Sync Status). Promoted from the draft after refreshing against the final Slice 7 implementation and amending the source design spec; ready for execution.
+```
 
-- [ ] **Step 8: Commit**
+to:
+
+```markdown
+No plan is currently active. Slice 7A (Portal Password Event Semantics and Sync Status) is complete; see `completed/2026-07-04-slice-07a-portal-password-event-sync-status.md`. Promote the next slice from `drafts/` once its assumptions are refreshed against the Slice 7A event/sync-status model (see Slice Boundaries below).
+```
+
+Update the Completion Tracking table row for Slice 7A (currently line 69):
+
+```markdown
+| 7A. Portal Password Event Semantics and Sync Status | Active | `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` | Promoted from draft; source design spec amended (§1.2.1); ready for execution via subagent-driven-development or executing-plans |
+```
+
+to:
+
+```markdown
+| 7A. Portal Password Event Semantics and Sync Status | Done | `completed/2026-07-04-slice-07a-portal-password-event-sync-status.md` | `eventType` added to hook request and wire message; `login_bootstrap` skipped once synced or pending within TTL; `password_change`/`password_recovery` always enqueue; worker records `synced`/`sync_failed` after Graph outcome using an ordering guard against out-of-order completions; verified with focused package tests, full `go test ./... -race`, `go vet ./...`, and leak-focused `rg` scans |
+```
+
+- [ ] **Step 8: Update README.md**
+
+In `docs/superpowers/plans/README.md`, update the "Current Active Plan" section (currently line 26):
+
+```markdown
+Current active detailed plan: `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` (Slice 7A Portal Password Event Semantics and Sync Status). See `roadmap.md` for details.
+```
+
+to:
+
+```markdown
+No plan is currently active. Slice 7A (Portal Password Event Semantics and Sync Status) is complete; see `roadmap.md` for the next slice to promote from `drafts/`.
+```
+
+- [ ] **Step 9: Commit**
 
 ```bash
 git add -A
