@@ -56,6 +56,7 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	_, err = h.service.Submit(r.Context(), migration.Request{
 		CN:          body.CN,
+		EventType:   body.EventType,
 		Password:    []byte(body.Password),
 		DisplayName: body.DisplayName,
 		Mail:        body.Mail,
@@ -77,10 +78,11 @@ func (h *Hook) writeProblem(w http.ResponseWriter, _ *http.Request, p problem.Pr
 }
 
 type passwordHookRequest struct {
-	CN          string        `json:"cn"`
-	Password    passwordBytes `json:"password"`
-	DisplayName string        `json:"displayName"`
-	Mail        string        `json:"mail"`
+	CN          string              `json:"cn"`
+	EventType   migration.EventType `json:"eventType"`
+	Password    passwordBytes       `json:"password"`
+	DisplayName string              `json:"displayName"`
+	Mail        string              `json:"mail"`
 }
 
 func (r passwordHookRequest) validate() string {
@@ -93,6 +95,10 @@ func (r passwordHookRequest) validate() string {
 		return "Field 'displayName' is required"
 	case strings.TrimSpace(r.Mail) == "":
 		return "Field 'mail' is required"
+	case strings.TrimSpace(string(r.EventType)) == "":
+		return "Field 'eventType' is required"
+	case !migration.ValidEventType(r.EventType):
+		return "Field 'eventType' must be one of login_bootstrap, password_change, password_recovery"
 	default:
 		return ""
 	}
