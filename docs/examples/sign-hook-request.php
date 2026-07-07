@@ -5,6 +5,8 @@ $payload = json_encode([
     'password' => 'cleartext_password',
     'displayName' => 'Test User',
     'mail' => 'test@nycu.edu.tw',
+    // eventType must be one of: login_bootstrap, password_change, password_recovery
+    'eventType' => 'login_bootstrap',
 ]);
 
 $timestamp = time();

@@ -82,15 +82,25 @@ type DeadLetterSink interface {
 	RecordPasswordSyncFailure(context.Context, DeadLetterEntry) error
 }
 
+// SyncStatusRecorder records the outcome of processing a password sync
+// message, so migration.Service can dedupe future login_bootstrap events for
+// the same UPN. Implementations use sourceEnqueuedAt to ignore stale,
+// out-of-order completions.
+type SyncStatusRecorder interface {
+	MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
+	MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error
+}
+
 type Options struct {
-	MaxMessages       int
-	SettlementTimeout time.Duration
-	EmptyReceiveDelay time.Duration
-	RetryBackoffs     []time.Duration
-	DeadLetterSink    DeadLetterSink
-	PasswordDecrypter PasswordDecrypter
-	Now               func() time.Time
-	Sleep             func(context.Context, time.Duration) error
+	MaxMessages        int
+	SettlementTimeout  time.Duration
+	EmptyReceiveDelay  time.Duration
+	RetryBackoffs      []time.Duration
+	DeadLetterSink     DeadLetterSink
+	PasswordDecrypter  PasswordDecrypter
+	SyncStatusRecorder SyncStatusRecorder
+	Now                func() time.Time
+	Sleep              func(context.Context, time.Duration) error
 }
 
 type PermanentReason string
@@ -123,16 +133,17 @@ func (e *PermanentError) Unwrap() error {
 }
 
 type Worker struct {
-	receiver          Receiver
-	processor         Processor
-	passwordDecrypter PasswordDecrypter
-	maxMessages       int
-	settlementTimeout time.Duration
-	emptyReceiveDelay time.Duration
-	retryBackoffs     []time.Duration
-	deadLetterSink    DeadLetterSink
-	now               func() time.Time
-	sleep             func(context.Context, time.Duration) error
+	receiver           Receiver
+	processor          Processor
+	passwordDecrypter  PasswordDecrypter
+	syncStatusRecorder SyncStatusRecorder
+	maxMessages        int
+	settlementTimeout  time.Duration
+	emptyReceiveDelay  time.Duration
+	retryBackoffs      []time.Duration
+	deadLetterSink     DeadLetterSink
+	now                func() time.Time
+	sleep              func(context.Context, time.Duration) error
 }
 
 func New(receiver Receiver, processor Processor, options Options) (*Worker, error) {
@@ -147,6 +158,9 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	}
 	if options.PasswordDecrypter == nil {
 		return nil, errors.New("worker password decrypter is required")
+	}
+	if options.SyncStatusRecorder == nil {
+		return nil, errors.New("worker sync status recorder is required")
 	}
 	if options.MaxMessages <= 0 {
 		options.MaxMessages = 1
@@ -167,16 +181,17 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 		options.Sleep = sleep
 	}
 	return &Worker{
-		receiver:          receiver,
-		processor:         processor,
-		passwordDecrypter: options.PasswordDecrypter,
-		maxMessages:       options.MaxMessages,
-		settlementTimeout: options.SettlementTimeout,
-		emptyReceiveDelay: options.EmptyReceiveDelay,
-		retryBackoffs:     append([]time.Duration(nil), options.RetryBackoffs...),
-		deadLetterSink:    options.DeadLetterSink,
-		now:               options.Now,
-		sleep:             options.Sleep,
+		receiver:           receiver,
+		processor:          processor,
+		passwordDecrypter:  options.PasswordDecrypter,
+		syncStatusRecorder: options.SyncStatusRecorder,
+		maxMessages:        options.MaxMessages,
+		settlementTimeout:  options.SettlementTimeout,
+		emptyReceiveDelay:  options.EmptyReceiveDelay,
+		retryBackoffs:      append([]time.Duration(nil), options.RetryBackoffs...),
+		deadLetterSink:     options.DeadLetterSink,
+		now:                options.Now,
+		sleep:              options.Sleep,
 	}, nil
 }
 
@@ -234,6 +249,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	result := w.processPasswordSync(ctx, passwordSyncMessage)
 	if result.err == nil {
 		zeroMessageBody(msg)
+		_ = w.syncStatusRecorder.MarkSynced(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -274,6 +290,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	}); settleErr != nil {
 		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr)
 	}
+	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}

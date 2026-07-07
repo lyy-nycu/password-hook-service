@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-Current active detailed plan: `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` (Slice 7A Portal Password Event Semantics and Sync Status). See `roadmap.md` for details.
+No plan is currently active. Slice 7A review fixes are complete; see `completed/2026-07-07-slice-07a-copilot-review-fixes.md`.
 
 ## Status Labels
 

@@ -32,7 +32,7 @@
 
 ## Active Detailed Plan
 
-Current active detailed plan: `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` (Slice 7A Portal Password Event Semantics and Sync Status). Promoted from the draft after refreshing against the final Slice 7 implementation and amending the source design spec; ready for execution.
+No plan is currently active. Slice 7A review fixes are complete; see `completed/2026-07-07-slice-07a-copilot-review-fixes.md`. Promote the next slice from `drafts/` once its assumptions are refreshed against the Slice 7A event/sync-status model (see Slice Boundaries below).
 
 ---
 
@@ -66,7 +66,8 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 5. Retry and DLQ Policy | Superseded | `superseded/2026-06-29-slice-05-retry-dlq-policy.md` | Do not execute; safe DLQ intent retained in Security Realignment |
 | 6. Microsoft Graph Client | Done | `completed/2026-07-02-slice-06-microsoft-graph-client.md` | Existing users patch, missing users create, and Graph failure classification implemented; verified with focused package tests, full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
 | 7. Password Data Protection | Done | `completed/2026-07-03-slice-07-password-data-protection.md` | Producer plaintext decoded into mutable buffers and zeroed on all paths; worker and Graph buffers covered by cleanup tests; log masking guards password/secret/token variants; verified with focused tests, full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans |
-| 7A. Portal Password Event Semantics and Sync Status | Active | `active/2026-07-04-slice-07a-portal-password-event-sync-status.md` | Promoted from draft; source design spec amended (§1.2.1); ready for execution via subagent-driven-development or executing-plans |
+| 7A. Portal Password Event Semantics and Sync Status | Done | `completed/2026-07-04-slice-07a-portal-password-event-sync-status.md` | `eventType` added to hook request and wire message; `login_bootstrap` skipped once synced or pending within TTL; `password_change`/`password_recovery` always enqueue; worker records `synced`/`sync_failed` after Graph outcome using an ordering guard against out-of-order completions; verified with focused package tests, full `go test ./... -race`, `go vet ./...`, and leak-focused `rg` scans |
+| 7A Review Fixes | Done | `completed/2026-07-07-slice-07a-copilot-review-fixes.md` | Copilot PR #9 threads resolved; `609482a` rejects multiple `ServiceOptions`; `ecab7bb` fails open on future pending timestamps; verified with focused tests, full `go test ./...`, `go vet ./...`, and final code review. |
 | 8. Observability | Not planned | Not created |  |
 | 9. API Protection | Not planned | Not created |  |
 | 10. Infrastructure | Not planned | Not created |  |

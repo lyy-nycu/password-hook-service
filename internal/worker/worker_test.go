@@ -236,6 +236,114 @@ func TestWorkerPermanentProcessorErrorSkipsRetryAndSafeDLQ(t *testing.T) {
 	}
 }
 
+func TestWorkerMarksSyncedOnSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	receiver.onComplete = cancel
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, &fakeProcessor{}, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("cleartext-password")},
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(recorder.synced) != 1 || recorder.synced[0].upn != want.UPN {
+		t.Fatalf("recorder.synced = %v, want [{upn: %q}]", recorder.synced, want.UPN)
+	}
+	if !recorder.synced[0].sourceEnqueuedAt.Equal(want.EnqueuedAt) {
+		t.Errorf("recorder.synced[0].sourceEnqueuedAt = %v, want %v", recorder.synced[0].sourceEnqueuedAt, want.EnqueuedAt)
+	}
+	if len(recorder.failed) != 0 {
+		t.Errorf("recorder.failed = %v, want empty", recorder.failed)
+	}
+}
+
+func TestWorkerMarksFailedOnPermanentProcessorError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	deadLetters := &fakeDeadLetterSink{}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(recorder.failed) != 1 || recorder.failed[0].upn != want.UPN {
+		t.Fatalf("recorder.failed = %v, want [{upn: %q}]", recorder.failed, want.UPN)
+	}
+	if !recorder.failed[0].sourceEnqueuedAt.Equal(want.EnqueuedAt) {
+		t.Errorf("recorder.failed[0].sourceEnqueuedAt = %v, want %v", recorder.failed[0].sourceEnqueuedAt, want.EnqueuedAt)
+	}
+	if len(recorder.synced) != 0 {
+		t.Errorf("recorder.synced = %v, want empty", recorder.synced)
+	}
+	if len(deadLetters.entries) != 1 {
+		t.Errorf("dlq entries = %d, want 1", len(deadLetters.entries))
+	}
+}
+
+func TestWorkerInvalidMessageDoesNotRecordSyncStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Missing passwordKeyId/passwordAlg/enqueuedAt: decodePasswordSyncMessage
+	// fails before a UPN is ever resolved into scope, matching the existing
+	// TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal fixture.
+	body := []byte(`{"cn":"u1234567","upn":"u1234567@example.edu","passwordCiphertext":"ciphertext","passwordNonce":"nonce"}`)
+	receiver := &fakeReceiver{messages: []*Message{{Kind: passwordSyncKind, Body: body}}}
+	receiver.onComplete = cancel
+	deadLetters := &fakeDeadLetterSink{}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, &fakeProcessor{}, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  &fakePasswordDecrypter{},
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(deadLetters.entries) != 1 {
+		t.Fatalf("safe DLQ entries = %d, want 1", len(deadLetters.entries))
+	}
+	if len(recorder.synced) != 0 || len(recorder.failed) != 0 {
+		t.Errorf("recorder calls = synced:%v failed:%v, want both empty", recorder.synced, recorder.failed)
+	}
+}
+
 func TestWorkerPermanentProcessorErrorDoesNotTrustSensitiveReason(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -305,9 +413,21 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 		Err:    errors.New("graph 403"),
 	}}
 	deadLetters := &fakeDeadLetterSink{err: sinkErr}
-	worker := newPolicyTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("secret")}, deadLetters, &fakeSleeper{})
+	recorder := &fakeSyncStatusRecorder{}
+	sleeper := &fakeSleeper{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		Sleep:              sleeper.Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
 
-	err := worker.Run(ctx)
+	err = worker.Run(ctx)
 	if err == nil {
 		t.Fatal("Run returned nil error")
 	}
@@ -316,6 +436,9 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 	}
 	if receiver.abandoned != 1 || receiver.completed != 0 {
 		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	}
+	if len(recorder.failed) != 0 {
+		t.Fatalf("recorder.failed = %v, want empty when safe DLQ write fails", recorder.failed)
 	}
 }
 
@@ -563,10 +686,11 @@ func TestWorkerEmptyReceiveWaitsBeforePollingAgain(t *testing.T) {
 	receiver := &emptyBatchReceiver{firstCall: make(chan struct{})}
 	processor := &fakeProcessor{}
 	worker, err := New(receiver, processor, Options{
-		MaxMessages:       1,
-		EmptyReceiveDelay: 50 * time.Millisecond,
-		DeadLetterSink:    &fakeDeadLetterSink{},
-		PasswordDecrypter: &fakePasswordDecrypter{},
+		MaxMessages:        1,
+		EmptyReceiveDelay:  50 * time.Millisecond,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{},
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -621,15 +745,19 @@ func TestNewValidatesDependencies(t *testing.T) {
 	if _, err := New(receiver, processor, Options{DeadLetterSink: &fakeDeadLetterSink{}}); err == nil || err.Error() != "worker password decrypter is required" {
 		t.Fatalf("New without decrypter error = %v", err)
 	}
+	if _, err := New(receiver, processor, Options{DeadLetterSink: &fakeDeadLetterSink{}, PasswordDecrypter: &fakePasswordDecrypter{}}); err == nil || err.Error() != "worker sync status recorder is required" {
+		t.Fatalf("New without sync status recorder error = %v", err)
+	}
 }
 
 func newTestWorker(t *testing.T, receiver Receiver, processor Processor, decrypter PasswordDecrypter, deadLetters DeadLetterSink) *Worker {
 	t.Helper()
 
 	worker, err := New(receiver, processor, Options{
-		MaxMessages:       10,
-		DeadLetterSink:    deadLetters,
-		PasswordDecrypter: decrypter,
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  decrypter,
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -641,11 +769,12 @@ func newPolicyTestWorker(t *testing.T, receiver Receiver, processor Processor, d
 	t.Helper()
 
 	worker, err := New(receiver, processor, Options{
-		MaxMessages:       10,
-		DeadLetterSink:    deadLetters,
-		PasswordDecrypter: decrypter,
-		Sleep:             sleeper.Sleep,
-		Now:               func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  decrypter,
+		Sleep:              sleeper.Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -849,6 +978,27 @@ func (s *fakeDeadLetterSink) RecordPasswordSyncFailure(ctx context.Context, entr
 		s.onRecord()
 	}
 	return s.err
+}
+
+type fakeSyncStatusRecorder struct {
+	synced []syncStatusCall
+	failed []syncStatusCall
+	err    error
+}
+
+type syncStatusCall struct {
+	upn              string
+	sourceEnqueuedAt time.Time
+}
+
+func (f *fakeSyncStatusRecorder) MarkSynced(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	f.synced = append(f.synced, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
+	return f.err
+}
+
+func (f *fakeSyncStatusRecorder) MarkFailed(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	f.failed = append(f.failed, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
+	return f.err
 }
 
 type fakeSleeper struct {

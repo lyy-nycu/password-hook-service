@@ -150,7 +150,7 @@ curl -i http://localhost:8080/api/v1/hook/password \
   -H "X-Hook-Timestamp: <printed timestamp>" \
   -H "X-Hook-Nonce: <printed nonce>" \
   -H "X-Hook-Signature: <printed signature>" \
-  --data '{"cn":"311551001","password":"cleartext_password","displayName":"Test User","mail":"test@nycu.edu.tw"}'
+  --data '{"cn":"311551001","password":"cleartext_password","displayName":"Test User","mail":"test@nycu.edu.tw","eventType":"login_bootstrap"}'
 ```
 
 The hook endpoint returns `202 Accepted` when the request is accepted by the service. It does not mean the password has already been migrated to Entra ID.
@@ -162,6 +162,16 @@ The production app starts the HTTP server and password sync worker together. The
 Graph `400` and `403` responses are treated as permanent processor failures and recorded to the safe DLQ. Graph `429`, `503`, other unexpected statuses, token acquisition errors, and network errors remain retryable under the worker retry policy. Safe DLQ entries exclude plaintext passwords.
 
 Structured logging masks password, password-derived, secret, and token fields by key before records are emitted.
+
+## Event Types and Sync Status
+
+Every hook request must include an `eventType` field with one of three values:
+
+- `login_bootstrap` - sent after a user completes SSO login and the portal bootstraps their on-prem AD account. The service skips re-enqueueing this event if the UPN is already marked `synced`, or has a `sync_pending` record fresher than the internal pending-sync TTL (300s by default). This avoids redundant AD writes on every login.
+- `password_change` - sent when a user changes their password. Always enqueued, regardless of prior sync status.
+- `password_recovery` - sent when a user recovers or resets their password. Always enqueued, regardless of prior sync status.
+
+Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked per-UPN by `internal/syncstatus.MemoryStore`, an in-process, non-durable store: it resets on process restart and is not shared across replicas. This is a deliberate Slice 7A scope limit; Slice 10 (infrastructure) introduces durable, shared sync-status storage. See `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` section 1.2.1 Amendment for the full event model rationale.
 
 ## Configuration
 

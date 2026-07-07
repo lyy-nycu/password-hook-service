@@ -23,7 +23,7 @@ func TestHookEnqueuesInternalStudentID(t *testing.T) {
 	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
-	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 
@@ -48,7 +48,7 @@ func TestHookZerosDecodedPasswordAfterSubmit(t *testing.T) {
 	service := migration.NewService("nycu.edu.tw", queue, encrypter)
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
-	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 
@@ -263,7 +263,7 @@ func TestHookSkipsExternalEmailIdentity(t *testing.T) {
 	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
-	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com"}`)
+	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 
@@ -284,7 +284,7 @@ func TestHookRejectsUnknownCNAsBadRequest(t *testing.T) {
 	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
-	body := []byte(`{"cn":"bad cn!","password":"secret","displayName":"Bad","mail":"bad@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"bad cn!","password":"secret","displayName":"Bad","mail":"bad@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	req = req.WithContext(requestid.With(req.Context(), "trace-123"))
@@ -296,13 +296,53 @@ func TestHookRejectsUnknownCNAsBadRequest(t *testing.T) {
 	}
 }
 
+func TestHookRejectsMissingEventType(t *testing.T) {
+	t.Parallel()
+
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	hook := NewHook(service, "https://nycu.edu.tw/problems")
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+
+	hook.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "eventType") {
+		t.Errorf("body = %q, want mention of eventType", rec.Body.String())
+	}
+}
+
+func TestHookRejectsInvalidEventType(t *testing.T) {
+	t.Parallel()
+
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	hook := NewHook(service, "https://nycu.edu.tw/problems")
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"password_reset"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+
+	hook.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "eventType") {
+		t.Errorf("body = %q, want mention of eventType", rec.Body.String())
+	}
+}
+
 func TestHookQueueFailureReturnsInternalError(t *testing.T) {
 	t.Parallel()
 
 	service := migration.NewService("nycu.edu.tw", failingQueue{}, fakePasswordEncrypter{})
 	hook := NewHook(service, "https://nycu.edu.tw/problems")
 
-	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 
