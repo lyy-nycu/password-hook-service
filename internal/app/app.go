@@ -19,6 +19,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/servicebusqueue"
+	"github.com/nycu/password-hook-service/internal/syncstatus"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -101,7 +102,7 @@ func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newWithQueue(cfg, queue, passwordCodec)
+	return newWithQueue(cfg, queue, passwordCodec, syncstatus.NewMemoryStore())
 }
 
 func newWithWorkerDependencies(
@@ -116,13 +117,15 @@ func newWithWorkerDependencies(
 	if passwordCodec == nil {
 		return nil, errors.Join(errors.New("password codec is required"), closeAppResources(context.Background(), closers))
 	}
-	application, err := newWithQueue(cfg, queue, passwordCodec, closers...)
+	syncStatusStore := syncstatus.NewMemoryStore()
+	application, err := newWithQueue(cfg, queue, passwordCodec, syncStatusStore, closers...)
 	if err != nil {
 		return nil, err
 	}
 	passwordWorker, err := worker.New(receiver, processor, worker.Options{
-		DeadLetterSink:    deadLetterSink,
-		PasswordDecrypter: passwordCodec,
+		DeadLetterSink:     deadLetterSink,
+		PasswordDecrypter:  passwordCodec,
+		SyncStatusRecorder: syncStatusStore,
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
@@ -131,11 +134,16 @@ func newWithWorkerDependencies(
 	return application, nil
 }
 
-func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, closers ...appCloser) (*App, error) {
+func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, syncStatusStore migration.SyncStatusStore, closers ...appCloser) (*App, error) {
 	if passwordEncrypter == nil {
 		return nil, errors.Join(errors.New("password encrypter is required"), closeAppResources(context.Background(), closers))
 	}
-	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter)
+	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{
+		SyncStatusStore: syncStatusStore,
+		// Reuse the queue message TTL as the pending-sync freshness window so
+		// sync_pending cannot outlive the message it corresponds to.
+		PendingTTL: cfg.PasswordMessageTTL,
+	})
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {

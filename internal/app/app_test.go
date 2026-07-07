@@ -34,7 +34,7 @@ func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 		t.Fatalf("NewWithQueue returned error: %v", err)
 	}
 
-	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	req.Header.Set("X-Request-ID", "trace-123")
 	signRequest(req, cfg.HMACSecret, body)
@@ -86,7 +86,7 @@ func TestAppHookRouteQueuesCiphertextOnlyMessage(t *testing.T) {
 		t.Fatalf("NewWithQueue returned error: %v", err)
 	}
 
-	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
 	rec := httptest.NewRecorder()
@@ -126,7 +126,7 @@ func TestAppHookRouteSkipsExternalEmailWithoutEnqueue(t *testing.T) {
 		t.Fatalf("NewWithQueue returned error: %v", err)
 	}
 
-	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com"}`)
+	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
 	rec := httptest.NewRecorder()
@@ -146,7 +146,7 @@ func TestNewWithQueueClosesOwnedQueueWhenAppWiringFails(t *testing.T) {
 	cfg.HMACSecret = ""
 	closer := &captureCloser{}
 
-	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)
+	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), nil, closer)
 	if err == nil {
 		t.Fatal("newWithQueue returned nil error")
 	}
@@ -245,7 +245,7 @@ func TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker(t *testin
 		t.Fatalf("newWithWorkerDependencies returned error: %v", err)
 	}
 
-	body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw"}`)
+	body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
 	rec := httptest.NewRecorder()
@@ -293,7 +293,7 @@ func TestRunClosesQueueWithBoundedContextFromCallerContext(t *testing.T) {
 	closer := &captureCloser{}
 	cfg := completeAppConfig()
 	cfg.HTTPAddr = "127.0.0.1:0"
-	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)
+	application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), nil, closer)
 	if err != nil {
 		t.Fatalf("newWithQueue returned error: %v", err)
 	}
