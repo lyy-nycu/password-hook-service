@@ -33,14 +33,19 @@
 
 **Out of scope (deferred to Slice 10 - Infrastructure):**
 - Durable/shared storage for sync status (e.g., Redis, database) — this slice uses an in-memory store that resets on process restart and does not scale across multiple replicas.
-- Any new configuration knobs for the pending-sync TTL (hardcoded constant in this slice).
+- Any new configuration knobs for the pending-sync TTL beyond reusing the existing `PasswordMessageTTL` value (see Task 4/Task 7 — no new env var or config field is introduced).
 - Any change to encryption, HMAC signing, or nonce replay protection (Slice 7 already covers these).
+
+**Known limitations (accepted for this slice, revisit only if they cause real incidents):**
+- **Dedupe check-then-act race:** `Submit`'s `login_bootstrap` path does `Get` → (maybe) enqueue → `MarkPending` as three separate steps, not one atomic operation. Two concurrent `login_bootstrap` requests for the same UPN arriving within that narrow window can both pass the check and both enqueue. Impact is bounded to a redundant duplicate sync (the exact class of extra work this slice reduces, not eliminates) — never a correctness or security issue — so a fully atomic claim-based redesign of `syncstatus.Store` is deferred rather than built speculatively.
+- **`sourceEnqueuedAt` ordering protects the status record, not write ordering to Entra:** the out-of-order guard (Task 3) guarantees a stale, slow-to-complete message can never overwrite a newer status outcome, but it does not stop that same stale message from calling Microsoft Graph *after* a newer message already did — the bookkeeping stays correct even though the actual last Graph write could still be the older value. This is an inherent property of at-least-once queue processing and is unchanged by this slice.
+- **Best-effort `MarkPending`/`MarkSynced`/`MarkFailed`:** every sync-status write after a queue operation is intentionally best-effort — the returned error is silently discarded (`_ = ...`), not logged and never surfaced to the caller, so a status-store hiccup can never fail an otherwise-successful hook request or worker completion. The accepted trade-off is that a write failure at the wrong moment (e.g. immediately before a worker crash) can leave a stale status until the next real event or until `PendingTTL` naturally expires it — the same self-healing window already relied on for a worker crashing before reporting any outcome. (A follow-up slice could add an observability counter/log for these discarded errors if they turn out to matter in practice; not done here to keep this slice's scope to the event/sync-status model itself.)
 
 ## Current Context
 
 Slice 7 (password data protection: AES-GCM encryption, HMAC request signing, replay protection) is complete and merged (`docs/superpowers/plans/completed/2026-07-03-slice-07-password-data-protection.md`). The design spec (`docs/superpowers/specs/2026-06-24-password-hook-service-design.md`) has already been amended in this working tree (§1.2.1 Amendment section, updated API contract table with `eventType`, updated Message TTL Expiry section, updated §11.3 PHP example) to correct an earlier false assumption that the hook fires "on every successful login" — it actually fires on `login_bootstrap` (post-SSO bootstrap), `password_change`, and `password_recovery` events from the portal. This plan implements the code changes that make that corrected model real.
 
-The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-password-event-sync-story.md`; its "Acceptance Criteria For Promotion" section is fully covered by Task 4's ten new service-level tests (in particular: `TestServiceEnqueuesLoginBootstrapAfterSyncFailed` for resync-after-`sync_failed`, and always-resync for `password_recovery` even when already synced).
+This plan was promoted from a draft story that proposed the same event/sync-status model; the draft file itself was deleted from the working tree as part of that promotion (`git show 6fe75b2:docs/superpowers/plans/drafts/2026-07-03-portal-password-event-sync-story.md` to view it from history — it no longer exists at that path on disk). Its "Acceptance Criteria For Promotion" section is fully covered by Task 4's twelve new service-level tests (in particular: `TestServiceEnqueuesLoginBootstrapAfterSyncFailed` for resync-after-`sync_failed`, always-resync for `password_recovery` even when already synced, and the two fail-open/best-effort tests added alongside them).
 
 ## File Structure
 
@@ -51,7 +56,7 @@ The originating draft is `docs/superpowers/plans/drafts/2026-07-03-portal-passwo
 - Create: `internal/syncstatus/status.go` — `Status` type, `Record`, `Store` interface, `MemoryStore` implementation.
 - Create: `internal/syncstatus/status_test.go` — `MemoryStore` behavior tests.
 - Modify: `internal/migration/service.go` — `ServiceOptions`, `SyncStatusStore` interface, dedupe logic in `Submit`.
-- Modify: `internal/migration/service_test.go` — update 5 existing `NewService` call sites, add 10 new tests + `fakeSyncStatusStore`.
+- Modify: `internal/migration/service_test.go` — update 5 existing `NewService` call sites, add 12 new tests + `fakeSyncStatusStore`.
 - Modify: `internal/handler/hook.go` — `EventType` field + validation + wiring into `migration.Request`.
 - Modify: `internal/handler/hook_test.go` — update 9 `NewService` call sites, add `eventType` to 5 JSON bodies, add 2 new tests.
 - Modify: `internal/worker/worker.go` — `SyncStatusRecorder` interface, `Options` field, `processMessage` hooks.
@@ -170,7 +175,7 @@ git commit -m "feat(migration): add EventType with validation"
 
 **Interfaces:**
 - Consumes: `EventType` from Task 1.
-- Produces: `PasswordSyncMessage.EventType EventType` field with JSON tag `"eventType"`. Task 4's `Submit` sets this field when building the message; the worker never reads `.EventType` (only `.UPN`), but the field must round-trip correctly through the queue for forward compatibility, and it must never cause the plaintext `Password` field to become visible in JSON output.
+- Produces: `PasswordSyncMessage.EventType EventType` field with JSON tag `"eventType"`. Task 4's `Submit` sets this field when building the message; Task 6's worker never reads `.EventType` itself (it only reads `.UPN` and `.EnqueuedAt` for sync-status recording, same as its existing fields), but the field must round-trip correctly through the queue for forward compatibility, and it must never cause the plaintext `Password` field to become visible in JSON output.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -567,7 +572,7 @@ git commit -m "feat(syncstatus): add in-process sync status store"
 
 **Interfaces:**
 - Consumes: `EventType`/`ValidEventType`/`ErrInvalidEventType` from Task 1; `syncstatus.Record`, `syncstatus.Status` constants from Task 3 (imports `github.com/nycu/password-hook-service/internal/syncstatus`).
-- Produces: `type ServiceOptions struct { SyncStatusStore SyncStatusStore; PendingTTL time.Duration }`; `type SyncStatusStore interface { Get(ctx context.Context, upn string) (syncstatus.Record, error); MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error }`; `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ...ServiceOptions) *Service` (variadic — existing 3-argument call sites keep compiling unchanged); `Request.EventType EventType` field. Task 5 (hook.go) sets `migration.Request{EventType: ...}` but does **not** need to touch any `migration.NewService(...)` call site, since the new parameter is variadic. Task 7 (app.go) constructs `migration.ServiceOptions{SyncStatusStore: syncStatusStore}` where `syncStatusStore` is `*syncstatus.MemoryStore` (structurally satisfies `SyncStatusStore`).
+- Produces: `type ServiceOptions struct { SyncStatusStore SyncStatusStore; PendingTTL time.Duration }`; `type SyncStatusStore interface { Get(ctx context.Context, upn string) (syncstatus.Record, error); MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error }`; `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ...ServiceOptions) *Service` (variadic — existing 3-argument call sites keep compiling unchanged); `Request.EventType EventType` field. Task 5 (hook.go) sets `migration.Request{EventType: ...}` but does **not** need to touch any `migration.NewService(...)` call site, since the new parameter is variadic. Task 7 (app.go) constructs `migration.ServiceOptions{SyncStatusStore: syncStatusStore, PendingTTL: cfg.PasswordMessageTTL}` where `syncStatusStore` is `*syncstatus.MemoryStore` (structurally satisfies `SyncStatusStore`) — wiring `cfg.PasswordMessageTTL` explicitly (rather than leaving `PendingTTL` zero and falling back to `defaultPendingTTL`) keeps the pending-sync freshness window from drifting out of sync with the queue message's own TTL.
 
 Ground truth from the current `internal/migration/service.go` (re-verified): `NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter) *Service` takes exactly 3 args today. `Submit`'s current flow: `defer passwordcrypto.ZeroBytes(req.Password)` → `ClassifyCN` → external email: set `decision.Skipped`/`decision.Reason = "cn_is_external_email"`, return `decision, nil` → unknown identity: return `decision, ErrUnknownIdentity` → `BuildUPN` (sets `decision.UPN = upn`) → nil-checks for `s.queue`/`s.encrypter` → build `PasswordSyncMessage` literal (`CN`, `UPN`, `DisplayName`, `Mail`, `EnqueuedAt: s.now().UTC()`) → `Encrypt` → set ciphertext fields → `EnqueuePasswordSync` → `decision.Enqueued = true`. The 5 existing tests in `service_test.go` construct their fakes as `&captureQueue{}` / `&captureEncrypter{}` / `failingEncrypter{...}` / `failingQueue{...}` (not `fakeQueue`/`fakeEncrypter` — use the real names).
 
@@ -577,8 +582,10 @@ Add to `internal/migration/service_test.go` — first, a `fakeSyncStatusStore` t
 
 ```go
 type fakeSyncStatusStore struct {
-	records     map[string]syncstatus.Record
-	markPending []markPendingCall
+	records        map[string]syncstatus.Record
+	markPending    []markPendingCall
+	getErr         error
+	markPendingErr error
 }
 
 type markPendingCall struct {
@@ -591,11 +598,17 @@ func newFakeSyncStatusStore() *fakeSyncStatusStore {
 }
 
 func (f *fakeSyncStatusStore) Get(_ context.Context, upn string) (syncstatus.Record, error) {
+	if f.getErr != nil {
+		return syncstatus.Record{}, f.getErr
+	}
 	return f.records[upn], nil
 }
 
 func (f *fakeSyncStatusStore) MarkPending(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
 	f.markPending = append(f.markPending, markPendingCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
+	if f.markPendingErr != nil {
+		return f.markPendingErr
+	}
 	f.records[upn] = syncstatus.Record{Status: syncstatus.StatusPending, UpdatedAt: time.Now(), SourceEnqueuedAt: sourceEnqueuedAt}
 	return nil
 }
@@ -605,7 +618,7 @@ func (f *fakeSyncStatusStore) setRecord(upn string, status syncstatus.Status, up
 }
 ```
 
-Then add these 10 new test functions to `internal/migration/service_test.go` (all use `t.Parallel()` matching the file's existing style, and `"nycu.edu.tw"` as the primary domain so the resulting UPN matches the rest of the file's fixtures):
+Then add these 12 new test functions to `internal/migration/service_test.go` (all use `t.Parallel()` matching the file's existing style, and `"nycu.edu.tw"` as the primary domain so the resulting UPN matches the rest of the file's fixtures). The last two cover the fail-open (`Get` error) and best-effort (`MarkPending` error) guarantees called out in the plan's "Known limitations" section — a sync-status store hiccup must never fail an otherwise-successful `Submit`:
 
 ```go
 func TestServiceRejectsInvalidEventType(t *testing.T) {
@@ -893,9 +906,63 @@ func TestServiceDecisionUPNPopulatedOnSkip(t *testing.T) {
 		t.Errorf("decision.UPN = %q, want %q (UPN must be populated even on a skip)", decision.UPN, upn)
 	}
 }
+
+func TestServiceSkipLoginBootstrapFailsOpenOnStoreGetError(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	store.getErr = errors.New("store unavailable")
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if !decision.Enqueued {
+		t.Error("decision.Enqueued = false, want true (a sync-status Get failure must fail open and still enqueue)")
+	}
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
+	}
+}
+
+func TestServiceEnqueueSucceedsWhenMarkPendingFails(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	store.markPendingErr = errors.New("store unavailable")
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store})
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil (a MarkPending failure must never fail an otherwise-successful enqueue)", err)
+	}
+	if !decision.Enqueued {
+		t.Error("decision.Enqueued = false, want true")
+	}
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
+	}
+}
 ```
 
-Add `"github.com/nycu/password-hook-service/internal/syncstatus"` to the test file's import block.
+Add `"github.com/nycu/password-hook-service/internal/syncstatus"` to the test file's import block. `errors` is already imported by the existing file (used by the pre-existing `TestServiceRejectsInvalidEventType`).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -922,11 +989,13 @@ import (
 Add after the `PasswordEncrypter` interface declaration:
 
 ```go
-// defaultPendingTTL bounds how long a sync_pending record suppresses a
-// repeated login_bootstrap enqueue before being treated as stale (e.g. the
-// worker crashed before reporting an outcome). Matches the queue message's
-// own default TTL (see config.PasswordMessageTTL's 300s default) so a
-// pending record never outlives the message it corresponds to.
+// defaultPendingTTL is the fallback used only when ServiceOptions.PendingTTL
+// is unset (<= 0), e.g. by callers that don't wire config through. Task 7
+// wires the real, single-source-of-truth value explicitly from
+// config.Config.PasswordMessageTTL so pending-sync freshness always tracks
+// the actual queue message TTL, even if an operator changes it — this
+// constant only exists to avoid a zero-TTL footgun for any future caller
+// that constructs a Service without going through internal/app.
 const defaultPendingTTL = 300 * time.Second
 
 // SyncStatusStore is the narrow view of syncstatus.Store that Service
@@ -944,6 +1013,8 @@ type ServiceOptions struct {
 	SyncStatusStore SyncStatusStore
 	// PendingTTL bounds how long a sync_pending record suppresses a repeat
 	// login_bootstrap enqueue. Defaults to defaultPendingTTL when <= 0.
+	// Task 7 always passes cfg.PasswordMessageTTL explicitly here so this
+	// value never silently drifts from the queue message's own TTL.
 	PendingTTL time.Duration
 }
 ```
@@ -1614,9 +1685,9 @@ git commit -m "feat(worker): record sync status after processing password sync m
 
 **Interfaces:**
 - Consumes: `syncstatus.NewMemoryStore()` (Task 3), `migration.ServiceOptions.SyncStatusStore` (Task 4), `worker.Options.SyncStatusRecorder` (Task 6).
-- Produces: `newWithQueue`'s signature gains a 4th positional parameter `syncStatusStore migration.SyncStatusStore` (inserted before the variadic `closers ...appCloser`). No change to `NewWithQueue`'s or `newWithWorkerDependencies`'s public signatures — both already exist and stay exactly as-is.
+- Produces: `newWithQueue`'s signature gains a 4th positional parameter `syncStatusStore migration.SyncStatusStore` (inserted before the variadic `closers ...appCloser`). No change to `NewWithQueue`'s or `newWithWorkerDependencies`'s exported/internal call signatures — both already exist and stay exactly as-is (`newWithWorkerDependencies` itself is unexported, only `newWithQueue`'s internal signature changes).
 
-Ground truth from the current `internal/app/app.go` (re-verified): `NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error)` takes exactly **2 parameters** today — it builds its own `passwordCodec` internally via `newPasswordCodec(cfg)` and calls `newWithQueue(cfg, queue, passwordCodec)`. `newWithWorkerDependencies(cfg, queue, receiver, processor, deadLetterSink, passwordCodec, closers...)` calls `newWithQueue(cfg, queue, passwordCodec, closers...)` internally, then separately calls `worker.New(receiver, processor, worker.Options{DeadLetterSink: deadLetterSink, PasswordDecrypter: passwordCodec})`. From `internal/app/app_test.go` (re-verified): exactly 2 direct `newWithQueue(...)` call sites, at lines 149 and 296, both of the form `newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)`; 3 `newWithWorkerDependencies(...)` call sites at lines 206, 243, 324 (these need no changes — the function's public signature is unchanged); JSON bodies needing `eventType` are at lines 37, 89, 129, 248 (`TestAppHookRouteEnqueuesInternalIdentity`, `TestAppHookRouteQueuesCiphertextOnlyMessage`, `TestAppHookRouteSkipsExternalEmailWithoutEnqueue`, `TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker`).
+Ground truth from the current `internal/app/app.go` (re-verified): `NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error)` takes exactly **2 parameters** today — it builds its own `passwordCodec` internally via `newPasswordCodec(cfg)` and calls `newWithQueue(cfg, queue, passwordCodec)`. `newWithWorkerDependencies(cfg, queue, receiver, processor, deadLetterSink, passwordCodec, closers...)` calls `newWithQueue(cfg, queue, passwordCodec, closers...)` internally, then separately calls `worker.New(receiver, processor, worker.Options{DeadLetterSink: deadLetterSink, PasswordDecrypter: passwordCodec})`. From `internal/app/app_test.go` (re-verified): exactly 2 direct `newWithQueue(...)` call sites, at lines 149 and 296, both of the form `newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), closer)`; 3 `newWithWorkerDependencies(...)` call sites at lines 206, 243, 324 (these need no changes — that function's own signature is unchanged); JSON bodies needing `eventType` are at lines 37, 89, 129, 248 (`TestAppHookRouteEnqueuesInternalIdentity`, `TestAppHookRouteQueuesCiphertextOnlyMessage`, `TestAppHookRouteSkipsExternalEmailWithoutEnqueue`, `TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker`).
 
 - [ ] **Step 1: Update app.go**
 
@@ -1708,7 +1779,14 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 	if passwordEncrypter == nil {
 		return nil, errors.Join(errors.New("password encrypter is required"), closeAppResources(context.Background(), closers))
 	}
-	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{SyncStatusStore: syncStatusStore})
+	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{
+		SyncStatusStore: syncStatusStore,
+		// Reuse the queue message's own TTL as the pending-sync freshness
+		// window, so a sync_pending record never outlives (or silently
+		// drifts from) the message it corresponds to — see Task 4's
+		// defaultPendingTTL comment and the plan's "Known limitations".
+		PendingTTL: cfg.PasswordMessageTTL,
+	})
 	hook := handler.NewHook(service, cfg.ProblemBaseURL)
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
@@ -1735,7 +1813,7 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 }
 ```
 
-(Note: `migration.ServiceOptions{SyncStatusStore: syncStatusStore}` is safe even when `syncStatusStore` is a nil interface value — `migration.Service.Submit` only calls into it after checking `s.syncStatusStore != nil`, per Task 4.)
+(Note: `migration.ServiceOptions{SyncStatusStore: syncStatusStore, PendingTTL: cfg.PasswordMessageTTL}` is safe even when `syncStatusStore` is a nil interface value — `migration.Service.Submit` only calls into it after checking `s.syncStatusStore != nil`, per Task 4. Passing `cfg.PasswordMessageTTL` explicitly here — rather than leaving `PendingTTL` unset and relying on Task 4's `defaultPendingTTL` fallback — is a deliberate fix: it ties the pending-sync freshness window to the same single config value that governs the queue message's actual TTL, so the two can never drift apart if `PasswordMessageTTL` is ever changed.)
 
 - [ ] **Step 2: Update app_test.go**
 
@@ -1751,7 +1829,7 @@ application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg)
 application, err := newWithQueue(cfg, &captureQueue{}, mustPasswordCodec(t, cfg), nil, closer)
 ```
 
-The 3 `newWithWorkerDependencies(...)` call sites (lines 206, 243, 324) need no changes, since that function's public signature is unchanged.
+The 3 `newWithWorkerDependencies(...)` call sites (lines 206, 243, 324) need no changes, since that function's own signature is unchanged.
 
 Add `,"eventType":"login_bootstrap"` to the 4 JSON body fixtures that drive the full HMAC-signed HTTP path and expect a `202 Accepted`:
 
@@ -1904,9 +1982,9 @@ Expected: no output (no files need formatting).
 
 - [ ] **Step 5: Leak scan**
 
-This slice doesn't touch password-handling/encryption code paths directly (it only adds an `eventType` field and sync-status bookkeeping keyed by UPN), so this is a lighter check than Slice 7's: confirm no new code logs raw password material.
+This slice touches `service.go`, `hook.go`, and `worker.go` in addition to the new `syncstatus`/`event.go`/`message.go` code, so the scan must cover all of them, not just the new files: confirm no new code logs raw password material.
 
-Run: `grep -rn "log\." internal/syncstatus internal/migration/event.go internal/migration/message.go | grep -iv test`
+Run: `grep -rn "log\." internal/syncstatus internal/migration/event.go internal/migration/message.go internal/migration/service.go internal/handler/hook.go internal/worker/worker.go internal/app/app.go | grep -iv test`
 Expected: no matches, or only unrelated log statements that don't reference `Password`, `password`, or raw password bytes.
 
 - [ ] **Step 6: Mark this plan completed**
