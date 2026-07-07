@@ -73,8 +73,12 @@ type Service struct {
 
 // NewService constructs a Service. opts is variadic so existing call sites
 // keep compiling unchanged; passing more than one ServiceOptions is invalid
-// usage and only the first is honored.
+// usage and panics.
 func NewService(primaryDomain string, queue Queue, encrypter PasswordEncrypter, opts ...ServiceOptions) *Service {
+	if len(opts) > 1 {
+		panic("migration.NewService: at most one ServiceOptions is supported")
+	}
+
 	var opt ServiceOptions
 	if len(opts) > 0 {
 		opt = opts[0]

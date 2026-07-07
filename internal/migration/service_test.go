@@ -13,6 +13,25 @@ import (
 	"github.com/nycu/password-hook-service/internal/syncstatus"
 )
 
+func TestNewServicePanicsWithMultipleOptions(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		const want = "migration.NewService: at most one ServiceOptions is supported"
+		if got := recover(); got != want {
+			t.Fatalf("NewService panic = %v, want %q", got, want)
+		}
+	}()
+
+	NewService(
+		"nycu.edu.tw",
+		&captureQueue{},
+		&captureEncrypter{},
+		ServiceOptions{PendingTTL: time.Minute},
+		ServiceOptions{PendingTTL: 2 * time.Minute},
+	)
+}
+
 func TestServiceEncryptsPasswordBeforeEnqueue(t *testing.T) {
 	t.Parallel()
 
