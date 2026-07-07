@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-No plan is currently active. Slice 7A (Portal Password Event Semantics and Sync Status) is complete; see `roadmap.md` for the next slice to promote from `drafts/`.
+No plan is currently active. Slice 7A review fixes are complete; see `completed/2026-07-07-slice-07a-copilot-review-fixes.md`.
 
 ## Status Labels
 
