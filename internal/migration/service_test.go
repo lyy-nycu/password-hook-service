@@ -362,6 +362,40 @@ func TestServiceEnqueuesLoginBootstrapWhenPendingStale(t *testing.T) {
 	}
 }
 
+func TestServiceEnqueuesLoginBootstrapWhenPendingTimestampIsInFuture(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	store := newFakeSyncStatusStore()
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{}, ServiceOptions{SyncStatusStore: store, PendingTTL: 5 * time.Minute})
+	fixedNow := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return fixedNow }
+
+	upn := "311551001@nycu.edu.tw"
+	store.setRecord(upn, syncstatus.StatusPending, fixedNow.Add(10*time.Minute))
+
+	decision, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventLoginBootstrap,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if !decision.Enqueued {
+		t.Error("decision.Enqueued = false, want true (future pending timestamp should fail open)")
+	}
+	if decision.Skipped {
+		t.Error("decision.Skipped = true, want false")
+	}
+	if len(queue.messages) != 1 {
+		t.Errorf("queue.messages = %d, want 1", len(queue.messages))
+	}
+}
+
 func TestServiceEnqueuesLoginBootstrapAfterSyncFailed(t *testing.T) {
 	t.Parallel()
 

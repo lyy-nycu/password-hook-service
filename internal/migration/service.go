@@ -181,7 +181,11 @@ func (s *Service) skipLoginBootstrap(ctx context.Context, upn string) (bool, str
 	case syncstatus.StatusSynced:
 		return true, "already_synced"
 	case syncstatus.StatusPending:
-		if s.now().Sub(rec.UpdatedAt) < s.pendingTTL {
+		now := s.now()
+		if rec.UpdatedAt.After(now) {
+			return false, ""
+		}
+		if now.Before(rec.UpdatedAt.Add(s.pendingTTL)) {
 			return true, "sync_pending"
 		}
 		return false, ""
