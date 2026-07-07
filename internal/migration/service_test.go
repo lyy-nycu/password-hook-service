@@ -462,6 +462,31 @@ func TestServiceMarksPendingWithSourceEnqueuedAtAfterSuccessfulEnqueue(t *testin
 	}
 }
 
+func TestServiceEnqueuedMessageIncludesEventType(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{})
+
+	_, err := service.Submit(context.Background(), Request{
+		CN:          "311551001",
+		EventType:   EventPasswordRecovery,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if len(queue.messages) != 1 {
+		t.Fatalf("queue.messages = %d, want 1", len(queue.messages))
+	}
+	if queue.messages[0].EventType != EventPasswordRecovery {
+		t.Errorf("queued EventType = %q, want %q", queue.messages[0].EventType, EventPasswordRecovery)
+	}
+}
+
 func TestServiceNilSyncStatusStoreBehavesLikeNoDedupe(t *testing.T) {
 	t.Parallel()
 

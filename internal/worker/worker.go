@@ -276,7 +276,6 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	}
 
 	zeroMessageBody(msg)
-	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 	settleCtx, cancel := w.settlementContext()
 	defer cancel()
 	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
@@ -291,6 +290,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	}); settleErr != nil {
 		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr)
 	}
+	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}

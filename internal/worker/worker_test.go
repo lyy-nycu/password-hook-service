@@ -413,9 +413,21 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 		Err:    errors.New("graph 403"),
 	}}
 	deadLetters := &fakeDeadLetterSink{err: sinkErr}
-	worker := newPolicyTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("secret")}, deadLetters, &fakeSleeper{})
+	recorder := &fakeSyncStatusRecorder{}
+	sleeper := &fakeSleeper{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		Sleep:              sleeper.Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
 
-	err := worker.Run(ctx)
+	err = worker.Run(ctx)
 	if err == nil {
 		t.Fatal("Run returned nil error")
 	}
@@ -424,6 +436,9 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 	}
 	if receiver.abandoned != 1 || receiver.completed != 0 {
 		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	}
+	if len(recorder.failed) != 0 {
+		t.Fatalf("recorder.failed = %v, want empty when safe DLQ write fails", recorder.failed)
 	}
 }
 
