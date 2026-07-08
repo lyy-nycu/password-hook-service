@@ -76,7 +76,10 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
 	}
-	processor, err := graphprocessor.New(graph)
+	processor, err := graphprocessor.NewWithOptions(graph, graphprocessor.Options{
+		Logger:   slog.Default(),
+		Recorder: observability.NoopRecorder{},
+	})
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
 	}
