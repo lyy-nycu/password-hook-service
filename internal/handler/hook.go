@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/sensitiveio"
@@ -20,17 +22,37 @@ import (
 type Hook struct {
 	service        *migration.Service
 	problemBaseURL string
+	logger         *slog.Logger
+	recorder       observability.Recorder
+}
+
+type HookOptions struct {
+	Logger   *slog.Logger
+	Recorder observability.Recorder
 }
 
 func NewHook(service *migration.Service, problemBaseURL string) *Hook {
+	return NewHookWithOptions(service, problemBaseURL, HookOptions{})
+}
+
+func NewHookWithOptions(service *migration.Service, problemBaseURL string, options HookOptions) *Hook {
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
+	if options.Recorder == nil {
+		options.Recorder = observability.NoopRecorder{}
+	}
 	return &Hook{
 		service:        service,
 		problemBaseURL: strings.TrimRight(problemBaseURL, "/"),
+		logger:         options.Logger,
+		recorder:       options.Recorder,
 	}
 }
 
 func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		h.recordRejected(r, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
@@ -38,6 +60,7 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rawBody, err := sensitiveio.ReadAll(r.Body)
 	defer passwordcrypto.ZeroBytes(rawBody)
 	if err != nil {
+		h.recordRejected(r, http.StatusBadRequest, "validation_error", "")
 		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be readable"))
 		return
 	}
@@ -46,15 +69,17 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = json.Unmarshal(rawBody, &body)
 	defer passwordcrypto.ZeroBytes(body.Password)
 	if err != nil {
+		h.recordRejected(r, http.StatusBadRequest, "validation_error", "")
 		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "request body must be valid json"))
 		return
 	}
 	if detail := body.validate(); detail != "" {
+		h.recordRejected(r, http.StatusBadRequest, "validation_error", body.EventType)
 		h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), detail))
 		return
 	}
 
-	_, err = h.service.Submit(r.Context(), migration.Request{
+	decision, err := h.service.Submit(r.Context(), migration.Request{
 		CN:          body.CN,
 		EventType:   body.EventType,
 		Password:    []byte(body.Password),
@@ -63,18 +88,82 @@ func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if errors.Is(err, migration.ErrUnknownIdentity) || errors.Is(err, migration.ErrExternalIdentity) {
+			h.recordRejected(r, http.StatusBadRequest, "validation_error", body.EventType)
 			h.writeProblem(w, r, problem.Validation(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), err.Error()))
 			return
 		}
+		h.recordRejected(r, http.StatusInternalServerError, "accept_error", body.EventType)
 		h.writeProblem(w, r, problem.Internal(h.problemBaseURL, r.URL.Path, requestid.From(r.Context()), "failed to accept password sync request"))
 		return
 	}
 
+	h.recordDecision(r, http.StatusAccepted, body.EventType, decision)
 	w.WriteHeader(http.StatusAccepted)
 }
 
 func (h *Hook) writeProblem(w http.ResponseWriter, _ *http.Request, p problem.Problem) {
 	problem.Write(w, p)
+}
+
+func (h *Hook) recordDecision(r *http.Request, status int, eventType migration.EventType, decision migration.Decision) {
+	outcome := "accepted"
+	if decision.Enqueued {
+		outcome = "enqueued"
+	}
+	if decision.Skipped {
+		outcome = "skipped"
+	}
+	labels := observability.Labels{
+		"status":       fmt.Sprint(status),
+		"outcome":      outcome,
+		"eventType":    string(eventType),
+		"identityType": string(decision.IdentityType),
+	}
+	if decision.Reason != "" {
+		labels["reason"] = decision.Reason
+	}
+	h.recorder.Inc(r.Context(), observability.MetricHookRequestsTotal, labels)
+	if decision.Skipped {
+		h.recorder.Inc(r.Context(), observability.MetricMigrationSkippedTotal, labels)
+	}
+
+	action := observability.ActionHookAccepted
+	if decision.Skipped {
+		action = observability.ActionHookSkipped
+	}
+	attrs := []slog.Attr{
+		slog.String("action", action),
+		slog.String("outcome", outcome),
+		slog.Int("status", status),
+	}
+	attrs = append(attrs, observability.SafeIdentityAttrs(observability.SafeIdentity{
+		TraceID:      requestid.From(r.Context()),
+		UPN:          decision.UPN,
+		EventType:    string(eventType),
+		IdentityType: string(decision.IdentityType),
+	})...)
+	if decision.Reason != "" {
+		attrs = append(attrs, slog.String("reason", decision.Reason))
+	}
+	h.logger.LogAttrs(r.Context(), slog.LevelInfo, action, attrs...)
+}
+
+func (h *Hook) recordRejected(r *http.Request, status int, outcome string, eventType migration.EventType) {
+	labels := observability.Labels{"status": fmt.Sprint(status), "outcome": outcome}
+	if eventType != "" {
+		labels["eventType"] = string(eventType)
+	}
+	h.recorder.Inc(r.Context(), observability.MetricHookRequestsTotal, labels)
+	attrs := []slog.Attr{
+		slog.String("action", observability.ActionHookRejected),
+		slog.Int("status", status),
+		slog.String("outcome", outcome),
+	}
+	attrs = append(attrs, observability.SafeIdentityAttrs(observability.SafeIdentity{
+		TraceID:   requestid.From(r.Context()),
+		EventType: string(eventType),
+	})...)
+	h.logger.LogAttrs(r.Context(), slog.LevelInfo, observability.ActionHookRejected, attrs...)
 }
 
 type passwordHookRequest struct {

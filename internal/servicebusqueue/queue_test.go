@@ -12,6 +12,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
@@ -134,6 +135,33 @@ func TestQueuePropagatesSendError(t *testing.T) {
 	}
 	if !errors.Is(err, sendErr) {
 		t.Fatalf("error does not wrap send error: %v", err)
+	}
+}
+
+func TestQueueDepthProbeRecordsActiveQueueDepth(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeDepthReader{depths: map[string]int64{"password-sync": 12}}
+	recorder := observability.NewCaptureRecorder()
+	probe := NewQueueDepthProbe(reader, QueueDepthProbeOptions{
+		QueueName: "password-sync",
+		Kind:      "active",
+		Recorder:  recorder,
+	})
+
+	depth, err := probe.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe returned error: %v", err)
+	}
+	if depth != 12 {
+		t.Fatalf("depth = %d, want 12", depth)
+	}
+	samples := recorder.Gauges(observability.MetricQueueDepth)
+	if len(samples) != 1 {
+		t.Fatalf("queue depth samples = %d, want 1", len(samples))
+	}
+	if samples[0].Value != 12 || samples[0].Labels["queue"] != "password-sync" || samples[0].Labels["kind"] != "active" {
+		t.Fatalf("sample = %#v, want active queue depth labels", samples[0])
 	}
 }
 
@@ -556,6 +584,18 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
 	c.closeErrs = append(c.closeErrs, ctx.Err())
 	return c.closeErr
+}
+
+type fakeDepthReader struct {
+	depths map[string]int64
+	err    error
+}
+
+func (f *fakeDepthReader) ActiveMessageCount(_ context.Context, queueName string) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.depths[queueName], nil
 }
 
 func assertPasswordSyncMetadata(t *testing.T, props map[string]any, msg migration.PasswordSyncMessage) {

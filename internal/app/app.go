@@ -16,6 +16,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/httpserver"
 	"github.com/nycu/password-hook-service/internal/middleware"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/servicebusqueue"
@@ -75,7 +76,10 @@ func New(cfg config.Config) (*App, error) {
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
 	}
-	processor, err := graphprocessor.New(graph)
+	processor, err := graphprocessor.NewWithOptions(graph, graphprocessor.Options{
+		Logger:   slog.Default(),
+		Recorder: observability.NoopRecorder{},
+	})
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
 	}
@@ -126,6 +130,8 @@ func newWithWorkerDependencies(
 		DeadLetterSink:     deadLetterSink,
 		PasswordDecrypter:  passwordCodec,
 		SyncStatusRecorder: syncStatusStore,
+		Logger:             slog.Default(),
+		Recorder:           observability.NoopRecorder{},
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
@@ -144,8 +150,15 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		// sync_pending cannot outlive the message it corresponds to.
 		PendingTTL: cfg.PasswordMessageTTL,
 	})
-	hook := handler.NewHook(service, cfg.ProblemBaseURL)
-	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
+	hook := handler.NewHookWithOptions(service, cfg.ProblemBaseURL, handler.HookOptions{
+		Logger:   slog.Default(),
+		Recorder: observability.NoopRecorder{},
+	})
+	hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, middleware.HMACOptions{
+		ProblemBase: cfg.ProblemBaseURL,
+		Logger:      slog.Default(),
+		Recorder:    observability.NoopRecorder{},
+	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
 	}
@@ -154,11 +167,17 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		LimitPerIP:   cfg.RateLimitPerIP,
 		Window:       cfg.RateLimitWindow,
 		ProblemBase:  cfg.ProblemBaseURL,
+		Logger:       slog.Default(),
+		Recorder:     observability.NoopRecorder{},
 	})
 
 	hookHandler := hmacMiddleware.Wrap(hook)
 	hookHandler = rateLimiter.Wrap(hookHandler)
-	hookHandler = middleware.RecoveryWithProblemBase(slog.Default(), cfg.ProblemBaseURL)(hookHandler)
+	hookHandler = middleware.RecoveryWithOptions(middleware.RecoveryOptions{
+		Logger:      slog.Default(),
+		ProblemBase: cfg.ProblemBaseURL,
+		Recorder:    observability.NoopRecorder{},
+	})(hookHandler)
 	hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
 	hookHandler = requestid.Middleware(hookHandler)
 

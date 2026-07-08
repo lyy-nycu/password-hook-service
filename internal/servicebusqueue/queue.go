@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
@@ -25,6 +27,23 @@ type sender interface {
 
 type closer interface {
 	Close(context.Context) error
+}
+
+type QueueDepthReader interface {
+	ActiveMessageCount(context.Context, string) (int64, error)
+}
+
+type QueueDepthProbeOptions struct {
+	QueueName string
+	Kind      string
+	Recorder  observability.Recorder
+}
+
+type QueueDepthProbe struct {
+	reader   QueueDepthReader
+	queue    string
+	kind     string
+	recorder observability.Recorder
 }
 
 type serviceBusReceiver interface {
@@ -49,6 +68,40 @@ type Receiver struct {
 }
 
 var _ worker.Receiver = (*Receiver)(nil)
+
+func NewQueueDepthProbe(reader QueueDepthReader, options QueueDepthProbeOptions) *QueueDepthProbe {
+	if options.Recorder == nil {
+		options.Recorder = observability.NoopRecorder{}
+	}
+	return &QueueDepthProbe{
+		reader:   reader,
+		queue:    strings.TrimSpace(options.QueueName),
+		kind:     strings.TrimSpace(options.Kind),
+		recorder: options.Recorder,
+	}
+}
+
+func (p *QueueDepthProbe) Probe(ctx context.Context) (int64, error) {
+	if p == nil || p.reader == nil {
+		return 0, errors.New("queue depth reader is required")
+	}
+	if p.queue == "" {
+		return 0, errors.New("queue depth queue name is required")
+	}
+	depth, err := p.reader.ActiveMessageCount(ctx, p.queue)
+	if err != nil {
+		return 0, fmt.Errorf("read queue depth: %w", err)
+	}
+	kind := p.kind
+	if kind == "" {
+		kind = "active"
+	}
+	p.recorder.SetGauge(ctx, observability.MetricQueueDepth, depth, observability.Labels{
+		"queue": p.queue,
+		"kind":  kind,
+	})
+	return depth, nil
+}
 
 func New(sender sender, ttl time.Duration) (*Queue, error) {
 	return NewWithClient(sender, nil, ttl)

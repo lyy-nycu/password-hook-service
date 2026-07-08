@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/syncstatus"
 )
 
@@ -537,6 +538,34 @@ func TestServiceEnqueuedMessageIncludesEventType(t *testing.T) {
 	}
 	if queue.messages[0].EventType != EventPasswordRecovery {
 		t.Errorf("queued EventType = %q, want %q", queue.messages[0].EventType, EventPasswordRecovery)
+	}
+}
+
+func TestServiceEnqueuedMessageIncludesTraceID(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	service := NewService("nycu.edu.tw", queue, &captureEncrypter{})
+
+	ctx := requestid.With(context.Background(), "trace-123")
+	decision, err := service.Submit(ctx, Request{
+		CN:          "311551001",
+		EventType:   EventPasswordChange,
+		Password:    []byte("secret"),
+		DisplayName: "Student",
+		Mail:        "student@nycu.edu.tw",
+	})
+	if err != nil {
+		t.Fatalf("Submit() error = %v, want nil", err)
+	}
+	if !decision.Enqueued {
+		t.Fatal("decision.Enqueued = false, want true")
+	}
+	if len(queue.messages) != 1 {
+		t.Fatalf("queue.messages = %d, want 1", len(queue.messages))
+	}
+	if queue.messages[0].TraceID != "trace-123" {
+		t.Fatalf("queued TraceID = %q, want trace-123", queue.messages[0].TraceID)
 	}
 }
 

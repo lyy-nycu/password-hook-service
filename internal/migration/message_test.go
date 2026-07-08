@@ -11,6 +11,7 @@ func TestPasswordSyncMessageRoundTripsEventType(t *testing.T) {
 		CN:        "jdoe",
 		UPN:       "jdoe@example.edu",
 		EventType: EventLoginBootstrap,
+		TraceID:   "trace-123",
 	}
 
 	data, err := json.Marshal(msg)
@@ -25,6 +26,9 @@ func TestPasswordSyncMessageRoundTripsEventType(t *testing.T) {
 
 	if decoded.EventType != EventLoginBootstrap {
 		t.Errorf("decoded.EventType = %q, want %q", decoded.EventType, EventLoginBootstrap)
+	}
+	if decoded.TraceID != "trace-123" {
+		t.Errorf("decoded.TraceID = %q, want trace-123", decoded.TraceID)
 	}
 }
 
@@ -41,6 +45,19 @@ func TestPasswordSyncMessageDecodesWithoutEventType(t *testing.T) {
 
 	if decoded.EventType != EventType("") {
 		t.Errorf("decoded.EventType = %q, want empty string", decoded.EventType)
+	}
+}
+
+func TestPasswordSyncMessageDecodeAllowsMissingTraceID(t *testing.T) {
+	t.Parallel()
+
+	var decoded PasswordSyncMessage
+	err := json.Unmarshal([]byte(`{"cn":"311551001","upn":"311551001@nycu.edu.tw","eventType":"login_bootstrap","passwordCiphertext":"ciphertext","passwordNonce":"nonce","passwordKeyId":"password-payload-key-v1","passwordAlg":"AES-256-GCM","displayName":"Student","mail":"student@nycu.edu.tw","enqueuedAt":"2026-07-08T00:00:00Z"}`), &decoded)
+	if err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if decoded.TraceID != "" {
+		t.Fatalf("decoded.TraceID = %q, want empty for legacy message", decoded.TraceID)
 	}
 }
 

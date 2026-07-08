@@ -24,8 +24,12 @@ This service currently implements the HTTP hook, encrypted Service Bus queueing,
 - encrypted queue payloads for password sync messages
 - Service Bus worker consumption with retry and safe DLQ handling
 - Microsoft Graph app-only client for existing-user password patches and missing-user creation
+- backend-neutral observability recorder boundary
+- structured hook, worker, and Graph outcome events
+- trace ID propagation through queue messages
+- queue and safe-DLQ depth probe boundaries
 
-Terraform resources, observability, and CI/CD security gates are implemented in later slices.
+Terraform resources and CI/CD security gates are implemented in later slices.
 
 ## Local Verification
 
@@ -172,6 +176,38 @@ Every hook request must include an `eventType` field with one of three values:
 - `password_recovery` - sent when a user recovers or resets their password. Always enqueued, regardless of prior sync status.
 
 Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked per-UPN by `internal/syncstatus.MemoryStore`, an in-process, non-durable store: it resets on process restart and is not shared across replicas. This is a deliberate Slice 7A scope limit; Slice 10 (infrastructure) introduces durable, shared sync-status storage. See `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` section 1.2.1 Amendment for the full event model rationale.
+
+## Observability
+
+The service emits structured JSON logs through `log/slog` and records metrics through the backend-neutral `internal/observability.Recorder` interface. Production currently wires a no-op recorder; exporters to Azure Monitor, OpenTelemetry, Prometheus, or another backend should be adapters over that interface.
+
+Key structured actions:
+
+| Action | Meaning |
+|--------|---------|
+| `hook_password_sync_accepted` | A hook request was accepted and enqueued. |
+| `hook_password_sync_skipped` | A hook request was accepted but skipped, for example external email identity or Slice 7A sync-status dedupe. |
+| `hook_password_sync_rejected` | A hook request failed validation or acceptance. |
+| `middleware_request_rejected` | HMAC, source allowlist, or rate-limit middleware rejected a request before it reached the hook. |
+| `middleware_panic_recovered` | Recovery middleware handled a panic and returned an RFC 9457 500 response. |
+| `worker_password_sync_completed` | The worker completed a password sync and marked the account synced. |
+| `worker_password_sync_failed` | The worker recorded a terminal safe-DLQ outcome and marked sync failed. |
+| `worker_message_invalid` | The worker completed an invalid queue message after writing a password-safe DLQ record. |
+| `worker_message_abandoned` | The worker abandoned a message because retry backoff was canceled or safe-DLQ recording failed. |
+| `graph_password_upsert` | The Graph processor attempted a create/update password operation. |
+
+Metric names:
+
+| Metric | Type | Labels |
+|--------|------|--------|
+| `hook_requests_total` | counter | `status`, `outcome`, optional `eventType`, optional `identityType`, optional `reason` |
+| `migration_skipped_total` | counter | `status`, `outcome`, `eventType`, `identityType`, `reason` |
+| `middleware_requests_total` | counter | `middleware`, `status`, `outcome`, optional `reason` |
+| `worker_messages_total` | counter | `outcome`, optional `eventType`, optional `reason`, optional `attempts` |
+| `graph_upsert_duration_seconds` | duration | `outcome` |
+| `queue_depth` | gauge | `queue`, `kind` |
+
+Logs and metric labels must not include cleartext passwords, encrypted password fields, request bodies, Service Bus message bodies, Graph request bodies, HMAC secrets, HMAC signatures, nonces, or authorization headers.
 
 ## Configuration
 

@@ -1,15 +1,18 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 )
 
@@ -45,6 +48,188 @@ func TestWorkerSuccessCompletesAndProcessesDecryptedMessage(t *testing.T) {
 	}
 	if receiver.abandoned != 0 {
 		t.Fatalf("abandoned = %d, want 0", receiver.abandoned)
+	}
+}
+
+func TestWorkerPassesTraceIDToProcessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := validPasswordSyncMessage()
+	msg.TraceID = "trace-123"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{}
+	worker := newTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{})
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if processor.messages[0].TraceID != "trace-123" {
+		t.Fatalf("processor TraceID = %q, want trace-123", processor.messages[0].TraceID)
+	}
+}
+
+func TestWorkerRecordsSuccessOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := validPasswordSyncMessage()
+	msg.TraceID = "trace-123"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker := newObservableTestWorker(t, receiver, &fakeProcessor{}, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{}, recorder, &logs)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker message samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "synced" || labels["eventType"] != string(msg.EventType) {
+		t.Fatalf("labels = %#v, want synced event labels", labels)
+	}
+	gotLogs := logs.String()
+	for _, want := range []string{observability.ActionWorkerCompleted, `"traceId":"trace-123"`, `"outcome":"synced"`} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs = %s, want %s", gotLogs, want)
+		}
+	}
+	if strings.Contains(gotLogs, "cleartext-password") || strings.Contains(gotLogs, msg.PasswordCiphertext) {
+		t.Fatalf("logs leaked password material: %s", gotLogs)
+	}
+}
+
+func TestWorkerRecordsInvalidMessageOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{{Kind: passwordSyncKind, Body: []byte(`{"cn":"311551001","upn":"311551001@nycu.edu.tw"}`)}}}
+	receiver.onComplete = cancel
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker := newObservableTestWorker(t, receiver, &fakeProcessor{}, &fakePasswordDecrypter{}, &fakeDeadLetterSink{}, recorder, &logs)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 || samples[0].Labels["outcome"] != "invalid_message" || samples[0].Labels["reason"] != DeadLetterReasonInvalidMessageSchema {
+		t.Fatalf("samples = %#v, want invalid message labels", samples)
+	}
+	if !strings.Contains(logs.String(), observability.ActionWorkerInvalid) {
+		t.Fatalf("logs = %s, want invalid action", logs.String())
+	}
+}
+
+func TestWorkerRecordsTerminalFailureOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := validPasswordSyncMessage()
+	msg.EventType = migration.EventPasswordRecovery
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: &PermanentError{Reason: PermanentReasonProcessorError, Err: errors.New("graph 403")}}
+	deadLetters := &fakeDeadLetterSink{onRecord: func() {}}
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker := newObservableTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("secret")}, deadLetters, recorder, &logs)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "sync_failed" || labels["reason"] != DeadLetterReasonPermanentProcessor || labels["attempts"] != "1" || labels["eventType"] != "password_recovery" {
+		t.Fatalf("labels = %#v, want terminal failure labels", labels)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerFailed) || strings.Contains(gotLogs, "secret") {
+		t.Fatalf("logs = %s, want safe failed action", gotLogs)
+	}
+	if strings.Contains(gotLogs, "graph 403") {
+		t.Fatalf("logs leaked processor error text: %s", gotLogs)
+	}
+}
+
+func TestWorkerRecordsRetryExhaustionOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
+	deadLetters := &fakeDeadLetterSink{onRecord: func() {}}
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker := newObservableTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("secret")}, deadLetters, recorder, &logs)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 4 {
+		t.Fatalf("processor calls = %d, want 4", processor.calls)
+	}
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "sync_failed" || labels["reason"] != DeadLetterReasonTransientRetriesExhausted || labels["attempts"] != "4" {
+		t.Fatalf("labels = %#v, want retry-exhaustion failure labels", labels)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerFailed) {
+		t.Fatalf("logs = %s, want failed action", gotLogs)
+	}
+	if strings.Contains(gotLogs, "secret") || strings.Contains(gotLogs, "graph temporarily unavailable") {
+		t.Fatalf("logs leaked processor error text or password: %s", gotLogs)
+	}
+}
+
+func TestWorkerRecordsRetryCancelAbandonOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onAbandon = cancel
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker, err := New(receiver, &fakeProcessor{err: errors.New("retryable")}, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+		Recorder:           recorder,
+		Logger:             slog.New(slog.NewJSONHandler(&logs, nil)),
+		Sleep:              (&fakeSleeper{err: context.Canceled}).Sleep,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 || samples[0].Labels["outcome"] != "abandoned" {
+		t.Fatalf("samples = %#v, want abandoned outcome", samples)
+	}
+	if !strings.Contains(logs.String(), observability.ActionWorkerAbandoned) {
+		t.Fatalf("logs = %s, want abandoned action", logs.String())
 	}
 }
 
@@ -442,6 +627,54 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 	}
 }
 
+func TestWorkerRecordsAbandonWhenSafeDLQWriteFails(t *testing.T) {
+	ctx := context.Background()
+	sinkErr := errors.New("safe DLQ unavailable")
+	msg := validPasswordSyncMessage()
+	msg.EventType = migration.EventPasswordRecovery
+	msg.TraceID = "trace-123"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{err: sinkErr},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+		Recorder:           recorder,
+		Logger:             slog.New(slog.NewJSONHandler(&logs, nil)),
+		Sleep:              (&fakeSleeper{}).Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	err = worker.Run(ctx)
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if receiver.abandoned != 1 || receiver.completed != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	}
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "abandoned" || labels["reason"] != "safe_dlq_write_failed" || labels["eventType"] != "password_recovery" || labels["attempts"] != "1" {
+		t.Fatalf("labels = %#v, want safe DLQ abandon labels", labels)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerAbandoned) || strings.Contains(gotLogs, "secret") || strings.Contains(gotLogs, "safe DLQ unavailable") {
+		t.Fatalf("logs = %s, want safe abandoned action without sensitive/error details", gotLogs)
+	}
+}
+
 func TestWorkerDoesNotRetainPlaintextDuringRetryBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -758,6 +991,24 @@ func newTestWorker(t *testing.T, receiver Receiver, processor Processor, decrypt
 		DeadLetterSink:     deadLetters,
 		PasswordDecrypter:  decrypter,
 		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	return worker
+}
+
+func newObservableTestWorker(t *testing.T, receiver Receiver, processor Processor, decrypter PasswordDecrypter, deadLetters DeadLetterSink, recorder observability.Recorder, logs *bytes.Buffer) *Worker {
+	t.Helper()
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     deadLetters,
+		PasswordDecrypter:  decrypter,
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+		Recorder:           recorder,
+		Logger:             slog.New(slog.NewJSONHandler(logs, nil)),
+		Sleep:              (&fakeSleeper{}).Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)

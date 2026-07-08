@@ -1,12 +1,14 @@
 package middleware
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
 )
@@ -16,6 +18,8 @@ type RateLimitConfig struct {
 	LimitPerIP   int
 	Window       time.Duration
 	ProblemBase  string
+	Logger       *slog.Logger
+	Recorder     observability.Recorder
 }
 
 type RateLimiter struct {
@@ -23,6 +27,8 @@ type RateLimiter struct {
 	limitPerIP   int
 	window       time.Duration
 	problemBase  string
+	logger       *slog.Logger
+	recorder     observability.Recorder
 	mu           sync.Mutex
 	counts       map[string]rateWindow
 }
@@ -39,12 +45,20 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 	if cfg.Window <= 0 {
 		cfg.Window = time.Second
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.Recorder == nil {
+		cfg.Recorder = observability.NoopRecorder{}
+	}
 
 	return &RateLimiter{
 		allowedCIDRs: parseCIDRs(cfg.AllowedCIDRs),
 		limitPerIP:   cfg.LimitPerIP,
 		window:       cfg.Window,
 		problemBase:  cfg.ProblemBase,
+		logger:       cfg.Logger,
+		recorder:     cfg.Recorder,
 		counts:       map[string]rateWindow{},
 	}
 }
@@ -53,6 +67,7 @@ func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sourceIP := remoteIP(r)
 		if len(l.allowedCIDRs) > 0 && !containsIP(l.allowedCIDRs, sourceIP) {
+			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusUnauthorized, "unauthorized", "source_ip_not_allowed")
 			problem.Write(w, problem.Unauthorized(l.problemBase, r.URL.Path, requestid.From(r.Context()), "source ip is not allowed"))
 			return
 		}
@@ -62,6 +77,7 @@ func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 			clientIP = forwardedClientIP(r, sourceIP)
 		}
 		if !l.allow(clientIP.String(), time.Now()) {
+			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusTooManyRequests, "rate_limited", "request_rate_exceeded")
 			problem.Write(w, problem.TooManyRequests(l.problemBase, r.URL.Path, requestid.From(r.Context()), "request rate exceeded"))
 			return
 		}

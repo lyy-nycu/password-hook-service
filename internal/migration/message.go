@@ -6,6 +6,7 @@ type PasswordSyncMessage struct {
 	CN                 string    `json:"cn"`
 	UPN                string    `json:"upn"`
 	EventType          EventType `json:"eventType"`
+	TraceID            string    `json:"traceId,omitempty"`
 	Password           string    `json:"-"`
 	PasswordCiphertext string    `json:"passwordCiphertext"`
 	PasswordNonce      string    `json:"passwordNonce"`
