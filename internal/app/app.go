@@ -16,6 +16,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/httpserver"
 	"github.com/nycu/password-hook-service/internal/middleware"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/servicebusqueue"
@@ -144,7 +145,10 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		// sync_pending cannot outlive the message it corresponds to.
 		PendingTTL: cfg.PasswordMessageTTL,
 	})
-	hook := handler.NewHook(service, cfg.ProblemBaseURL)
+	hook := handler.NewHookWithOptions(service, cfg.ProblemBaseURL, handler.HookOptions{
+		Logger:   slog.Default(),
+		Recorder: observability.NoopRecorder{},
+	})
 	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))

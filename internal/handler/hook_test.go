@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/pkg/problem"
@@ -37,6 +39,104 @@ func TestHookEnqueuesInternalStudentID(t *testing.T) {
 	}
 	if queue.messages[0].UPN != "311551001@nycu.edu.tw" {
 		t.Fatalf("queued upn = %q", queue.messages[0].UPN)
+	}
+}
+
+func newInstrumentedHook(service *migration.Service, logs *bytes.Buffer, recorder observability.Recorder) *Hook {
+	return NewHookWithOptions(service, "https://nycu.edu.tw/problems", HookOptions{
+		Logger:   slog.New(slog.NewJSONHandler(logs, nil)),
+		Recorder: recorder,
+	})
+}
+
+func TestHookRecordsAcceptedOutcome(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	hook := newInstrumentedHook(service, &logs, recorder)
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"password_change"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	req = req.WithContext(requestid.With(req.Context(), "trace-123"))
+
+	hook.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	samples := recorder.Counters(observability.MetricHookRequestsTotal)
+	if len(samples) != 1 {
+		t.Fatalf("hook counter samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["status"] != "202" || labels["outcome"] != "enqueued" || labels["eventType"] != "password_change" || labels["identityType"] != "student_id" {
+		t.Fatalf("labels = %#v, want accepted hook labels", labels)
+	}
+	gotLogs := logs.String()
+	for _, want := range []string{observability.ActionHookAccepted, `"traceId":"trace-123"`, `"eventType":"password_change"`, `"outcome":"enqueued"`} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs = %s, want %s", gotLogs, want)
+		}
+	}
+	if strings.Contains(gotLogs, "secret") {
+		t.Fatalf("logs leaked password: %s", gotLogs)
+	}
+}
+
+func TestHookRecordsSkippedOutcome(t *testing.T) {
+	t.Parallel()
+
+	queue := &captureQueue{}
+	service := migration.NewService("nycu.edu.tw", queue, fakePasswordEncrypter{})
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	hook := newInstrumentedHook(service, &logs, recorder)
+
+	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+
+	hook.ServeHTTP(rec, req)
+
+	skipped := recorder.Counters(observability.MetricMigrationSkippedTotal)
+	if len(skipped) != 1 {
+		t.Fatalf("skipped samples = %d, want 1", len(skipped))
+	}
+	if skipped[0].Labels["reason"] != "cn_is_external_email" || skipped[0].Labels["eventType"] != "login_bootstrap" {
+		t.Fatalf("skipped labels = %#v, want external skip reason", skipped[0].Labels)
+	}
+	if !strings.Contains(logs.String(), observability.ActionHookSkipped) {
+		t.Fatalf("logs = %s, want skipped action", logs.String())
+	}
+}
+
+func TestHookRecordsValidationRejection(t *testing.T) {
+	t.Parallel()
+
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	hook := newInstrumentedHook(service, &logs, recorder)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", strings.NewReader(`{"password":"secret"}`))
+	req = req.WithContext(requestid.With(req.Context(), "trace-123"))
+
+	hook.ServeHTTP(rec, req)
+
+	samples := recorder.Counters(observability.MetricHookRequestsTotal)
+	if len(samples) != 1 {
+		t.Fatalf("hook counter samples = %d, want 1", len(samples))
+	}
+	if samples[0].Labels["status"] != "400" || samples[0].Labels["outcome"] != "validation_error" {
+		t.Fatalf("labels = %#v, want validation rejection labels", samples[0].Labels)
+	}
+	if !strings.Contains(logs.String(), observability.ActionHookRejected) || strings.Contains(logs.String(), "secret") {
+		t.Fatalf("logs = %s, want rejection action and no password", logs.String())
 	}
 }
 
