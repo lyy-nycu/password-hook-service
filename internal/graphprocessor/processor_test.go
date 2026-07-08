@@ -121,28 +121,35 @@ func TestProcessorRecordsGraphPermanentAndTransientOutcomes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		err        error
-		wantLabel  string
-		wantWorker bool
+		name        string
+		err         error
+		wantLabel   string
+		wantWorker  bool
+		leakedToken string
 	}{
 		{
-			name:       "permanent",
-			err:        &graphclient.PermanentError{StatusCode: 403, Operation: "patch user"},
-			wantLabel:  "permanent_error",
-			wantWorker: true,
+			name:        "permanent",
+			err:         &graphclient.PermanentError{StatusCode: 403, Operation: "patch user", Err: errors.New("insufficient privileges for tenant abc123")},
+			wantLabel:   "permanent_error",
+			wantWorker:  true,
+			leakedToken: "insufficient privileges for tenant abc123",
 		},
 		{
-			name:      "transient",
-			err:       &graphclient.TransientError{StatusCode: 503, Operation: "patch user"},
-			wantLabel: "transient_error",
+			name:        "transient",
+			err:         &graphclient.TransientError{StatusCode: 503, Operation: "patch user", Err: errors.New("upstream timeout id xyz789")},
+			wantLabel:   "transient_error",
+			leakedToken: "upstream timeout id xyz789",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := observability.NewCaptureRecorder()
-			processor, err := NewWithOptions(&captureGraphClient{err: tt.err}, Options{Recorder: recorder})
+			var logs bytes.Buffer
+			processor, err := NewWithOptions(&captureGraphClient{err: tt.err}, Options{
+				Recorder: recorder,
+				Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
 			if err != nil {
 				t.Fatalf("NewWithOptions returned error: %v", err)
 			}
@@ -159,6 +166,13 @@ func TestProcessorRecordsGraphPermanentAndTransientOutcomes(t *testing.T) {
 			samples := recorder.Durations(observability.MetricGraphUpsertDuration)
 			if len(samples) != 1 || samples[0].Labels["outcome"] != tt.wantLabel {
 				t.Fatalf("samples = %#v, want outcome %s", samples, tt.wantLabel)
+			}
+			gotLogs := logs.String()
+			if !strings.Contains(gotLogs, observability.ActionGraphUpsert) || !strings.Contains(gotLogs, tt.wantLabel) {
+				t.Fatalf("logs = %s, want graph upsert outcome %s", gotLogs, tt.wantLabel)
+			}
+			if strings.Contains(gotLogs, tt.leakedToken) {
+				t.Fatalf("logs leaked graph error text: %s", gotLogs)
 			}
 		})
 	}

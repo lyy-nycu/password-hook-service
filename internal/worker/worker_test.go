@@ -154,8 +154,48 @@ func TestWorkerRecordsTerminalFailureOutcome(t *testing.T) {
 	if labels["outcome"] != "sync_failed" || labels["reason"] != DeadLetterReasonPermanentProcessor || labels["attempts"] != "1" || labels["eventType"] != "password_recovery" {
 		t.Fatalf("labels = %#v, want terminal failure labels", labels)
 	}
-	if !strings.Contains(logs.String(), observability.ActionWorkerFailed) || strings.Contains(logs.String(), "secret") {
-		t.Fatalf("logs = %s, want safe failed action", logs.String())
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerFailed) || strings.Contains(gotLogs, "secret") {
+		t.Fatalf("logs = %s, want safe failed action", gotLogs)
+	}
+	if strings.Contains(gotLogs, "graph 403") {
+		t.Fatalf("logs leaked processor error text: %s", gotLogs)
+	}
+}
+
+func TestWorkerRecordsRetryExhaustionOutcome(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, validPasswordSyncMessage())}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{err: errors.New("graph temporarily unavailable")}
+	deadLetters := &fakeDeadLetterSink{onRecord: func() {}}
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker := newObservableTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("secret")}, deadLetters, recorder, &logs)
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if processor.calls != 4 {
+		t.Fatalf("processor calls = %d, want 4", processor.calls)
+	}
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "sync_failed" || labels["reason"] != DeadLetterReasonTransientRetriesExhausted || labels["attempts"] != "4" {
+		t.Fatalf("labels = %#v, want retry-exhaustion failure labels", labels)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerFailed) {
+		t.Fatalf("logs = %s, want failed action", gotLogs)
+	}
+	if strings.Contains(gotLogs, "secret") || strings.Contains(gotLogs, "graph temporarily unavailable") {
+		t.Fatalf("logs leaked processor error text or password: %s", gotLogs)
 	}
 }
 

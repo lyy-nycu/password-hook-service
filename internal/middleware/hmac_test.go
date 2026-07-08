@@ -155,6 +155,150 @@ func TestHMACRecordsUnauthorizedRejection(t *testing.T) {
 	}
 }
 
+func TestHMACRecordsReadBodyFailureRejection(t *testing.T) {
+	t.Parallel()
+
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	requestBody := &readErrorBody{data: []byte(`{"cn":"311551001","password":"cleartext-password"}`)}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.Body = requestBody
+
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 || samples[0].Labels["reason"] != "failed_to_read_request_body" {
+		t.Fatalf("samples = %#v, want failed_to_read_request_body reason", samples)
+	}
+	if !strings.Contains(logs.String(), `"reason":"failed_to_read_request_body"`) {
+		t.Fatalf("logs = %s, want failed_to_read_request_body reason", logs.String())
+	}
+}
+
+func TestHMACRecordsStaleTimestampRejection(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	secret := "shared-secret"
+	timestamp := time.Now().Add(-time.Minute).Unix()
+	nonce := "abcdef0123456789abcdef0123456789"
+	signature := sign(secret, timestamp, nonce, body)
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, signedRequest(body, timestamp, nonce, signature))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 || samples[0].Labels["reason"] != "timestamp_outside_allowed_skew" {
+		t.Fatalf("samples = %#v, want timestamp_outside_allowed_skew reason", samples)
+	}
+	if !strings.Contains(logs.String(), `"reason":"timestamp_outside_allowed_skew"`) {
+		t.Fatalf("logs = %s, want timestamp_outside_allowed_skew reason", logs.String())
+	}
+}
+
+func TestHMACRecordsSignatureMismatchRejection(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	timestamp := time.Now().Unix()
+	nonce := "fedcba9876543210fedcba9876543210"
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, signedRequest(body, timestamp, nonce, sign("wrong-secret", timestamp, nonce, body)))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 || samples[0].Labels["reason"] != "signature_mismatch" {
+		t.Fatalf("samples = %#v, want signature_mismatch reason", samples)
+	}
+	if !strings.Contains(logs.String(), `"reason":"signature_mismatch"`) {
+		t.Fatalf("logs = %s, want signature_mismatch reason", logs.String())
+	}
+}
+
+func TestHMACRecordsNonceReplayRejection(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	secret := "shared-secret"
+	timestamp := time.Now().Unix()
+	nonce := "0123456789abcdef0123456789abcdef"
+	signature := sign(secret, timestamp, nonce, body)
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	firstRec := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(firstRec, signedRequest(body, timestamp, nonce, signature))
+	if firstRec.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want %d", firstRec.Code, http.StatusAccepted)
+	}
+
+	secondRec := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(secondRec, signedRequest(body, timestamp, nonce, signature))
+	if secondRec.Code != http.StatusUnauthorized {
+		t.Fatalf("second status = %d, want %d", secondRec.Code, http.StatusUnauthorized)
+	}
+
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 || samples[0].Labels["reason"] != "nonce_replay" {
+		t.Fatalf("samples = %#v, want nonce_replay reason", samples)
+	}
+	if !strings.Contains(logs.String(), `"reason":"nonce_replay"`) {
+		t.Fatalf("logs = %s, want nonce_replay reason", logs.String())
+	}
+}
+
 func TestHMACRejectsReplayedNonce(t *testing.T) {
 	t.Parallel()
 
