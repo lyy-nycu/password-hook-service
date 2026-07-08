@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 )
 
@@ -100,6 +102,8 @@ type Options struct {
 	DeadLetterSink     DeadLetterSink
 	PasswordDecrypter  PasswordDecrypter
 	SyncStatusRecorder SyncStatusRecorder
+	Logger             *slog.Logger
+	Recorder           observability.Recorder
 	Now                func() time.Time
 	Sleep              func(context.Context, time.Duration) error
 }
@@ -143,6 +147,8 @@ type Worker struct {
 	emptyReceiveDelay  time.Duration
 	retryBackoffs      []time.Duration
 	deadLetterSink     DeadLetterSink
+	logger             *slog.Logger
+	recorder           observability.Recorder
 	now                func() time.Time
 	sleep              func(context.Context, time.Duration) error
 }
@@ -181,6 +187,12 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 	if options.Sleep == nil {
 		options.Sleep = sleep
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
+	if options.Recorder == nil {
+		options.Recorder = observability.NoopRecorder{}
+	}
 	return &Worker{
 		receiver:           receiver,
 		processor:          processor,
@@ -191,6 +203,8 @@ func New(receiver Receiver, processor Processor, options Options) (*Worker, erro
 		emptyReceiveDelay:  options.EmptyReceiveDelay,
 		retryBackoffs:      append([]time.Duration(nil), options.RetryBackoffs...),
 		deadLetterSink:     options.DeadLetterSink,
+		logger:             options.Logger,
+		recorder:           options.Recorder,
 		now:                options.Now,
 		sleep:              options.Sleep,
 	}, nil
@@ -244,6 +258,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete invalid worker message: %w", settleErr)
 		}
+		w.recordOutcome(ctx, observability.ActionWorkerInvalid, invalidMessageForObservability(entry), "invalid_message", DeadLetterReasonInvalidMessageSchema, 0)
 		return nil
 	}
 
@@ -256,6 +271,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete worker message: %w", settleErr)
 		}
+		w.recordOutcome(ctx, observability.ActionWorkerCompleted, passwordSyncMessage, "synced", "", result.attempts)
 		return nil
 	}
 
@@ -266,6 +282,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("abandon worker message: %w", settleErr)
 		}
+		w.recordOutcome(ctx, observability.ActionWorkerAbandoned, passwordSyncMessage, "abandoned", "", result.attempts)
 		return nil
 	}
 
@@ -295,7 +312,43 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}
+	w.recordOutcome(ctx, observability.ActionWorkerFailed, passwordSyncMessage, "sync_failed", reason, result.attempts)
 	return nil
+}
+
+func (w *Worker) recordOutcome(ctx context.Context, action string, msg migration.PasswordSyncMessage, outcome string, reason string, attempts int) {
+	labels := observability.Labels{
+		"outcome":   outcome,
+		"eventType": string(msg.EventType),
+	}
+	if reason != "" {
+		labels["reason"] = reason
+	}
+	if attempts > 0 {
+		labels["attempts"] = fmt.Sprint(attempts)
+	}
+	w.recorder.Inc(ctx, observability.MetricWorkerMessagesTotal, labels)
+	attrs := []slog.Attr{
+		slog.String("action", action),
+		slog.String("outcome", outcome),
+	}
+	attrs = append(attrs, observability.SafeIdentityAttrs(observability.SafeIdentity{
+		TraceID:   msg.TraceID,
+		CN:        msg.CN,
+		UPN:       msg.UPN,
+		EventType: string(msg.EventType),
+	})...)
+	if reason != "" {
+		attrs = append(attrs, slog.String("reason", reason))
+	}
+	if attempts > 0 {
+		attrs = append(attrs, slog.Int("attempts", attempts))
+	}
+	w.logger.LogAttrs(ctx, slog.LevelInfo, action, attrs...)
+}
+
+func invalidMessageForObservability(entry DeadLetterEntry) migration.PasswordSyncMessage {
+	return migration.PasswordSyncMessage{CN: entry.CN, UPN: entry.UPN, EnqueuedAt: entry.EnqueuedAt}
 }
 
 type processorResult struct {

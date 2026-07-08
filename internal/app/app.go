@@ -127,6 +127,8 @@ func newWithWorkerDependencies(
 		DeadLetterSink:     deadLetterSink,
 		PasswordDecrypter:  passwordCodec,
 		SyncStatusRecorder: syncStatusStore,
+		Logger:             slog.Default(),
+		Recorder:           observability.NoopRecorder{},
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
