@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -18,6 +19,14 @@ type DeadLetterQueue struct {
 }
 
 var _ worker.DeadLetterSink = (*DeadLetterQueue)(nil)
+
+func NewSafeDLQDepthProbe(reader QueueDepthReader, queueName string, recorder observability.Recorder) *QueueDepthProbe {
+	return NewQueueDepthProbe(reader, QueueDepthProbeOptions{
+		QueueName: queueName,
+		Kind:      "safe_dlq",
+		Recorder:  recorder,
+	})
+}
 
 func NewDeadLetterQueue(sender sender) (*DeadLetterQueue, error) {
 	return NewDeadLetterQueueWithClient(sender, nil)

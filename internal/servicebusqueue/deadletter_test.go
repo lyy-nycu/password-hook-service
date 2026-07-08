@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -72,6 +73,26 @@ func TestDeadLetterQueueSendsSanitizedPasswordSyncFailure(t *testing.T) {
 		if text, ok := value.(string); ok && strings.Contains(text, "must-not-appear") {
 			t.Fatalf("application property %q leaked password value", key)
 		}
+	}
+}
+
+func TestSafeDLQDepthProbeRecordsDepth(t *testing.T) {
+	t.Parallel()
+
+	reader := &fakeDepthReader{depths: map[string]int64{"password-sync-dlq": 3}}
+	recorder := observability.NewCaptureRecorder()
+	probe := NewSafeDLQDepthProbe(reader, "password-sync-dlq", recorder)
+
+	depth, err := probe.Probe(context.Background())
+	if err != nil {
+		t.Fatalf("Probe returned error: %v", err)
+	}
+	if depth != 3 {
+		t.Fatalf("depth = %d, want 3", depth)
+	}
+	samples := recorder.Gauges(observability.MetricQueueDepth)
+	if len(samples) != 1 || samples[0].Labels["kind"] != "safe_dlq" {
+		t.Fatalf("samples = %#v, want safe_dlq queue depth", samples)
 	}
 }
 
