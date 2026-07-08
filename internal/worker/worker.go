@@ -252,13 +252,14 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		zeroMessageBody(msg)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
+		observedMessage := invalidMessageForObservability(entry)
 		if settleErr := w.recordPasswordSyncFailure(settleCtx, entry); settleErr != nil {
-			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record invalid worker message dead-letter", settleErr)
+			return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record invalid worker message dead-letter", settleErr, observedMessage, 0)
 		}
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete invalid worker message: %w", settleErr)
 		}
-		w.recordOutcome(ctx, observability.ActionWorkerInvalid, invalidMessageForObservability(entry), "invalid_message", DeadLetterReasonInvalidMessageSchema, 0)
+		w.recordOutcome(ctx, observability.ActionWorkerInvalid, observedMessage, "invalid_message", DeadLetterReasonInvalidMessageSchema, 0)
 		return nil
 	}
 
@@ -306,7 +307,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
 		FailedAt:    w.now(),
 	}); settleErr != nil {
-		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr)
+		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr, passwordSyncMessage, result.attempts)
 	}
 	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
@@ -411,11 +412,12 @@ func (w *Worker) recordPasswordSyncFailure(ctx context.Context, entry DeadLetter
 	return w.deadLetterSink.RecordPasswordSyncFailure(ctx, entry)
 }
 
-func (w *Worker) abandonAfterDeadLetterFailure(ctx context.Context, msg *Message, operation string, err error) error {
+func (w *Worker) abandonAfterDeadLetterFailure(ctx context.Context, msg *Message, operation string, err error, observedMessage migration.PasswordSyncMessage, attempts int) error {
 	recordErr := fmt.Errorf("%s: %w", operation, err)
 	if abandonErr := w.receiver.AbandonMessage(ctx, msg); abandonErr != nil {
 		return errors.Join(recordErr, fmt.Errorf("abandon worker message after dead-letter failure: %w", abandonErr))
 	}
+	w.recordOutcome(ctx, observability.ActionWorkerAbandoned, observedMessage, "abandoned", "safe_dlq_write_failed", attempts)
 	return recordErr
 }
 

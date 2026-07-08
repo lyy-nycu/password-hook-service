@@ -31,13 +31,13 @@ func RecoveryWithOptions(options RecoveryOptions) func(http.Handler) http.Handle
 	if options.Recorder == nil {
 		options.Recorder = observability.NoopRecorder{}
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					if options.Logger != nil {
-						options.Logger.Error("panic recovered", slog.Any("panic", recovered))
-					}
 					recordMiddlewareOutcome(r.Context(), options.Logger, options.Recorder, requestid.From(r.Context()), "recovery", http.StatusInternalServerError, "panic_recovered", "panic")
 					problem.Write(w, problem.Internal(options.ProblemBase, r.URL.Path, requestid.From(r.Context()), "unexpected server error"))
 				}

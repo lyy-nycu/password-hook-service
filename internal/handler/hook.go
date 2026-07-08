@@ -52,6 +52,7 @@ func NewHookWithOptions(service *migration.Service, problemBaseURL string, optio
 
 func (h *Hook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		h.recordRejected(r, http.StatusMethodNotAllowed, "method_not_allowed", "")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}

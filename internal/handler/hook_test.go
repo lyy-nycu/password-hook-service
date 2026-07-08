@@ -140,6 +140,35 @@ func TestHookRecordsValidationRejection(t *testing.T) {
 	}
 }
 
+func TestHookRecordsMethodNotAllowedRejection(t *testing.T) {
+	t.Parallel()
+
+	service := migration.NewService("nycu.edu.tw", &captureQueue{}, fakePasswordEncrypter{})
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	hook := newInstrumentedHook(service, &logs, recorder)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hook/password", nil)
+	req = req.WithContext(requestid.With(req.Context(), "trace-123"))
+
+	hook.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+	samples := recorder.Counters(observability.MetricHookRequestsTotal)
+	if len(samples) != 1 {
+		t.Fatalf("hook samples = %d, want 1", len(samples))
+	}
+	if samples[0].Labels["status"] != "405" || samples[0].Labels["outcome"] != "method_not_allowed" {
+		t.Fatalf("labels = %#v, want method_not_allowed rejection", samples[0].Labels)
+	}
+	if !strings.Contains(logs.String(), observability.ActionHookRejected) {
+		t.Fatalf("logs = %s, want hook rejected action", logs.String())
+	}
+}
+
 func TestHookZerosDecodedPasswordAfterSubmit(t *testing.T) {
 	t.Parallel()
 

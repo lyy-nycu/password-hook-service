@@ -587,6 +587,54 @@ func TestWorkerAbandonsOriginalWhenSafeDLQWriteFails(t *testing.T) {
 	}
 }
 
+func TestWorkerRecordsAbandonWhenSafeDLQWriteFails(t *testing.T) {
+	ctx := context.Background()
+	sinkErr := errors.New("safe DLQ unavailable")
+	msg := validPasswordSyncMessage()
+	msg.EventType = migration.EventPasswordRecovery
+	msg.TraceID = "trace-123"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	processor := &fakeProcessor{err: &PermanentError{
+		Reason: PermanentReasonProcessorError,
+		Err:    errors.New("graph 403"),
+	}}
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{err: sinkErr},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		SyncStatusRecorder: &fakeSyncStatusRecorder{},
+		Recorder:           recorder,
+		Logger:             slog.New(slog.NewJSONHandler(&logs, nil)),
+		Sleep:              (&fakeSleeper{}).Sleep,
+		Now:                func() time.Time { return time.Date(2026, 7, 8, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	err = worker.Run(ctx)
+	if err == nil {
+		t.Fatal("Run returned nil error")
+	}
+	if receiver.abandoned != 1 || receiver.completed != 0 {
+		t.Fatalf("unexpected settlements: completed=%d abandoned=%d", receiver.completed, receiver.abandoned)
+	}
+	samples := recorder.Counters(observability.MetricWorkerMessagesTotal)
+	if len(samples) != 1 {
+		t.Fatalf("worker samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["outcome"] != "abandoned" || labels["reason"] != "safe_dlq_write_failed" || labels["eventType"] != "password_recovery" || labels["attempts"] != "1" {
+		t.Fatalf("labels = %#v, want safe DLQ abandon labels", labels)
+	}
+	gotLogs := logs.String()
+	if !strings.Contains(gotLogs, observability.ActionWorkerAbandoned) || strings.Contains(gotLogs, "secret") || strings.Contains(gotLogs, "safe DLQ unavailable") {
+		t.Fatalf("logs = %s, want safe abandoned action without sensitive/error details", gotLogs)
+	}
+}
+
 func TestWorkerDoesNotRetainPlaintextDuringRetryBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
