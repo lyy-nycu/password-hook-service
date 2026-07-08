@@ -200,10 +200,10 @@ Metric names:
 
 | Metric | Type | Labels |
 |--------|------|--------|
-| `hook_requests_total` | counter | `status`, `outcome`, `eventType`, `identityType`, optional `reason` |
+| `hook_requests_total` | counter | `status`, `outcome`, optional `eventType`, optional `identityType`, optional `reason` |
 | `migration_skipped_total` | counter | `status`, `outcome`, `eventType`, `identityType`, `reason` |
 | `middleware_requests_total` | counter | `middleware`, `status`, `outcome`, optional `reason` |
-| `worker_messages_total` | counter | `outcome`, `eventType`, optional `reason`, optional `attempts` |
+| `worker_messages_total` | counter | `outcome`, optional `eventType`, optional `reason`, optional `attempts` |
 | `graph_upsert_duration_seconds` | duration | `outcome` |
 | `queue_depth` | gauge | `queue`, `kind` |
 

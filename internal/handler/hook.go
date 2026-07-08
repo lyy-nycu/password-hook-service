@@ -154,12 +154,16 @@ func (h *Hook) recordRejected(r *http.Request, status int, outcome string, event
 		labels["eventType"] = string(eventType)
 	}
 	h.recorder.Inc(r.Context(), observability.MetricHookRequestsTotal, labels)
-	h.logger.LogAttrs(r.Context(), slog.LevelInfo, observability.ActionHookRejected,
+	attrs := []slog.Attr{
 		slog.String("action", observability.ActionHookRejected),
-		slog.String("traceId", requestid.From(r.Context())),
 		slog.Int("status", status),
 		slog.String("outcome", outcome),
-	)
+	}
+	attrs = append(attrs, observability.SafeIdentityAttrs(observability.SafeIdentity{
+		TraceID:   requestid.From(r.Context()),
+		EventType: string(eventType),
+	})...)
+	h.logger.LogAttrs(r.Context(), slog.LevelInfo, observability.ActionHookRejected, attrs...)
 }
 
 type passwordHookRequest struct {

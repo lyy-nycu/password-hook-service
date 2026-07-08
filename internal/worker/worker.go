@@ -319,8 +319,10 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 
 func (w *Worker) recordOutcome(ctx context.Context, action string, msg migration.PasswordSyncMessage, outcome string, reason string, attempts int) {
 	labels := observability.Labels{
-		"outcome":   outcome,
-		"eventType": string(msg.EventType),
+		"outcome": outcome,
+	}
+	if msg.EventType != "" {
+		labels["eventType"] = string(msg.EventType)
 	}
 	if reason != "" {
 		labels["reason"] = reason

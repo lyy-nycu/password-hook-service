@@ -63,19 +63,31 @@ func (r *CaptureRecorder) SetGauge(_ context.Context, name string, value int64, 
 func (r *CaptureRecorder) Counters(name string) []Sample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]Sample(nil), r.counters[name]...)
+	return copySamples(r.counters[name])
 }
 
 func (r *CaptureRecorder) Durations(name string) []Sample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]Sample(nil), r.durations[name]...)
+	return copySamples(r.durations[name])
 }
 
 func (r *CaptureRecorder) Gauges(name string) []Sample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]Sample(nil), r.gauges[name]...)
+	return copySamples(r.gauges[name])
+}
+
+// copySamples returns a deep copy of samples, including each Sample's Labels
+// map, so callers cannot mutate the recorder's internal state through the
+// returned slice.
+func copySamples(samples []Sample) []Sample {
+	out := make([]Sample, len(samples))
+	for i, s := range samples {
+		s.Labels = copyLabels(s.Labels)
+		out[i] = s
+	}
+	return out
 }
 
 func copyLabels(labels Labels) Labels {
