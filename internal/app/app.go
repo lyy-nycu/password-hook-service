@@ -149,7 +149,11 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		Logger:   slog.Default(),
 		Recorder: observability.NoopRecorder{},
 	})
-	hmacMiddleware, err := middleware.NewHMACWithProblemBase(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, cfg.ProblemBaseURL)
+	hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, middleware.HMACOptions{
+		ProblemBase: cfg.ProblemBaseURL,
+		Logger:      slog.Default(),
+		Recorder:    observability.NoopRecorder{},
+	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
 	}
@@ -158,11 +162,17 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		LimitPerIP:   cfg.RateLimitPerIP,
 		Window:       cfg.RateLimitWindow,
 		ProblemBase:  cfg.ProblemBaseURL,
+		Logger:       slog.Default(),
+		Recorder:     observability.NoopRecorder{},
 	})
 
 	hookHandler := hmacMiddleware.Wrap(hook)
 	hookHandler = rateLimiter.Wrap(hookHandler)
-	hookHandler = middleware.RecoveryWithProblemBase(slog.Default(), cfg.ProblemBaseURL)(hookHandler)
+	hookHandler = middleware.RecoveryWithOptions(middleware.RecoveryOptions{
+		Logger:      slog.Default(),
+		ProblemBase: cfg.ProblemBaseURL,
+		Recorder:    observability.NoopRecorder{},
+	})(hookHandler)
 	hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
 	hookHandler = requestid.Middleware(hookHandler)
 

@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
 	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/sensitiveio"
@@ -30,6 +32,14 @@ type HMAC struct {
 	skew        time.Duration
 	nonceTTL    time.Duration
 	problemBase string
+	logger      *slog.Logger
+	recorder    observability.Recorder
+}
+
+type HMACOptions struct {
+	ProblemBase string
+	Logger      *slog.Logger
+	Recorder    observability.Recorder
 }
 
 func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error) {
@@ -37,18 +47,33 @@ func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error
 }
 
 func NewHMACWithProblemBase(secret string, nonces NonceStore, skew time.Duration, problemBase string) (*HMAC, error) {
+	return NewHMACWithOptions(secret, nonces, skew, HMACOptions{ProblemBase: problemBase})
+}
+
+func NewHMACWithOptions(secret string, nonces NonceStore, skew time.Duration, options HMACOptions) (*HMAC, error) {
 	if strings.TrimSpace(secret) == "" {
 		return nil, errors.New("hmac secret is required")
 	}
 	if skew <= 0 {
 		return nil, errors.New("hmac clock skew must be positive")
 	}
+	if strings.TrimSpace(options.ProblemBase) == "" {
+		options.ProblemBase = problem.DefaultBaseURL
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
+	if options.Recorder == nil {
+		options.Recorder = observability.NoopRecorder{}
+	}
 	return &HMAC{
 		secret:      []byte(secret),
 		nonces:      nonces,
 		skew:        skew,
 		nonceTTL:    nonceTTL(nonces),
-		problemBase: problemBase,
+		problemBase: options.ProblemBase,
+		logger:      options.Logger,
+		recorder:    options.Recorder,
 	}, nil
 }
 
@@ -57,7 +82,7 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 		body, err := sensitiveio.ReadAll(r.Body)
 		defer passwordcrypto.ZeroBytes(body)
 		if err != nil {
-			m.writeUnauthorized(w, r, "failed to read request body")
+			m.writeUnauthorized(w, r, "failed_to_read_request_body", "failed to read request body")
 			return
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
@@ -67,20 +92,20 @@ func (m HMAC) Wrap(next http.Handler) http.Handler {
 		signature := r.Header.Get("X-Hook-Signature")
 		timestamp, err := strconv.ParseInt(timestampHeader, 10, 64)
 		if err != nil || nonce == "" || signature == "" {
-			m.writeUnauthorized(w, r, "missing or invalid signature headers")
+			m.writeUnauthorized(w, r, "missing_or_invalid_signature_headers", "missing or invalid signature headers")
 			return
 		}
 
 		if absDuration(time.Since(time.Unix(timestamp, 0))) > m.skew {
-			m.writeUnauthorized(w, r, "signature timestamp is outside allowed skew")
+			m.writeUnauthorized(w, r, "timestamp_outside_allowed_skew", "signature timestamp is outside allowed skew")
 			return
 		}
 		if !m.validSignature(timestampHeader, nonce, body, signature) {
-			m.writeUnauthorized(w, r, "signature mismatch")
+			m.writeUnauthorized(w, r, "signature_mismatch", "signature mismatch")
 			return
 		}
 		if m.nonces != nil && !m.nonces.Use(nonce, m.nonceTTL) {
-			m.writeUnauthorized(w, r, "nonce has already been used")
+			m.writeUnauthorized(w, r, "nonce_replay", "nonce has already been used")
 			return
 		}
 
@@ -107,8 +132,13 @@ func (m HMAC) validSignature(timestamp string, nonce string, body []byte, header
 	return hmac.Equal(got, want)
 }
 
-func (m HMAC) writeUnauthorized(w http.ResponseWriter, r *http.Request, detail string) {
+func (m HMAC) writeUnauthorized(w http.ResponseWriter, r *http.Request, reason string, detail string) {
+	m.recordMiddlewareRejection(r, "hmac", http.StatusUnauthorized, "unauthorized", reason)
 	problem.Write(w, problem.Unauthorized(m.problemBase, r.URL.Path, requestid.From(r.Context()), detail))
+}
+
+func (m HMAC) recordMiddlewareRejection(r *http.Request, middlewareName string, status int, outcome string, reason string) {
+	recordMiddlewareOutcome(r.Context(), m.logger, m.recorder, requestid.From(r.Context()), middlewareName, status, outcome, reason)
 }
 
 func absDuration(d time.Duration) time.Duration {

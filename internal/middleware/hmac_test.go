@@ -8,10 +8,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/nycu/password-hook-service/internal/observability"
+	"github.com/nycu/password-hook-service/internal/requestid"
 )
 
 func TestHMACAllowsValidSignature(t *testing.T) {
@@ -104,6 +109,50 @@ func TestHMACZerosBodyWhenReadFails(t *testing.T) {
 		t.Fatal("read error body did not expose bytes to middleware")
 	}
 	assertZeroedBytes(t, requestBody.observed, "hmac request body after read error")
+}
+
+func TestHMACRecordsUnauthorizedRejection(t *testing.T) {
+	t.Parallel()
+
+	recorder := observability.NewCaptureRecorder()
+	var logs bytes.Buffer
+	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		ProblemBase: "https://nycu.edu.tw/problems",
+		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:    recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", strings.NewReader(`{"password":"cleartext-password"}`))
+	req = req.WithContext(requestid.With(req.Context(), "trace-123"))
+
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 {
+		t.Fatalf("middleware samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["middleware"] != "hmac" || labels["status"] != "401" || labels["outcome"] != "unauthorized" || labels["reason"] != "missing_or_invalid_signature_headers" {
+		t.Fatalf("labels = %#v, want hmac unauthorized labels", labels)
+	}
+	gotLogs := logs.String()
+	for _, want := range []string{observability.ActionMiddlewareRejected, `"middleware":"hmac"`, `"traceId":"trace-123"`, `"status":401`} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs = %s, want %s", gotLogs, want)
+		}
+	}
+	if strings.Contains(gotLogs, "cleartext-password") || strings.Contains(gotLogs, "shared-secret") || strings.Contains(gotLogs, "sha256=") {
+		t.Fatalf("logs leaked sensitive data: %s", gotLogs)
+	}
 }
 
 func TestHMACRejectsReplayedNonce(t *testing.T) {
