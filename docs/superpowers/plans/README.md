@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-No plan is currently active. Slice 7A review fixes are complete; see `completed/2026-07-07-slice-07a-copilot-review-fixes.md`.
+Slice 8 Observability is active for review and implementation planning; see `active/2026-07-08-slice-08-observability.md`.
 
 ## Status Labels
 
