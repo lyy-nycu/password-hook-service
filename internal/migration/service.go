@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/requestid"
 	"github.com/nycu/password-hook-service/internal/syncstatus"
 )
 
@@ -141,6 +142,7 @@ func (s *Service) Submit(ctx context.Context, req Request) (Decision, error) {
 		CN:          strings.TrimSpace(req.CN),
 		UPN:         upn,
 		EventType:   req.EventType,
+		TraceID:     requestid.From(ctx),
 		DisplayName: strings.TrimSpace(req.DisplayName),
 		Mail:        strings.TrimSpace(req.Mail),
 		EnqueuedAt:  s.now().UTC(),

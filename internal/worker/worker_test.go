@@ -48,6 +48,25 @@ func TestWorkerSuccessCompletesAndProcessesDecryptedMessage(t *testing.T) {
 	}
 }
 
+func TestWorkerPassesTraceIDToProcessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	msg := validPasswordSyncMessage()
+	msg.TraceID = "trace-123"
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, msg)}}
+	receiver.onComplete = cancel
+	processor := &fakeProcessor{}
+	worker := newTestWorker(t, receiver, processor, &fakePasswordDecrypter{plaintext: []byte("cleartext-password")}, &fakeDeadLetterSink{})
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if processor.messages[0].TraceID != "trace-123" {
+		t.Fatalf("processor TraceID = %q, want trace-123", processor.messages[0].TraceID)
+	}
+}
+
 func TestWorkerInvalidMessageRecordsSafeDLQAndCompletesOriginal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

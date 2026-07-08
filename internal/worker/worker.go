@@ -49,6 +49,7 @@ type Receiver interface {
 type PasswordSyncCommand struct {
 	CN          string
 	UPN         string
+	TraceID     string
 	Password    []byte
 	DisplayName string
 	Mail        string
@@ -340,6 +341,7 @@ func (w *Worker) processPasswordSyncAttempt(ctx context.Context, msg migration.P
 	return w.processor.ProcessPasswordSync(ctx, PasswordSyncCommand{
 		CN:          msg.CN,
 		UPN:         msg.UPN,
+		TraceID:     msg.TraceID,
 		Password:    plaintext,
 		DisplayName: msg.DisplayName,
 		Mail:        msg.Mail,
