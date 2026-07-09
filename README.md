@@ -72,18 +72,15 @@ export PASSWORD_ENCRYPTION_KEY_ID="password-payload-key-v1"
 export GRAPH_TENANT_ID="<tenant-id>"
 export GRAPH_CLIENT_ID="<app-client-id>"
 export GRAPH_CLIENT_SECRET="<app-client-secret>"
+export PORTAL_ALLOWED_CIDRS="127.0.0.1/32,::1/128"
+export RATE_LIMIT_PER_IP="500"
+export RATE_LIMIT_WINDOW="1s"
+export HOOK_MAX_BODY_BYTES="65536"
 ```
 
 Production `app.New` requires `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, and `GRAPH_CLIENT_SECRET`. The Graph app registration needs the approved application permission `User.ReadWrite.All`.
 
 Use a queue- or topic-level Shared Access Policy with the permissions needed by this runtime to send hook messages, receive worker messages, and send safe DLQ messages. Do not use namespace-level manage policies for application runtime credentials.
-
-Optional local API protection settings:
-
-```bash
-export PORTAL_ALLOWED_CIDRS="127.0.0.1/32,::1/128"
-export RATE_LIMIT_PER_IP="500"
-```
 
 Run the service:
 
@@ -105,6 +102,8 @@ docker run --rm -p 8080:8080 \
   -e GRAPH_CLIENT_SECRET \
   -e PORTAL_ALLOWED_CIDRS \
   -e RATE_LIMIT_PER_IP \
+  -e RATE_LIMIT_WINDOW \
+  -e HOOK_MAX_BODY_BYTES \
   password-hook-service
 ```
 
@@ -159,6 +158,27 @@ curl -i http://localhost:8080/api/v1/hook/password \
 ```
 
 The hook endpoint returns `202 Accepted` when the request is accepted by the service. It does not mean the password has already been migrated to Entra ID.
+
+## API Protection
+
+`POST /api/v1/hook/password` is protected in application middleware before the hook handler runs:
+
+- Requests from sources outside `PORTAL_ALLOWED_CIDRS` return `401 Unauthorized`.
+- Requests above `RATE_LIMIT_PER_IP` during `RATE_LIMIT_WINDOW` return `429 Too Many Requests`.
+- HMAC authentication failures return `401 Unauthorized` with a generic problem detail.
+- Request bodies larger than `HOOK_MAX_BODY_BYTES` return `413 Payload Too Large`.
+
+The portal and password hook service share the HMAC secret for this API. The portal signs each hook request with `X-Hook-Timestamp`, `X-Hook-Nonce`, and `X-Hook-Signature`; the hook service verifies the same secret before accepting the body as authentic. Keep this secret in the approved secret store for production and out of source code.
+
+Each hook request represents one successful-login password event for one LDAP identity. The service can process a single end-user event, but Slice 9 does not add per-user rate limiting. Any future per-user limiter must run after HMAC succeeds because only then can the service trust signed body fields such as `cn`.
+
+For the current portal topology, configure `PORTAL_ALLOWED_CIDRS` to the full `/32` CIDRs for the two portal web-server egress addresses (`<portal-egress-ip-1>` and `<portal-egress-ip-2>` as currently described). `RATE_LIMIT_PER_IP` is enforced per immediate portal web-server source IP. With two portal web servers, the expected aggregate cap is approximately `2 * RATE_LIMIT_PER_IP` when traffic is evenly balanced.
+
+The application intentionally does not use `X-Forwarded-For` as the anomaly rate-limit key in this slice. The goal is to catch abnormal hook output from either portal web server, including retry loops, bugs, or uneven load balancer distribution.
+
+Size `RATE_LIMIT_PER_IP` from observed peak successful-login hook rate per portal web server, with enough headroom that normal login bursts do not receive `429`. The default `500` is a guardrail, not a fixed production capacity decision. The portal must not fail user login on `429`, and it must not immediately retry in a tight loop.
+
+Infrastructure protections such as Azure Front Door, WAF rules, Azure DDoS Protection, private endpoints, VPN routing, and Terraform ingress policy are outside this application slice and are handled by later infrastructure slices.
 
 ## Worker Behavior
 
@@ -252,8 +272,10 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
-| `PORTAL_ALLOWED_CIDRS` | empty | Optional comma-separated source CIDR allowlist |
-| `RATE_LIMIT_PER_IP` | `500` | Per-IP request threshold per one-second window |
+| `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated source CIDR allowlist for portal web-server egress IPs |
+| `RATE_LIMIT_PER_IP` | `500` | Required positive value; per-source-IP request threshold during `RATE_LIMIT_WINDOW`; with two portal web servers, aggregate capacity is approximately `2 * RATE_LIMIT_PER_IP` |
+| `RATE_LIMIT_WINDOW` | `1s` | Required positive Go duration for the anomaly rate-limit window |
+| `HOOK_MAX_BODY_BYTES` | `65536` | Required positive byte limit for signed hook request bodies |
 | `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure Container Apps managed OpenTelemetry agent endpoint for traces |
 | `AZURE_MONITOR_METRIC_RESOURCE_ID` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure resource ID that owns custom metrics |
