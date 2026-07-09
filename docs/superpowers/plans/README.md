@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-Slice 8A Azure Monitor Exporter is active for implementation planning; see `active/2026-07-09-slice-08a-azure-monitor-exporter.md`.
+Slice 9 API Protection is active for implementation planning; see `active/2026-07-09-slice-09-api-protection.md`.
 
 ## Status Labels
 

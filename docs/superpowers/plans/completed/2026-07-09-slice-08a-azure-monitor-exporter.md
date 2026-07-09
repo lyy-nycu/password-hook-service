@@ -1,8 +1,10 @@
 # Slice 8A Azure Monitor Exporter Implementation Plan
 
-> **Plan Status:** Active
+> **Plan Status:** Completed
 >
 > **Source Refresh:** Refreshed on 2026-07-09 against current Microsoft Learn pages for Azure Container Apps managed OpenTelemetry agents, Azure Monitor OpenTelemetry distro support, and Azure Monitor custom metrics REST API.
+>
+> **Completion Note:** Implemented in PR #11 through Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, documentation, and review feedback fixes.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

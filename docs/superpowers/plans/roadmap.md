@@ -32,7 +32,7 @@
 
 ## Active Detailed Plan
 
-Slice 8A Azure Monitor Exporter is active for implementation planning: `active/2026-07-09-slice-08a-azure-monitor-exporter.md`.
+Slice 9 API Protection is active for implementation planning: `active/2026-07-09-slice-09-api-protection.md`.
 
 ---
 
@@ -48,7 +48,7 @@ Slice 6 should isolate Microsoft Graph API behavior behind a client package and 
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
 
-Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8 has already been refreshed and completed; Slice 8A has been refreshed against current Azure Monitor/OpenTelemetry docs and promoted to active.
+Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8 and Slice 8A have already been refreshed and completed. Slice 9 has been refreshed against current source after Slice 8A and promoted to active.
 
 ---
 
@@ -69,8 +69,8 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 7A. Portal Password Event Semantics and Sync Status | Done | `completed/2026-07-04-slice-07a-portal-password-event-sync-status.md` | `eventType` added to hook request and wire message; `login_bootstrap` skipped once synced or pending within TTL; `password_change`/`password_recovery` always enqueue; worker records `synced`/`sync_failed` after Graph outcome using an ordering guard against out-of-order completions; verified with focused package tests, full `go test ./... -race`, `go vet ./...`, and leak-focused `rg` scans |
 | 7A Review Fixes | Done | `completed/2026-07-07-slice-07a-copilot-review-fixes.md` | Copilot PR #9 threads resolved; `609482a` rejects multiple `ServiceOptions`; `ecab7bb` fails open on future pending timestamps; verified with focused tests, full `go test ./...`, `go vet ./...`, and final code review. |
 | 8. Observability | Done | `completed/2026-07-08-slice-08-observability.md` | Backend-neutral recorder boundary, trace propagation, structured outcome logs, counters/durations, queue-depth probes, middleware/worker/Graph instrumentation, and README observability docs landed in PR #10. |
-| 8A. Azure Monitor Exporter | Active | `active/2026-07-09-slice-08a-azure-monitor-exporter.md` | Promoted from draft after Slice 8 instrumentation landed; source refreshed on 2026-07-09 against Microsoft Learn Azure Monitor/OpenTelemetry docs. |
-| 9. API Protection | Not planned | Not created |  |
+| 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
+| 9. API Protection | Active | `active/2026-07-09-slice-09-api-protection.md` | Promoted from draft after refreshing against current middleware observability hooks, config fields, and README structure. |
 | 10. Infrastructure | Not planned | Not created |  |
 | 11. CI/CD and Security Gates | Not planned | Not created |  |
 | 12. Integration and Production Readiness | Not planned | Not created |  |

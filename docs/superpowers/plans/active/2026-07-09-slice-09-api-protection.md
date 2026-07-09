@@ -1,8 +1,10 @@
-# Slice 9 API Protection Draft Implementation Plan
+# Slice 9 API Protection Implementation Plan
 
-> **Status:** Draft. This plan is a future-slice planning artifact only. Do not execute it until Slice 7 is merged, Slice 8 decisions are refreshed, this draft is refreshed against `main`, and the plan is promoted to `docs/superpowers/plans/active/`.
+> **Plan Status:** Active
 >
-> **For agentic workers:** REQUIRED SUB-SKILL WHEN PROMOTED: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Source Refresh:** Refreshed on 2026-07-09 after Slice 8 and Slice 8A landed. The plan reflects current observability logger/recorder middleware options, Azure Monitor config fields, and README structure.
+>
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Harden the hook API ingress behavior so production traffic must come from configured portal source ranges, anomalous request rates return `429`, non-allowed sources return `401`, and HMAC validation remains bounded, replay-safe, and documented.
 
@@ -12,11 +14,8 @@
 
 ---
 
-## Draft Constraints
+## Active Constraints
 
-- Draft only. Do not implement this plan until it is refreshed and promoted to `active/`.
-- Do not update `docs/superpowers/plans/README.md`, `docs/superpowers/plans/roadmap.md`, or any active plan pointer while this remains a draft.
-- Refresh this plan after Slice 8 if Slice 8 changes middleware constructors, observability hooks, logger wiring, request IDs, or README structure.
 - Keep Slice 9 focused on application-level API protection: source allowlist, anomalous traffic/rate protection, HMAC/middleware behavior, tests, and docs.
 - Do not add Terraform, Azure Front Door, WAF, managed DDoS, Container Apps ingress policy, private endpoint, VPN, or DNS changes in this slice.
 - Do not add Redis or distributed rate-limit infrastructure in this slice. The in-process limiter remains the application fallback; infrastructure-wide throttling belongs to later infrastructure slices.
@@ -25,11 +24,11 @@
 ## Current Context
 
 - Current portal topology is `nginx simple load balancer -> two portal web servers -> password hook service`. The login API runs on the two portal web servers, so hook API calls are expected to originate from the two portal web-server egress IPs, currently described as `<portal-egress-ip-1>` and `<portal-egress-ip-2>`.
-- `internal/middleware/ratelimit.go` already combines source allowlist and fixed-window per-IP rate limiting.
-- `internal/config/config.go` currently loads `PORTAL_ALLOWED_CIDRS` and `RATE_LIMIT_PER_IP`, but the allowlist is optional and `RateLimitWindow` is fixed at one second.
-- `internal/app/app.go` already wires middleware in the useful runtime order: request ID, access log, recovery, source/rate limiter, HMAC, hook.
+- `internal/middleware/ratelimit.go` already combines source allowlist and fixed-window per-IP rate limiting, with Slice 8 middleware logger/recorder hooks.
+- `internal/config/config.go` currently loads `PORTAL_ALLOWED_CIDRS`, `RATE_LIMIT_PER_IP`, `RateLimitWindow`, and Azure Monitor exporter settings; the allowlist is optional, `RATE_LIMIT_WINDOW` is not env-loaded, and `HOOK_MAX_BODY_BYTES` does not exist yet.
+- `internal/app/app.go` already wires middleware in the useful runtime order: request ID, access log, recovery, source/rate limiter, HMAC, hook, and passes Slice 8 recorder/logger options through the stack.
 - `internal/middleware/hmac.go` validates timestamp freshness, signature, and nonce uniqueness, and it only consumes a nonce after the signature is valid.
-- `internal/middleware/hmac.go` currently reads the whole request body before verifying the signature. Slice 9 should bound this read because the portal payload is small.
+- `internal/middleware/hmac.go` currently reads the whole request body before verifying the signature. Slice 9 should bound this read because the portal payload is small, while preserving the existing `Logger` and `Recorder` options.
 - `README.md` currently describes API protection settings as optional local settings. Slice 9 should document them as required production settings and local development requirements.
 
 ## Rate-Limit Story
@@ -151,7 +150,7 @@ func TestValidateHTTPRejectsInvalidAPIProtectionSettings(t *testing.T) {
 
 Run: `/usr/local/go/bin/go test ./internal/config`
 
-Expected: FAIL because `Config.HookMaxBodyBytes`, `RATE_LIMIT_WINDOW` loading, and required `PORTAL_ALLOWED_CIDRS` behavior do not exist yet.
+Expected: FAIL because `Config.HookMaxBodyBytes`, `RATE_LIMIT_WINDOW` env loading, and required `PORTAL_ALLOWED_CIDRS` behavior do not exist yet.
 
 - [ ] **Step 3: Add config fields and env loading**
 
@@ -512,8 +511,7 @@ Add these tests to `internal/middleware/hmac_test.go`:
 func TestHMACRejectsBodyAboveConfiguredLimit(t *testing.T) {
 	t.Parallel()
 
-	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), HMACOptions{
-		Skew:         30 * time.Second,
+	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
 		ProblemBase:  "https://nycu.edu.tw/problems",
 		MaxBodyBytes: 8,
 	})
@@ -542,8 +540,7 @@ func TestHMACRejectsBodyAboveConfiguredLimit(t *testing.T) {
 func TestHMACUsesGenericClientDetailForAuthFailures(t *testing.T) {
 	t.Parallel()
 
-	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), HMACOptions{
-		Skew:         30 * time.Second,
+	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
 		ProblemBase:  "https://nycu.edu.tw/problems",
 		MaxBodyBytes: 64 * 1024,
 	})
@@ -575,8 +572,7 @@ func TestHMACUsesGenericClientDetailForAuthFailures(t *testing.T) {
 func TestNewHMACWithOptionsRejectsInvalidBodyLimit(t *testing.T) {
 	t.Parallel()
 
-	_, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), HMACOptions{
-		Skew:         30 * time.Second,
+	_, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
 		MaxBodyBytes: 0,
 	})
 
@@ -590,7 +586,7 @@ func TestNewHMACWithOptionsRejectsInvalidBodyLimit(t *testing.T) {
 
 Run: `/usr/local/go/bin/go test ./pkg/problem ./internal/middleware`
 
-Expected: FAIL because `PayloadTooLarge`, `HMACOptions`, and max body enforcement do not exist.
+Expected: FAIL because `PayloadTooLarge`, `HMACOptions.MaxBodyBytes`, and max body enforcement do not exist.
 
 - [ ] **Step 4: Add payload-too-large problem helper**
 
@@ -608,8 +604,9 @@ Update `internal/middleware/hmac.go`:
 
 ```go
 type HMACOptions struct {
-	Skew         time.Duration
 	ProblemBase  string
+	Logger       *slog.Logger
+	Recorder     observability.Recorder
 	MaxBodyBytes int64
 }
 
@@ -619,41 +616,52 @@ type HMAC struct {
 	skew         time.Duration
 	nonceTTL     time.Duration
 	problemBase  string
+	logger       *slog.Logger
+	recorder     observability.Recorder
 	maxBodyBytes int64
 }
 
 func NewHMAC(secret string, nonces NonceStore, skew time.Duration) (*HMAC, error) {
-	return NewHMACWithOptions(secret, nonces, HMACOptions{
-		Skew:         skew,
+	return NewHMACWithOptions(secret, nonces, skew, HMACOptions{
 		ProblemBase:  problem.DefaultBaseURL,
 		MaxBodyBytes: 64 * 1024,
 	})
 }
 
 func NewHMACWithProblemBase(secret string, nonces NonceStore, skew time.Duration, problemBase string) (*HMAC, error) {
-	return NewHMACWithOptions(secret, nonces, HMACOptions{
-		Skew:         skew,
+	return NewHMACWithOptions(secret, nonces, skew, HMACOptions{
 		ProblemBase:  problemBase,
 		MaxBodyBytes: 64 * 1024,
 	})
 }
 
-func NewHMACWithOptions(secret string, nonces NonceStore, opts HMACOptions) (*HMAC, error) {
+func NewHMACWithOptions(secret string, nonces NonceStore, skew time.Duration, opts HMACOptions) (*HMAC, error) {
 	if strings.TrimSpace(secret) == "" {
 		return nil, errors.New("hmac secret is required")
 	}
-	if opts.Skew <= 0 {
+	if skew <= 0 {
 		return nil, errors.New("hmac clock skew must be positive")
 	}
 	if opts.MaxBodyBytes <= 0 {
 		return nil, errors.New("hmac max body bytes must be positive")
 	}
+	if strings.TrimSpace(opts.ProblemBase) == "" {
+		opts.ProblemBase = problem.DefaultBaseURL
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	if opts.Recorder == nil {
+		opts.Recorder = observability.NoopRecorder{}
+	}
 	return &HMAC{
 		secret:       []byte(secret),
 		nonces:       nonces,
-		skew:         opts.Skew,
+		skew:         skew,
 		nonceTTL:     nonceTTL(nonces),
 		problemBase:  opts.ProblemBase,
+		logger:       opts.Logger,
+		recorder:     opts.Recorder,
 		maxBodyBytes: opts.MaxBodyBytes,
 	}, nil
 }
@@ -664,10 +672,11 @@ Change the first body read in `Wrap`:
 ```go
 body, err := io.ReadAll(io.LimitReader(r.Body, m.maxBodyBytes+1))
 if err != nil {
-	m.writeUnauthorized(w, r)
+	m.writeUnauthorized(w, r, "failed_to_read_request_body")
 	return
 }
 if int64(len(body)) > m.maxBodyBytes {
+	m.recordMiddlewareRejection(r, "hmac", http.StatusRequestEntityTooLarge, "payload_too_large", "request_body_too_large")
 	problem.Write(w, problem.PayloadTooLarge(m.problemBase, r.URL.Path, requestid.From(r.Context()), "request body is too large"))
 	return
 }
@@ -677,12 +686,13 @@ r.Body = io.NopCloser(bytes.NewReader(body))
 Change all auth failure calls to use a generic client-facing detail:
 
 ```go
-func (m HMAC) writeUnauthorized(w http.ResponseWriter, r *http.Request) {
+func (m HMAC) writeUnauthorized(w http.ResponseWriter, r *http.Request, reason string) {
+	m.recordMiddlewareRejection(r, "hmac", http.StatusUnauthorized, "unauthorized", reason)
 	problem.Write(w, problem.Unauthorized(m.problemBase, r.URL.Path, requestid.From(r.Context()), "request authentication failed"))
 }
 ```
 
-Replace calls such as:
+Keep the internal rejection reason in logs and metrics while returning the generic client detail. Replace calls such as:
 
 ```go
 m.writeUnauthorized(w, r, "signature mismatch")
@@ -691,7 +701,7 @@ m.writeUnauthorized(w, r, "signature mismatch")
 with:
 
 ```go
-m.writeUnauthorized(w, r)
+m.writeUnauthorized(w, r, "signature_mismatch")
 ```
 
 - [ ] **Step 6: Run focused tests and verify they pass**
@@ -819,9 +829,10 @@ Expected: FAIL until `app.go` passes `HookMaxBodyBytes` into HMAC construction a
 Change the HMAC constructor call in `internal/app/app.go`:
 
 ```go
-hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), middleware.HMACOptions{
-	Skew:         cfg.HMACClockSkew,
+hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, middleware.HMACOptions{
 	ProblemBase:  cfg.ProblemBaseURL,
+	Logger:       slog.Default(),
+	Recorder:     recorder,
 	MaxBodyBytes: cfg.HookMaxBodyBytes,
 })
 ```
@@ -831,7 +842,11 @@ Keep the existing middleware wrapping order:
 ```go
 hookHandler := hmacMiddleware.Wrap(hook)
 hookHandler = rateLimiter.Wrap(hookHandler)
-hookHandler = middleware.RecoveryWithProblemBase(slog.Default(), cfg.ProblemBaseURL)(hookHandler)
+hookHandler = middleware.RecoveryWithOptions(middleware.RecoveryOptions{
+	Logger:      slog.Default(),
+	ProblemBase: cfg.ProblemBaseURL,
+	Recorder:    recorder,
+})(hookHandler)
 hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
 hookHandler = requestid.Middleware(hookHandler)
 ```
@@ -1001,13 +1016,13 @@ If the promoted active plan tracks verification notes in the plan file, mark com
 Verification completed with `/usr/local/go/bin/go test ./...`, `/usr/local/go/bin/go vet ./...`, and leak-focused `rg` scans.
 ```
 
-Do not edit this draft file during implementation unless the owner explicitly asks to refresh the draft.
+Do not edit the historical draft during implementation. Track execution in this active plan only if the active-plan convention requires verification notes or checkbox updates.
 
 ---
 
 ## Self-Review
 
-- Spec coverage: This draft covers the Slice 9 roadmap goal: source allowlist enforcement, anomalous traffic `429`, non-allowed source `401`, HMAC middleware hardening, tests, and documentation.
-- Boundary check: This draft intentionally excludes WAF, Azure Front Door, Terraform, DDoS, private networking, Redis, and distributed rate limiting.
+- Spec coverage: This active plan covers the Slice 9 roadmap goal: source allowlist enforcement, anomalous traffic `429`, non-allowed source `401`, HMAC middleware hardening, tests, and documentation.
+- Boundary check: This active plan intentionally excludes WAF, Azure Front Door, Terraform, DDoS, private networking, Redis, and distributed rate limiting.
 - Placeholder scan: No `TBD`, unresolved placeholders, or unspecified test areas remain.
 - Type consistency: New names are consistent across tasks: `HookMaxBodyBytes`, `HOOK_MAX_BODY_BYTES`, `RATE_LIMIT_WINDOW`, `HMACOptions`, `NewHMACWithOptions`, and `problem.PayloadTooLarge`.
