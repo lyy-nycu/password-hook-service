@@ -66,17 +66,14 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sourceIP := remoteIP(r)
-		if len(l.allowedCIDRs) > 0 && !containsIP(l.allowedCIDRs, sourceIP) {
+		if !l.sourceAllowed(sourceIP) {
 			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusUnauthorized, "unauthorized", "source_ip_not_allowed")
 			problem.Write(w, problem.Unauthorized(l.problemBase, r.URL.Path, requestid.From(r.Context()), "source ip is not allowed"))
 			return
 		}
 
-		clientIP := sourceIP
-		if len(l.allowedCIDRs) > 0 && containsIP(l.allowedCIDRs, sourceIP) {
-			clientIP = forwardedClientIP(r, sourceIP)
-		}
-		if !l.allow(clientIP.String(), time.Now()) {
+		key := l.rateKey(sourceIP)
+		if !l.allow(key, time.Now()) {
 			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusTooManyRequests, "rate_limited", "request_rate_exceeded")
 			problem.Write(w, problem.TooManyRequests(l.problemBase, r.URL.Path, requestid.From(r.Context()), "request rate exceeded"))
 			return
@@ -84,6 +81,14 @@ func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (l *RateLimiter) sourceAllowed(sourceIP net.IP) bool {
+	return len(l.allowedCIDRs) > 0 && containsIP(l.allowedCIDRs, sourceIP)
+}
+
+func (l *RateLimiter) rateKey(sourceIP net.IP) string {
+	return sourceIP.String()
 }
 
 func (l *RateLimiter) allow(key string, now time.Time) bool {
@@ -131,19 +136,6 @@ func remoteIP(r *http.Request) net.IP {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return net.IPv4zero
-	}
-	return ip
-}
-
-func forwardedClientIP(r *http.Request, fallback net.IP) net.IP {
-	raw := strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
-	if raw == "" {
-		return fallback
-	}
-	first, _, _ := strings.Cut(raw, ",")
-	ip := net.ParseIP(strings.TrimSpace(first))
-	if ip == nil {
-		return fallback
 	}
 	return ip
 }
