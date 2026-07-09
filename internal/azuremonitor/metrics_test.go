@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,9 @@ import (
 func TestMetricRecorderPublishesCustomMetricWithoutSecrets(t *testing.T) {
 	var gotAuth string
 	var gotBody map[string]any
+	resourceID := "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAzureMonitorMetricsRequest(t, r, resourceID)
 		gotAuth = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request body: %v", err)
@@ -26,7 +29,7 @@ func TestMetricRecorderPublishesCustomMetricWithoutSecrets(t *testing.T) {
 
 	recorder := NewMetricRecorder(MetricRecorderOptions{
 		EndpointBaseURL: server.URL,
-		ResourceID:      "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook",
+		ResourceID:      resourceID,
 		Region:          "eastasia",
 		Namespace:       "password-hook-service",
 		TokenSource:     staticTokenSource("token"),
@@ -60,7 +63,9 @@ func TestMetricRecorderPublishesCustomMetricWithoutSecrets(t *testing.T) {
 
 func TestMetricRecorderAggregatesMatchingMetricAndLabels(t *testing.T) {
 	var gotBody map[string]any
+	resourceID := "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertAzureMonitorMetricsRequest(t, r, resourceID)
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request body: %v", err)
 		}
@@ -70,7 +75,7 @@ func TestMetricRecorderAggregatesMatchingMetricAndLabels(t *testing.T) {
 
 	recorder := NewMetricRecorder(MetricRecorderOptions{
 		EndpointBaseURL: server.URL,
-		ResourceID:      "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook",
+		ResourceID:      resourceID,
 		Region:          "eastasia",
 		Namespace:       "password-hook-service",
 		TokenSource:     staticTokenSource("token"),
@@ -136,4 +141,15 @@ func firstSeries(t *testing.T, body map[string]any) map[string]any {
 		t.Fatalf("series[0] = %#v", series[0])
 	}
 	return got
+}
+
+func assertAzureMonitorMetricsRequest(t *testing.T, r *http.Request, resourceID string) {
+	t.Helper()
+	if r.Method != http.MethodPost {
+		t.Fatalf("method = %s, want %s", r.Method, http.MethodPost)
+	}
+	wantPath := "/" + url.PathEscape(resourceID) + "/metrics"
+	if r.URL.EscapedPath() != wantPath {
+		t.Fatalf("path = %q, want %q", r.URL.EscapedPath(), wantPath)
+	}
 }

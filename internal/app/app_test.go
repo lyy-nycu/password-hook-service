@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -409,6 +410,26 @@ func TestRunClosesAllOwnedResources(t *testing.T) {
 	}
 }
 
+func TestPeriodicMetricFlusherFlushesWhileAppRuns(t *testing.T) {
+	flusher := newCaptureMetricFlusher()
+	closer := newPeriodicMetricFlusher(flusher, 5*time.Millisecond)
+
+	select {
+	case <-flusher.calls:
+	case <-time.After(time.Second):
+		t.Fatal("metric flusher was not called before shutdown")
+	}
+
+	if err := closer.Close(context.Background()); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	callsAfterClose := flusher.count.Load()
+	time.Sleep(20 * time.Millisecond)
+	if got := flusher.count.Load(); got != callsAfterClose {
+		t.Fatalf("flush calls after close = %d, want %d", got, callsAfterClose)
+	}
+}
+
 type captureQueue struct {
 	messages []migration.PasswordSyncMessage
 }
@@ -431,6 +452,24 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	c.closeErrs = append(c.closeErrs, ctx.Err())
 	_, hasDeadline := ctx.Deadline()
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
+	return nil
+}
+
+type captureMetricFlusher struct {
+	count atomic.Int64
+	calls chan struct{}
+}
+
+func newCaptureMetricFlusher() *captureMetricFlusher {
+	return &captureMetricFlusher{calls: make(chan struct{}, 10)}
+}
+
+func (f *captureMetricFlusher) Flush(context.Context) error {
+	f.count.Add(1)
+	select {
+	case f.calls <- struct{}{}:
+	default:
+	}
 	return nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -25,7 +26,11 @@ import (
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
-const queueCloseTimeout = 5 * time.Second
+const (
+	queueCloseTimeout               = 5 * time.Second
+	azureMonitorMetricFlushInterval = time.Minute
+	azureMonitorMetricFlushTimeout  = 5 * time.Second
+)
 
 type appWorker interface {
 	Run(context.Context) error
@@ -39,6 +44,62 @@ type appCloserFunc func(context.Context) error
 
 func (f appCloserFunc) Close(ctx context.Context) error {
 	return f(ctx)
+}
+
+type metricFlusher interface {
+	Flush(context.Context) error
+}
+
+type periodicMetricFlusher struct {
+	flusher metricFlusher
+	period  time.Duration
+	stop    chan struct{}
+	done    chan struct{}
+	once    sync.Once
+}
+
+func newPeriodicMetricFlusher(flusher metricFlusher, period time.Duration) *periodicMetricFlusher {
+	if period <= 0 {
+		period = azureMonitorMetricFlushInterval
+	}
+	p := &periodicMetricFlusher{
+		flusher: flusher,
+		period:  period,
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	go p.run()
+	return p
+}
+
+func (p *periodicMetricFlusher) run() {
+	ticker := time.NewTicker(p.period)
+	defer ticker.Stop()
+	defer close(p.done)
+	for {
+		select {
+		case <-ticker.C:
+			p.flushWithTimeout()
+		case <-p.stop:
+			return
+		}
+	}
+}
+
+func (p *periodicMetricFlusher) flushWithTimeout() {
+	ctx, cancel := context.WithTimeout(context.Background(), azureMonitorMetricFlushTimeout)
+	defer cancel()
+	if err := p.flusher.Flush(ctx); err != nil {
+		slog.Warn("flush azure monitor metrics", slog.Any("error", err))
+	}
+}
+
+func (p *periodicMetricFlusher) Close(ctx context.Context) error {
+	p.once.Do(func() {
+		close(p.stop)
+	})
+	<-p.done
+	return p.flusher.Flush(ctx)
 }
 
 type passwordCodec interface {
@@ -134,7 +195,7 @@ func newObservabilityRuntime(ctx context.Context, cfg config.Config) (observabil
 	})
 	return observabilityRuntime{
 		recorder: recorder,
-		closers:  []appCloser{appCloserFunc(shutdown), recorder},
+		closers:  []appCloser{appCloserFunc(shutdown), newPeriodicMetricFlusher(recorder, azureMonitorMetricFlushInterval)},
 	}, nil
 }
 
