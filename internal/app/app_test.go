@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,7 +26,10 @@ import (
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
-const testServiceBusConnectionString = "servicebus-connection-string-for-tests"
+const (
+	testServiceBusConnectionString = "servicebus-connection-string-for-tests"
+	allowedPortalRemoteAddr        = "192.0.2.10:12345"
+)
 
 func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 	logs, restore := captureDefaultLogger()
@@ -42,6 +46,7 @@ func TestAppHookRouteEnqueuesInternalIdentity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	req.Header.Set("X-Request-ID", "trace-123")
 	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
 	rec := httptest.NewRecorder()
 
 	application.ServeHTTP(rec, req)
@@ -79,6 +84,103 @@ func TestNewRequiresPasswordEncryptionConfig(t *testing.T) {
 	}
 }
 
+func TestNewWithQueueRequiresPortalAllowedCIDRs(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.PortalAllowedCIDRs = nil
+
+	application, err := NewWithQueue(cfg, &captureQueue{})
+
+	if err == nil {
+		t.Fatal("NewWithQueue returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("NewWithQueue application = %#v, want nil", application)
+	}
+	if err.Error() != "PORTAL_ALLOWED_CIDRS is required" {
+		t.Fatalf("NewWithQueue error = %q, want PORTAL_ALLOWED_CIDRS is required", err.Error())
+	}
+}
+
+func TestAppRejectsNonAllowlistedSourceBeforeHMAC(t *testing.T) {
+	logs, restore := captureDefaultLogger()
+	defer restore()
+
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	application, err := NewWithQueue(cfg, queue)
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	req.RemoteAddr = "198.51.100.10:12345"
+	rec := httptest.NewRecorder()
+
+	application.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusUnauthorized, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "source ip is not allowed") {
+		t.Fatalf("body = %q, want source ip is not allowed", rec.Body.String())
+	}
+	if bytes.Contains(logs.Bytes(), []byte("secret")) {
+		t.Fatalf("logs leaked password: %s", logs.String())
+	}
+}
+
+func TestAppRateLimitsBeforeHMAC(t *testing.T) {
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	cfg.RateLimitPerIP = 1
+	application, err := NewWithQueue(cfg, queue)
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	firstReq.RemoteAddr = allowedPortalRemoteAddr
+	first := httptest.NewRecorder()
+	application.ServeHTTP(first, firstReq)
+
+	if first.Code != http.StatusUnauthorized {
+		t.Fatalf("first status = %d, want %d: %s", first.Code, http.StatusUnauthorized, first.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	secondReq.RemoteAddr = allowedPortalRemoteAddr
+	second := httptest.NewRecorder()
+	application.ServeHTTP(second, secondReq)
+
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d: %s", second.Code, http.StatusTooManyRequests, second.Body.String())
+	}
+}
+
+func TestAppRejectsOversizedHookBody(t *testing.T) {
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	cfg.HookMaxBodyBytes = 8
+	application, err := NewWithQueue(cfg, queue)
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
+	rec := httptest.NewRecorder()
+
+	application.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
+	}
+}
+
 func TestAppHookRouteQueuesCiphertextOnlyMessage(t *testing.T) {
 	_, restore := captureDefaultLogger()
 	defer restore()
@@ -93,6 +195,7 @@ func TestAppHookRouteQueuesCiphertextOnlyMessage(t *testing.T) {
 	body := []byte(`{"cn":"311551001","password":"cleartext-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
 	rec := httptest.NewRecorder()
 
 	application.ServeHTTP(rec, req)
@@ -133,6 +236,7 @@ func TestAppHookRouteSkipsExternalEmailWithoutEnqueue(t *testing.T) {
 	body := []byte(`{"cn":"abc@gmail.com","password":"secret","displayName":"Guest","mail":"abc@gmail.com","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
 	rec := httptest.NewRecorder()
 
 	application.ServeHTTP(rec, req)
@@ -221,6 +325,7 @@ func TestNewWithQueueUsesConfiguredRecorder(t *testing.T) {
 	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
 	response := httptest.NewRecorder()
 
 	application.ServeHTTP(response, req)
@@ -299,6 +404,7 @@ func TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker(t *testin
 	body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
 	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
 	rec := httptest.NewRecorder()
 
 	application.ServeHTTP(rec, req)

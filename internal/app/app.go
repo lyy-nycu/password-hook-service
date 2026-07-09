@@ -292,9 +292,10 @@ func newWithQueueWithRecorder(
 		Recorder: recorder,
 	})
 	hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, middleware.HMACOptions{
-		ProblemBase: cfg.ProblemBaseURL,
-		Logger:      slog.Default(),
-		Recorder:    recorder,
+		ProblemBase:  cfg.ProblemBaseURL,
+		MaxBodyBytes: cfg.HookMaxBodyBytes,
+		Logger:       slog.Default(),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
