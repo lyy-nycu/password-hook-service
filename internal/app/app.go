@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/nycu/password-hook-service/internal/azuremonitor"
 	"github.com/nycu/password-hook-service/internal/buildinfo"
 	"github.com/nycu/password-hook-service/internal/config"
 	"github.com/nycu/password-hook-service/internal/graphclient"
@@ -34,6 +35,12 @@ type appCloser interface {
 	Close(context.Context) error
 }
 
+type appCloserFunc func(context.Context) error
+
+func (f appCloserFunc) Close(ctx context.Context) error {
+	return f(ctx)
+}
+
 type passwordCodec interface {
 	migration.PasswordEncrypter
 	worker.PasswordDecrypter
@@ -50,11 +57,16 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	closers, err := azureMonitorOTelClosers(context.Background(), cfg)
 	if err != nil {
 		return nil, err
 	}
-	closers := []appCloser{queue}
+
+	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	if err != nil {
+		return nil, closeAfterWiringError(err, closers)
+	}
+	closers = append(closers, queue)
 
 	receiver, err := servicebusqueue.NewReceiverFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName)
 	if err != nil {
@@ -90,6 +102,20 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	return newWithWorkerDependencies(cfg, queue, receiver, processor, dlq, passwordCodec, closers...)
+}
+
+func azureMonitorOTelClosers(ctx context.Context, cfg config.Config) ([]appCloser, error) {
+	if cfg.ObservabilityExporter != config.ObservabilityExporterAzureMonitor {
+		return nil, nil
+	}
+	shutdown, err := azuremonitor.SetupOTel(ctx, azuremonitor.OTelOptions{
+		ServiceName:  "password-hook-service",
+		OTLPEndpoint: cfg.OTLPExporterEndpoint,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []appCloser{appCloserFunc(shutdown)}, nil
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
