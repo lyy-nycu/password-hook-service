@@ -1,6 +1,10 @@
-# Slice 8 Observability Draft Implementation Plan
+# Slice 8 Observability Superseded Draft Implementation Plan
 
-> **Status:** Draft. This plan is a future-slice planning artifact only. Do not execute it until Slice 7 is merged, this draft is refreshed against `main`, and the plan is promoted to `docs/superpowers/plans/active/`.
+> **Plan Status:** Superseded
+>
+> **Replaced By:** `docs/superpowers/plans/completed/2026-07-08-slice-08-observability.md`
+>
+> This early draft was adopted, refreshed after Slice 7A, implemented as Slice 8 Observability, and merged in PR #10. Do not execute this file.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL WHEN PROMOTED: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

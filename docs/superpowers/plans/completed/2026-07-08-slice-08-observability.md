@@ -1,5 +1,7 @@
 # Slice 8 Observability Implementation Plan
 
+> **Plan Status:** Completed
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add backend-neutral operational logs, counters, durations, queue-depth probes, and trace propagation for hook, migration, worker, Graph, and safe-DLQ paths without recording password material.
@@ -13,7 +15,7 @@
 ## Scope And Constraints
 
 - Keep this slice backend-neutral. Do not add OpenTelemetry, Prometheus, Azure Monitor exporter, Grafana, or cloud-monitoring dependencies.
-- Production metrics export is intentionally out of this slice; Azure Monitor export is planned in `docs/superpowers/plans/drafts/2026-07-08-slice-08a-azure-monitor-exporter.md`.
+- Production metrics export is intentionally out of this slice; Azure Monitor export is planned in `docs/superpowers/plans/active/2026-07-09-slice-08a-azure-monitor-exporter.md`.
 - Do not change password encryption, queue password payload shape beyond adding a non-secret `traceId`, worker retry policy, Graph behavior, safe DLQ payload contents, sync-status state transitions, or API protection behavior.
 - Do not include portal/client changes. This slice is limited to password-hook-service observability.
 - Do not log or expose cleartext passwords, password ciphertext, password nonce, password key IDs, request bodies, Service Bus message bodies, Graph authorization headers, Graph request bodies, HMAC secrets, nonces, or signatures in logs, labels, metrics, docs examples, or test output.

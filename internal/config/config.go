@@ -15,6 +15,11 @@ const (
 	SecretsSourceKeyVault = "keyvault"
 )
 
+const (
+	ObservabilityExporterNone         = "none"
+	ObservabilityExporterAzureMonitor = "azure_monitor"
+)
+
 type KeyVaultSecretNames struct {
 	HMACSecret                 string
 	ServiceBusConnectionString string
@@ -45,6 +50,11 @@ type Config struct {
 	GraphTenantID                 string
 	GraphClientID                 string
 	GraphClientSecret             string
+	ObservabilityExporter         string
+	OTLPExporterEndpoint          string
+	AzureMonitorMetricResourceID  string
+	AzureMonitorMetricRegion      string
+	AzureMonitorMetricNamespace   string
 }
 
 func Load() Config {
@@ -76,6 +86,11 @@ func Load() Config {
 		GraphTenantID:                 strings.TrimSpace(os.Getenv("GRAPH_TENANT_ID")),
 		GraphClientID:                 strings.TrimSpace(os.Getenv("GRAPH_CLIENT_ID")),
 		GraphClientSecret:             strings.TrimSpace(os.Getenv("GRAPH_CLIENT_SECRET")),
+		ObservabilityExporter:         env("OBSERVABILITY_EXPORTER", ObservabilityExporterNone),
+		OTLPExporterEndpoint:          strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+		AzureMonitorMetricResourceID:  strings.TrimSpace(os.Getenv("AZURE_MONITOR_METRIC_RESOURCE_ID")),
+		AzureMonitorMetricRegion:      strings.TrimSpace(os.Getenv("AZURE_MONITOR_METRIC_REGION")),
+		AzureMonitorMetricNamespace:   env("AZURE_MONITOR_METRIC_NAMESPACE", "password-hook-service"),
 	}
 }
 
@@ -84,6 +99,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.ValidateHTTP(); err != nil {
+		return err
+	}
+	if err := c.validateObservability(); err != nil {
 		return err
 	}
 	switch {
@@ -107,6 +125,29 @@ func (c Config) Validate() error {
 		return errors.New("GRAPH_CLIENT_SECRET is required")
 	default:
 		return nil
+	}
+}
+
+func (c Config) validateObservability() error {
+	switch c.ObservabilityExporter {
+	case "", ObservabilityExporterNone:
+		return nil
+	case ObservabilityExporterAzureMonitor:
+		if strings.TrimSpace(c.OTLPExporterEndpoint) == "" {
+			return errors.New("OTEL_EXPORTER_OTLP_ENDPOINT is required when OBSERVABILITY_EXPORTER=azure_monitor")
+		}
+		if strings.TrimSpace(c.AzureMonitorMetricResourceID) == "" {
+			return errors.New("AZURE_MONITOR_METRIC_RESOURCE_ID is required when OBSERVABILITY_EXPORTER=azure_monitor")
+		}
+		if strings.TrimSpace(c.AzureMonitorMetricRegion) == "" {
+			return errors.New("AZURE_MONITOR_METRIC_REGION is required when OBSERVABILITY_EXPORTER=azure_monitor")
+		}
+		if strings.TrimSpace(c.AzureMonitorMetricNamespace) == "" {
+			return errors.New("AZURE_MONITOR_METRIC_NAMESPACE is required when OBSERVABILITY_EXPORTER=azure_monitor")
+		}
+		return nil
+	default:
+		return errors.New("OBSERVABILITY_EXPORTER must be none or azure_monitor")
 	}
 }
 

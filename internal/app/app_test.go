@@ -12,12 +12,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/azuremonitor"
 	"github.com/nycu/password-hook-service/internal/config"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/syncstatus"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -179,6 +183,53 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	}
 	if application == nil {
 		t.Fatal("NewWithQueue returned nil app")
+	}
+}
+
+func TestAzureMonitorObservabilityRuntimeWiresRecorderAndShutdown(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ObservabilityExporter = config.ObservabilityExporterAzureMonitor
+	cfg.OTLPExporterEndpoint = "http://localhost:4318"
+	cfg.AzureMonitorMetricResourceID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook"
+	cfg.AzureMonitorMetricRegion = "eastasia"
+	cfg.AzureMonitorMetricNamespace = "password-hook-service"
+
+	runtime, err := newObservabilityRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newObservabilityRuntime returned error: %v", err)
+	}
+	if _, ok := runtime.recorder.(*azuremonitor.MetricRecorder); !ok {
+		t.Fatalf("recorder = %T, want *azuremonitor.MetricRecorder", runtime.recorder)
+	}
+	if len(runtime.closers) < 2 {
+		t.Fatalf("closers = %d, want OTel shutdown and metric flush closers", len(runtime.closers))
+	}
+	if err := closeAppResources(context.Background(), runtime.closers); err != nil {
+		t.Fatalf("close observability runtime returned error: %v", err)
+	}
+}
+
+func TestNewWithQueueUsesConfiguredRecorder(t *testing.T) {
+	recorder := observability.NewCaptureRecorder()
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	application, err := newWithQueueWithRecorder(cfg, queue, mustPasswordCodec(t, cfg), syncstatus.NewMemoryStore(), recorder)
+	if err != nil {
+		t.Fatalf("newWithQueueWithRecorder returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	response := httptest.NewRecorder()
+
+	application.ServeHTTP(response, req)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if samples := recorder.Counters(observability.MetricHookRequestsTotal); len(samples) != 1 {
+		t.Fatalf("hook request samples = %d, want 1", len(samples))
 	}
 }
 
@@ -359,6 +410,26 @@ func TestRunClosesAllOwnedResources(t *testing.T) {
 	}
 }
 
+func TestPeriodicMetricFlusherFlushesWhileAppRuns(t *testing.T) {
+	flusher := newCaptureMetricFlusher()
+	closer := newPeriodicMetricFlusher(flusher, 5*time.Millisecond)
+
+	select {
+	case <-flusher.calls:
+	case <-time.After(time.Second):
+		t.Fatal("metric flusher was not called before shutdown")
+	}
+
+	if err := closer.Close(context.Background()); err != nil {
+		t.Fatalf("Close returned error: %v", err)
+	}
+	callsAfterClose := flusher.count.Load()
+	time.Sleep(20 * time.Millisecond)
+	if got := flusher.count.Load(); got != callsAfterClose {
+		t.Fatalf("flush calls after close = %d, want %d", got, callsAfterClose)
+	}
+}
+
 type captureQueue struct {
 	messages []migration.PasswordSyncMessage
 }
@@ -381,6 +452,24 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	c.closeErrs = append(c.closeErrs, ctx.Err())
 	_, hasDeadline := ctx.Deadline()
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
+	return nil
+}
+
+type captureMetricFlusher struct {
+	count atomic.Int64
+	calls chan struct{}
+}
+
+func newCaptureMetricFlusher() *captureMetricFlusher {
+	return &captureMetricFlusher{calls: make(chan struct{}, 10)}
+}
+
+func (f *captureMetricFlusher) Flush(context.Context) error {
+	f.count.Add(1)
+	select {
+	case f.calls <- struct{}{}:
+	default:
+	}
 	return nil
 }
 

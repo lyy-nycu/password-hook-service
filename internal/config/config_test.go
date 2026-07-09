@@ -47,6 +47,42 @@ func TestLoadServiceBusDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadAzureMonitorExporterConfig(t *testing.T) {
+	t.Setenv("OBSERVABILITY_EXPORTER", " azure_monitor ")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+	t.Setenv("AZURE_MONITOR_METRIC_RESOURCE_ID", "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook")
+	t.Setenv("AZURE_MONITOR_METRIC_REGION", "eastasia")
+	t.Setenv("AZURE_MONITOR_METRIC_NAMESPACE", "password-hook-service")
+
+	cfg := Load()
+
+	if cfg.ObservabilityExporter != ObservabilityExporterAzureMonitor {
+		t.Fatalf("ObservabilityExporter = %q, want azure_monitor", cfg.ObservabilityExporter)
+	}
+	if cfg.OTLPExporterEndpoint != "http://localhost:4318" {
+		t.Fatalf("OTLPExporterEndpoint = %q", cfg.OTLPExporterEndpoint)
+	}
+	if cfg.AzureMonitorMetricResourceID == "" || cfg.AzureMonitorMetricRegion != "eastasia" || cfg.AzureMonitorMetricNamespace != "password-hook-service" {
+		t.Fatalf("Azure Monitor metric config = %#v", cfg)
+	}
+}
+
+func TestValidateAzureMonitorExporterRequiresMetricConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ObservabilityExporter = ObservabilityExporterAzureMonitor
+	cfg.OTLPExporterEndpoint = "http://localhost:4318"
+	cfg.AzureMonitorMetricResourceID = ""
+	cfg.AzureMonitorMetricRegion = "eastasia"
+	cfg.AzureMonitorMetricNamespace = "password-hook-service"
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "AZURE_MONITOR_METRIC_RESOURCE_ID is required when OBSERVABILITY_EXPORTER=azure_monitor" {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func TestLoadDefaultsPasswordEncryptionConfig(t *testing.T) {
 	t.Parallel()
 
