@@ -46,6 +46,11 @@ type passwordCodec interface {
 	worker.PasswordDecrypter
 }
 
+type observabilityRuntime struct {
+	recorder observability.Recorder
+	closers  []appCloser
+}
+
 type App struct {
 	server  *httpserver.Server
 	worker  appWorker
@@ -57,10 +62,11 @@ func New(cfg config.Config) (*App, error) {
 		return nil, err
 	}
 
-	closers, err := azureMonitorOTelClosers(context.Background(), cfg)
+	observabilityRuntime, err := newObservabilityRuntime(context.Background(), cfg)
 	if err != nil {
 		return nil, err
 	}
+	closers := append([]appCloser(nil), observabilityRuntime.closers...)
 
 	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
 	if err != nil {
@@ -90,7 +96,7 @@ func New(cfg config.Config) (*App, error) {
 	}
 	processor, err := graphprocessor.NewWithOptions(graph, graphprocessor.Options{
 		Logger:   slog.Default(),
-		Recorder: observability.NoopRecorder{},
+		Recorder: observabilityRuntime.recorder,
 	})
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
@@ -101,21 +107,35 @@ func New(cfg config.Config) (*App, error) {
 		return nil, closeAfterWiringError(err, closers)
 	}
 
-	return newWithWorkerDependencies(cfg, queue, receiver, processor, dlq, passwordCodec, closers...)
+	return newWithWorkerDependenciesWithRecorder(cfg, queue, receiver, processor, dlq, passwordCodec, observabilityRuntime.recorder, closers...)
 }
 
-func azureMonitorOTelClosers(ctx context.Context, cfg config.Config) ([]appCloser, error) {
+func newObservabilityRuntime(ctx context.Context, cfg config.Config) (observabilityRuntime, error) {
 	if cfg.ObservabilityExporter != config.ObservabilityExporterAzureMonitor {
-		return nil, nil
+		return observabilityRuntime{recorder: observability.NoopRecorder{}}, nil
 	}
 	shutdown, err := azuremonitor.SetupOTel(ctx, azuremonitor.OTelOptions{
 		ServiceName:  "password-hook-service",
 		OTLPEndpoint: cfg.OTLPExporterEndpoint,
 	})
 	if err != nil {
-		return nil, err
+		return observabilityRuntime{}, err
 	}
-	return []appCloser{appCloserFunc(shutdown)}, nil
+	metricCredential, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return observabilityRuntime{}, errors.Join(err, shutdown(ctx))
+	}
+	recorder := azuremonitor.NewMetricRecorder(azuremonitor.MetricRecorderOptions{
+		EndpointBaseURL: "https://" + cfg.AzureMonitorMetricRegion + ".monitoring.azure.com",
+		ResourceID:      cfg.AzureMonitorMetricResourceID,
+		Region:          cfg.AzureMonitorMetricRegion,
+		Namespace:       cfg.AzureMonitorMetricNamespace,
+		TokenSource:     azuremonitor.NewCredentialTokenSource(metricCredential, "https://monitoring.azure.com/.default"),
+	})
+	return observabilityRuntime{
+		recorder: recorder,
+		closers:  []appCloser{appCloserFunc(shutdown), recorder},
+	}, nil
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {
@@ -144,11 +164,27 @@ func newWithWorkerDependencies(
 	passwordCodec passwordCodec,
 	closers ...appCloser,
 ) (*App, error) {
+	return newWithWorkerDependenciesWithRecorder(cfg, queue, receiver, processor, deadLetterSink, passwordCodec, observability.NoopRecorder{}, closers...)
+}
+
+func newWithWorkerDependenciesWithRecorder(
+	cfg config.Config,
+	queue migration.Queue,
+	receiver worker.Receiver,
+	processor worker.Processor,
+	deadLetterSink worker.DeadLetterSink,
+	passwordCodec passwordCodec,
+	recorder observability.Recorder,
+	closers ...appCloser,
+) (*App, error) {
 	if passwordCodec == nil {
 		return nil, errors.Join(errors.New("password codec is required"), closeAppResources(context.Background(), closers))
 	}
+	if recorder == nil {
+		recorder = observability.NoopRecorder{}
+	}
 	syncStatusStore := syncstatus.NewMemoryStore()
-	application, err := newWithQueue(cfg, queue, passwordCodec, syncStatusStore, closers...)
+	application, err := newWithQueueWithRecorder(cfg, queue, passwordCodec, syncStatusStore, recorder, closers...)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +193,7 @@ func newWithWorkerDependencies(
 		PasswordDecrypter:  passwordCodec,
 		SyncStatusRecorder: syncStatusStore,
 		Logger:             slog.Default(),
-		Recorder:           observability.NoopRecorder{},
+		Recorder:           recorder,
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
@@ -167,8 +203,22 @@ func newWithWorkerDependencies(
 }
 
 func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter migration.PasswordEncrypter, syncStatusStore migration.SyncStatusStore, closers ...appCloser) (*App, error) {
+	return newWithQueueWithRecorder(cfg, queue, passwordEncrypter, syncStatusStore, observability.NoopRecorder{}, closers...)
+}
+
+func newWithQueueWithRecorder(
+	cfg config.Config,
+	queue migration.Queue,
+	passwordEncrypter migration.PasswordEncrypter,
+	syncStatusStore migration.SyncStatusStore,
+	recorder observability.Recorder,
+	closers ...appCloser,
+) (*App, error) {
 	if passwordEncrypter == nil {
 		return nil, errors.Join(errors.New("password encrypter is required"), closeAppResources(context.Background(), closers))
+	}
+	if recorder == nil {
+		recorder = observability.NoopRecorder{}
 	}
 	service := migration.NewService(cfg.EntraPrimaryDomain, queue, passwordEncrypter, migration.ServiceOptions{
 		SyncStatusStore: syncStatusStore,
@@ -178,12 +228,12 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 	})
 	hook := handler.NewHookWithOptions(service, cfg.ProblemBaseURL, handler.HookOptions{
 		Logger:   slog.Default(),
-		Recorder: observability.NoopRecorder{},
+		Recorder: recorder,
 	})
 	hmacMiddleware, err := middleware.NewHMACWithOptions(cfg.HMACSecret, middleware.NewMemoryNonceStore(cfg.NonceTTL), cfg.HMACClockSkew, middleware.HMACOptions{
 		ProblemBase: cfg.ProblemBaseURL,
 		Logger:      slog.Default(),
-		Recorder:    observability.NoopRecorder{},
+		Recorder:    recorder,
 	})
 	if err != nil {
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
@@ -194,7 +244,7 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 		Window:       cfg.RateLimitWindow,
 		ProblemBase:  cfg.ProblemBaseURL,
 		Logger:       slog.Default(),
-		Recorder:     observability.NoopRecorder{},
+		Recorder:     recorder,
 	})
 
 	hookHandler := hmacMiddleware.Wrap(hook)
@@ -202,7 +252,7 @@ func newWithQueue(cfg config.Config, queue migration.Queue, passwordEncrypter mi
 	hookHandler = middleware.RecoveryWithOptions(middleware.RecoveryOptions{
 		Logger:      slog.Default(),
 		ProblemBase: cfg.ProblemBaseURL,
-		Recorder:    observability.NoopRecorder{},
+		Recorder:    recorder,
 	})(hookHandler)
 	hookHandler = middleware.AccessLog(slog.Default())(hookHandler)
 	hookHandler = requestid.Middleware(hookHandler)

@@ -28,6 +28,7 @@ This service currently implements the HTTP hook, encrypted Service Bus queueing,
 - structured hook, worker, and Graph outcome events
 - trace ID propagation through queue messages
 - queue and safe-DLQ depth probe boundaries
+- Azure Monitor exporter mode for OTLP traces and custom metrics
 
 Terraform resources and CI/CD security gates are implemented in later slices.
 
@@ -179,7 +180,7 @@ Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked 
 
 ## Observability
 
-The service emits structured JSON logs through `log/slog` and records metrics through the backend-neutral `internal/observability.Recorder` interface. Production currently wires a no-op recorder; exporters to Azure Monitor, OpenTelemetry, Prometheus, or another backend should be adapters over that interface.
+The service emits structured JSON logs through `log/slog` and records metrics through the backend-neutral `internal/observability.Recorder` interface. By default, production wires a no-op recorder. Set `OBSERVABILITY_EXPORTER=azure_monitor` to export traces through OpenTelemetry OTLP and publish custom metrics to Azure Monitor.
 
 Key structured actions:
 
@@ -209,6 +210,26 @@ Metric names:
 
 Logs and metric labels must not include cleartext passwords, encrypted password fields, request bodies, Service Bus message bodies, Graph request bodies, HMAC secrets, HMAC signatures, nonces, or authorization headers.
 
+## Azure Monitor Export
+
+Set `OBSERVABILITY_EXPORTER=azure_monitor` to export production telemetry.
+
+Logs and traces:
+
+- Configure the Azure Container Apps managed OpenTelemetry agent to send logs and traces to Application Insights.
+- Set `OTEL_EXPORTER_OTLP_ENDPOINT` to the agent endpoint.
+
+Metrics:
+
+- Set `AZURE_MONITOR_METRIC_RESOURCE_ID` to the Azure resource ID that owns custom metrics.
+- Set `AZURE_MONITOR_METRIC_REGION` to the resource region.
+- Set `AZURE_MONITOR_METRIC_NAMESPACE` to the namespace used for custom metrics, defaulting to `password-hook-service`.
+- Assign the runtime managed identity the `Monitoring Metrics Publisher` role for that resource.
+
+Azure Container Apps Application Insights OpenTelemetry destination does not currently export metrics; this service publishes custom metrics through Azure Monitor's custom metrics REST API.
+
+Example verification queries depend on the deployed workspace, but the expected metric namespace is `password-hook-service` and expected metric names include `hook_requests_total`, `middleware_requests_total`, `worker_messages_total`, `graph_upsert_duration_seconds`, and `queue_depth`.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -233,3 +254,8 @@ Logs and metric labels must not include cleartext passwords, encrypted password 
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
 | `PORTAL_ALLOWED_CIDRS` | empty | Optional comma-separated source CIDR allowlist |
 | `RATE_LIMIT_PER_IP` | `500` | Per-IP request threshold per one-second window |
+| `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure Container Apps managed OpenTelemetry agent endpoint for traces |
+| `AZURE_MONITOR_METRIC_RESOURCE_ID` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure resource ID that owns custom metrics |
+| `AZURE_MONITOR_METRIC_REGION` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure region for the custom metrics endpoint |
+| `AZURE_MONITOR_METRIC_NAMESPACE` | `password-hook-service` | Custom metrics namespace when Azure Monitor export is enabled |

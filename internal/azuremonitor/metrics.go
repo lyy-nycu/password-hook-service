@@ -74,6 +74,10 @@ func (r *MetricRecorder) SetGauge(_ context.Context, name string, value int64, l
 	r.add(name, labels, float64(value))
 }
 
+func (r *MetricRecorder) Close(ctx context.Context) error {
+	return r.Flush(ctx)
+}
+
 func (r *MetricRecorder) Flush(ctx context.Context) error {
 	r.mu.Lock()
 	points := make([]metricPoint, 0, len(r.points))

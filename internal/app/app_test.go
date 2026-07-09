@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nycu/password-hook-service/internal/azuremonitor"
 	"github.com/nycu/password-hook-service/internal/config"
 	"github.com/nycu/password-hook-service/internal/migration"
+	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/passwordcrypto"
+	"github.com/nycu/password-hook-service/internal/syncstatus"
 	"github.com/nycu/password-hook-service/internal/worker"
 )
 
@@ -179,6 +182,53 @@ func TestNewWithQueueDoesNotRequireServiceBusConfiguration(t *testing.T) {
 	}
 	if application == nil {
 		t.Fatal("NewWithQueue returned nil app")
+	}
+}
+
+func TestAzureMonitorObservabilityRuntimeWiresRecorderAndShutdown(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ObservabilityExporter = config.ObservabilityExporterAzureMonitor
+	cfg.OTLPExporterEndpoint = "http://localhost:4318"
+	cfg.AzureMonitorMetricResourceID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook"
+	cfg.AzureMonitorMetricRegion = "eastasia"
+	cfg.AzureMonitorMetricNamespace = "password-hook-service"
+
+	runtime, err := newObservabilityRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("newObservabilityRuntime returned error: %v", err)
+	}
+	if _, ok := runtime.recorder.(*azuremonitor.MetricRecorder); !ok {
+		t.Fatalf("recorder = %T, want *azuremonitor.MetricRecorder", runtime.recorder)
+	}
+	if len(runtime.closers) < 2 {
+		t.Fatalf("closers = %d, want OTel shutdown and metric flush closers", len(runtime.closers))
+	}
+	if err := closeAppResources(context.Background(), runtime.closers); err != nil {
+		t.Fatalf("close observability runtime returned error: %v", err)
+	}
+}
+
+func TestNewWithQueueUsesConfiguredRecorder(t *testing.T) {
+	recorder := observability.NewCaptureRecorder()
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	application, err := newWithQueueWithRecorder(cfg, queue, mustPasswordCodec(t, cfg), syncstatus.NewMemoryStore(), recorder)
+	if err != nil {
+		t.Fatalf("newWithQueueWithRecorder returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	response := httptest.NewRecorder()
+
+	application.ServeHTTP(response, req)
+
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusAccepted, response.Body.String())
+	}
+	if samples := recorder.Counters(observability.MetricHookRequestsTotal); len(samples) != 1 {
+		t.Fatalf("hook request samples = %d, want 1", len(samples))
 	}
 }
 
