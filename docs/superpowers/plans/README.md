@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-Slice 8 Observability is active for review and implementation planning; see `active/2026-07-08-slice-08-observability.md`.
+Slice 8A Azure Monitor Exporter is active for implementation planning; see `active/2026-07-09-slice-08a-azure-monitor-exporter.md`.
 
 ## Status Labels
 

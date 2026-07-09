@@ -1,6 +1,8 @@
 # Slice 8A Azure Monitor Exporter Implementation Plan
 
-> **Status:** Draft. This plan depends on Slice 8 Observability Instrumentation Foundation. Do not execute until Slice 8 lands and this draft is refreshed against current Azure Monitor and OpenTelemetry Go documentation.
+> **Plan Status:** Active
+>
+> **Source Refresh:** Refreshed on 2026-07-09 against current Microsoft Learn pages for Azure Container Apps managed OpenTelemetry agents, Azure Monitor OpenTelemetry distro support, and Azure Monitor custom metrics REST API.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -14,9 +16,10 @@
 
 ## Source Notes
 
-- Microsoft Learn says Azure Monitor Application Insights can collect OpenTelemetry data and recommends Azure Monitor OpenTelemetry Distro for supported server-side scenarios, but the distro page lists .NET, Java, Node.js, and Python, not Go.
-- Microsoft Learn's Azure Container Apps OpenTelemetry agent page says Application Insights destination supports logs and traces but not metrics.
-- Microsoft Learn's Azure Monitor custom metrics REST API supports custom metrics for Azure resources using Microsoft Entra auth, including managed identities with `Monitoring Metrics Publisher`.
+- Microsoft Learn's Azure Monitor OpenTelemetry distro page is currently titled for .NET, Node.js, Python, and Java applications, not Go. For Go, use the upstream OpenTelemetry Go SDK with OTLP exporters rather than assuming a Microsoft Go distro exists.
+- Microsoft Learn's Azure Container Apps managed OpenTelemetry agent page says the Application Insights destination supports logs and traces, but not metrics. This plan keeps logs/traces on OTLP and handles metrics separately.
+- Microsoft Learn's Azure Monitor custom metrics REST API page supports custom metrics for Azure resources using Microsoft Entra auth, including managed identities with `Monitoring Metrics Publisher`.
+- Microsoft Learn's Azure Monitor custom metrics overview currently labels classic custom metrics as preview/non-GA and points to Azure Monitor Workspace custom metrics as the improved GA direction. This slice still implements the documented REST API behind an isolated `internal/azuremonitor` adapter so the publication path can be swapped later without changing Slice 8's application-owned recorder boundary.
 
 ## Scope And Constraints
 
@@ -25,7 +28,7 @@
 - Do not require portal changes.
 - Use managed identity for Azure Monitor custom metrics. Do not introduce a client secret for metrics publishing.
 - Logs/traces and metrics may have different Azure Monitor destinations: Application Insights for logs/traces, Azure Monitor Metrics for custom metrics.
-- If Azure Container Apps managed OpenTelemetry agent behavior changes before implementation, refresh this plan against current Microsoft Learn docs before coding.
+- Keep metric dimensions low-cardinality and within Azure Monitor custom metric limits; never include CN, UPN, trace IDs, request IDs, message IDs, nonces, signatures, ciphertext, or password-derived values as metric dimensions.
 
 ## File Structure
 
@@ -38,7 +41,7 @@
 - Modify `internal/app/app.go`: wire the Azure Monitor recorder and OpenTelemetry lifecycle when enabled.
 - Modify `internal/app/app_test.go`: assert no-op default and Azure Monitor mode wiring.
 - Modify `README.md`: document Azure Monitor logs, traces, metrics, environment variables, RBAC, and verification queries.
-- Modify `deploy/terraform/README.md` or Slice 10 infrastructure draft later: configure ACA OpenTelemetry agent and assign `Monitoring Metrics Publisher`.
+- Modify `docs/superpowers/plans/drafts/2026-07-03-slice-10-infrastructure.md`: record the ACA OpenTelemetry agent and `Monitoring Metrics Publisher` infrastructure requirements for the later infrastructure slice.
 
 ---
 
@@ -433,8 +436,8 @@ func SetupOTel(ctx context.Context, options OTelOptions) (ShutdownFunc, error) {
 	if strings.TrimSpace(options.ServiceName) == "" {
 		return nil, errors.New("otel service name is required")
 	}
-	// Implement with OpenTelemetry Go SDK OTLP exporters after refreshing
-	// current package versions. Configure service.name=password-hook-service,
+	// Implement with OpenTelemetry Go SDK OTLP exporters using current
+	// package versions. Configure service.name=password-hook-service,
 	// HTTP server spans, worker spans, and Graph processor spans.
 	return func(context.Context) error { return nil }, nil
 }
@@ -474,6 +477,7 @@ git commit -m "feat: export traces and logs through opentelemetry"
 - Modify: `internal/app/app.go`
 - Modify: `internal/app/app_test.go`
 - Modify: `README.md`
+- Modify: `docs/superpowers/plans/drafts/2026-07-03-slice-10-infrastructure.md`
 
 - [ ] **Step 1: Write failing app wiring test**
 
@@ -529,6 +533,12 @@ Metrics:
 Azure Container Apps Application Insights OpenTelemetry destination does not currently export metrics; this service publishes custom metrics through Azure Monitor's custom metrics REST API.
 ```
 
+In `docs/superpowers/plans/drafts/2026-07-03-slice-10-infrastructure.md`, add a Slice 8A refresh note to the Infrastructure Story:
+
+```markdown
+- Slice 8A requires the Container Apps environment to enable the managed OpenTelemetry agent for logs/traces to Application Insights, and requires the runtime managed identity to have `Monitoring Metrics Publisher` on the Azure resource used for custom metrics. Metrics are published by the application through the Azure Monitor custom metrics REST API because the ACA Application Insights OpenTelemetry destination does not currently accept metrics.
+```
+
 - [ ] **Step 5: Run focused tests**
 
 Run:
@@ -542,7 +552,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/app/app.go internal/app/app_test.go README.md
+git add internal/app/app.go internal/app/app_test.go README.md docs/superpowers/plans/drafts/2026-07-03-slice-10-infrastructure.md
 git commit -m "feat: wire azure monitor observability exporter"
 ```
 
