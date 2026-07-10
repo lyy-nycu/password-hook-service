@@ -62,7 +62,7 @@ func NewHMACWithOptions(secret string, nonces NonceStore, skew time.Duration, op
 		return nil, errors.New("hmac clock skew must be positive")
 	}
 	if options.MaxBodyBytes < 0 {
-		return nil, errors.New("hmac max body bytes must be positive")
+		return nil, errors.New("hmac max body bytes must not be negative")
 	}
 	if options.MaxBodyBytes == 0 {
 		options.MaxBodyBytes = defaultHMACMaxBodyBytes
