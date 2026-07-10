@@ -1,8 +1,10 @@
 # Slice 9 API Protection Implementation Plan
 
-> **Plan Status:** Active
+> **Plan Status:** Completed
 >
 > **Source Refresh:** Refreshed on 2026-07-09 after Slice 8 and Slice 8A landed. The plan reflects current observability logger/recorder middleware options, Azure Monitor config fields, and README structure.
+>
+> **Completion Note:** Implemented and merged via PR #13 (`a738c76`). Verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans on a clean tree; changed files match this plan's Task 6 expected list exactly (`README.md`, `internal/app/app.go`, `internal/app/app_test.go`, `internal/config/config.go`, `internal/config/config_test.go`, `internal/middleware/hmac.go`, `internal/middleware/hmac_test.go`, `internal/middleware/ratelimit.go`, `internal/middleware/ratelimit_test.go`, `pkg/problem/problem.go`, `pkg/problem/problem_test.go`).
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

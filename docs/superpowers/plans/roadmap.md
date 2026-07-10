@@ -32,7 +32,7 @@
 
 ## Active Detailed Plan
 
-Slice 9 API Protection is active for implementation planning: `active/2026-07-09-slice-09-api-protection.md`.
+No detailed plan is currently active. Slice 9 API Protection is complete; see `completed/2026-07-09-slice-09-api-protection.md`. A Slice 10 or 10A draft must be refreshed against current `main` and promoted to `active/` before infrastructure work begins.
 
 ---
 
@@ -48,7 +48,7 @@ Slice 6 should isolate Microsoft Graph API behavior behind a client package and 
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
 
-Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8 and Slice 8A have already been refreshed and completed. Slice 9 has been refreshed against current source after Slice 8A and promoted to active.
+Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, and Slice 9 have already been refreshed and completed. Slice 10 and Slice 10A drafts still need refreshing against current `main` (post-Slice 9 middleware, config, and README changes) before either can be promoted to active.
 
 ---
 
@@ -70,7 +70,7 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 7A Review Fixes | Done | `completed/2026-07-07-slice-07a-copilot-review-fixes.md` | Copilot PR #9 threads resolved; `609482a` rejects multiple `ServiceOptions`; `ecab7bb` fails open on future pending timestamps; verified with focused tests, full `go test ./...`, `go vet ./...`, and final code review. |
 | 8. Observability | Done | `completed/2026-07-08-slice-08-observability.md` | Backend-neutral recorder boundary, trace propagation, structured outcome logs, counters/durations, queue-depth probes, middleware/worker/Graph instrumentation, and README observability docs landed in PR #10. |
 | 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
-| 9. API Protection | Active | `active/2026-07-09-slice-09-api-protection.md` | Promoted from draft after refreshing against current middleware observability hooks, config fields, and README structure. |
+| 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
 | 10. Infrastructure | Not planned | Not created |  |
 | 11. CI/CD and Security Gates | Not planned | Not created |  |
 | 12. Integration and Production Readiness | Not planned | Not created |  |
