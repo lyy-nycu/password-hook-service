@@ -25,6 +25,7 @@
 | 8 | Observability | Add operational logs, metrics, and traceability. | Slices 1, 2, 4, 6, 7A | Structured logs include trace IDs; success/failure/skip counters exist; queue/DLQ depth hooks are available for Azure Monitor; metrics include event-type and sync-status labels per Slice 7A. |
 | 9 | API Protection | Harden ingress for production traffic patterns. | Slice 1 | Portal source allowlist is enforced; anomalous traffic returns 429; non-allowed sources return 401; behavior is documented. |
 | 10 | Infrastructure | Implement deployable Azure resources. | Slices 2, 3, 4 | Terraform provisions ACA, Service Bus, Key Vault, ACR, identities, and scaling rules matching the design. |
+| 10A | Service Bus Managed Identity | Let the service authenticate to Service Bus with Azure Managed Identity instead of a connection string secret. | Slice 3 | Producer, receiver, and safe-DLQ paths support `SERVICEBUS_AUTH_MODE=managed_identity` using the Service Bus namespace FQDN and `azidentity` credentials; `connection_string` mode remains available for local dev/rollback; Key Vault no longer requires the Service Bus connection string secret in managed identity mode. |
 | 11 | CI/CD and Security Gates | Match the design's pull request and deployment controls. | Infrastructure shape | CI runs tests, vet, gosec, govulncheck, trivy, and gitleaks; CD builds image and supports staging deployment. |
 | 12 | Integration and Production Readiness | Validate staging and prepare production operation. | Slices 1-11 | Staging smoke test passes; PHP portal integration guide is verified; alerts, dashboard, DLQ review, rollback, and secret rotation runbooks exist. |
 
@@ -32,7 +33,7 @@
 
 ## Active Detailed Plan
 
-No detailed plan is currently active. Slice 9 API Protection is complete; see `completed/2026-07-09-slice-09-api-protection.md`. A Slice 10 or 10A draft must be refreshed against current `main` and promoted to `active/` before infrastructure work begins.
+Slice 10A Service Bus Managed Identity is active for implementation planning: `active/2026-07-03-slice-10a-servicebus-managed-identity.md`. The owner chose to execute this before Slice 10 Infrastructure so Infrastructure can grant RBAC instead of managing a Service Bus connection string secret.
 
 ---
 
@@ -48,7 +49,7 @@ Slice 6 should isolate Microsoft Graph API behavior behind a client package and 
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
 
-Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, and Slice 9 have already been refreshed and completed. Slice 10 and Slice 10A drafts still need refreshing against current `main` (post-Slice 9 middleware, config, and README changes) before either can be promoted to active.
+Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, and Slice 9 have already been refreshed and completed. Slice 10A has been refreshed against current `main` (post-Slice 9) and promoted to active. Slice 10 Infrastructure draft still needs refreshing before promotion, and should incorporate Slice 10A's Managed Identity outcome once it lands.
 
 ---
 
@@ -72,5 +73,6 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
 | 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
 | 10. Infrastructure | Not planned | Not created |  |
+| 10A. Service Bus Managed Identity | Active | `active/2026-07-03-slice-10a-servicebus-managed-identity.md` | Promoted 2026-07-10 after refreshing against `main` post-Slice 9; owner chose to execute this before Slice 10 Infrastructure. |
 | 11. CI/CD and Security Gates | Not planned | Not created |  |
 | 12. Integration and Production Readiness | Not planned | Not created |  |

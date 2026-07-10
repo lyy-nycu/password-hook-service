@@ -1,8 +1,10 @@
-# Slice 10A Service Bus Managed Identity Draft Implementation Plan
+# Slice 10A Service Bus Managed Identity Implementation Plan
 
-> **Status:** Draft. This plan is a future-slice planning artifact only. Do not execute it until Slice 7 is merged, Slice 8 and Slice 9 are refreshed or implemented as needed, this draft is refreshed against `main`, and the owner decides whether to insert this as a real slice before Infrastructure.
+> **Plan Status:** Active
 >
-> **For agentic workers:** REQUIRED SUB-SKILL WHEN PROMOTED: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Source Refresh:** Refreshed on 2026-07-10 against `main` at `c9dc07c` (post Slice 9 API Protection). Verified `internal/config/config.go`, `internal/secretloader/loader.go`, `internal/servicebusqueue/queue.go`/`deadletter.go`, `internal/app/app.go`, and their test helpers (`completeConfig`, `completeAppConfig`, `captureQueue`, `captureDeadLetterSink`, `newBlockingReceiver`, `captureCloser`, `fakeGetter`) still match every code snippet below; no task content changed. The owner selected this slice to execute before Slice 10 Infrastructure.
+>
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the password hook service use Azure Managed Identity directly for Service Bus send/receive/safe-DLQ operations so production no longer needs a `SERVICEBUS_CONNECTION_STRING` secret.
 
@@ -12,15 +14,13 @@
 
 ---
 
-## Draft Constraints
+## Active Constraints
 
-- Draft only. Do not execute this plan until it is refreshed and promoted to `active/`.
-- Do not update `docs/superpowers/plans/README.md`, `docs/superpowers/plans/roadmap.md`, or any active plan pointer while this remains a draft.
 - Do not remove connection-string mode in this slice. Local development and rollback should continue to work with `SERVICEBUS_AUTH_MODE=connection_string`.
 - Do not change message schema, password encryption, worker retry behavior, safe DLQ payload shape, or Graph behavior.
 - Do not add Terraform, Azure RBAC, or Container Apps resources in this slice. Infrastructure should consume the new app config in the later infrastructure slice.
 - Do not store Service Bus connection strings in Terraform state or require a Service Bus connection string secret when `SERVICEBUS_AUTH_MODE=managed_identity`.
-- Recheck the Azure SDK API at promotion time. The current documented constructor supports Azure Identity credentials via `azservicebus.NewClient("<namespace>.servicebus.windows.net", credential, nil)`.
+- The Azure SDK API was rechecked at promotion time (2026-07-10) against `github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus v1.10.0` and `sdk/azcore v1.22.0`/`sdk/azidentity v1.14.0` already in `go.mod`. The constructor signature `azservicebus.NewClient("<namespace>.servicebus.windows.net", credential, nil)` remains current.
 
 ## Current Context
 
