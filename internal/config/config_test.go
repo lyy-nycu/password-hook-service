@@ -400,6 +400,73 @@ func TestLoadSecretLoadingDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadServiceBusAuthDefaultsToConnectionString(t *testing.T) {
+	t.Setenv("SERVICEBUS_AUTH_MODE", "")
+	t.Setenv("SERVICEBUS_NAMESPACE_FQDN", " ")
+
+	cfg := Load()
+
+	if cfg.ServiceBusAuthMode != ServiceBusAuthConnectionString {
+		t.Fatalf("ServiceBusAuthMode = %q, want %q", cfg.ServiceBusAuthMode, ServiceBusAuthConnectionString)
+	}
+	if cfg.ServiceBusNamespaceFQDN != "" {
+		t.Fatalf("ServiceBusNamespaceFQDN = %q, want empty", cfg.ServiceBusNamespaceFQDN)
+	}
+}
+
+func TestLoadServiceBusManagedIdentityConfig(t *testing.T) {
+	t.Setenv("SERVICEBUS_AUTH_MODE", " managed_identity ")
+	t.Setenv("SERVICEBUS_NAMESPACE_FQDN", " nycu-password-hook.servicebus.windows.net ")
+
+	cfg := Load()
+
+	if cfg.ServiceBusAuthMode != ServiceBusAuthManagedIdentity {
+		t.Fatalf("ServiceBusAuthMode = %q, want managed_identity", cfg.ServiceBusAuthMode)
+	}
+	if cfg.ServiceBusNamespaceFQDN != "nycu-password-hook.servicebus.windows.net" {
+		t.Fatalf("ServiceBusNamespaceFQDN = %q", cfg.ServiceBusNamespaceFQDN)
+	}
+}
+
+func TestValidateManagedIdentityRequiresNamespaceNotConnectionString(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusAuthMode = ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = "nycu-password-hook.servicebus.windows.net"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestValidateManagedIdentityRequiresNamespaceFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusAuthMode = ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = ""
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "SERVICEBUS_NAMESPACE_FQDN is required when SERVICEBUS_AUTH_MODE=managed_identity" {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidServiceBusAuthMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusAuthMode = "sas"
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "SERVICEBUS_AUTH_MODE must be connection_string or managed_identity" {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func completeConfig() Config {
 	return Config{
 		SecretsSource:                 SecretsSourceEnv,
@@ -416,6 +483,8 @@ func completeConfig() Config {
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
 		HookMaxBodyBytes:              64 * 1024,
+		ServiceBusAuthMode:            ServiceBusAuthConnectionString,
+		ServiceBusNamespaceFQDN:       "",
 		ServiceBusConnectionString:    testServiceBusConnectionString,
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",
