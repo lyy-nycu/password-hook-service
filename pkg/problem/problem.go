@@ -40,6 +40,10 @@ func TooManyRequests(baseURL, instance, traceID, detail string) Problem {
 	return New(typeURL(baseURL, "too-many-requests"), "Too Many Requests", http.StatusTooManyRequests, detail, instance, traceID)
 }
 
+func PayloadTooLarge(baseURL, instance, traceID, detail string) Problem {
+	return New(typeURL(baseURL, "payload-too-large"), "Payload Too Large", http.StatusRequestEntityTooLarge, detail, instance, traceID)
+}
+
 func Internal(baseURL, instance, traceID, detail string) Problem {
 	return New(typeURL(baseURL, "internal-error"), "Internal Server Error", http.StatusInternalServerError, detail, instance, traceID)
 }

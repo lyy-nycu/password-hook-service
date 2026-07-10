@@ -51,6 +51,36 @@ func TestHMACAllowsValidSignature(t *testing.T) {
 	}
 }
 
+func TestNewHMACWithOptionsDefaultsZeroMaxBodyBytes(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	secret := "shared-secret"
+	timestamp := time.Now().Unix()
+	nonce := "887766554433221100ffeeddccbbaa99"
+	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		ProblemBase: "https://nycu.edu.tw/problems",
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	})
+	rec := httptest.NewRecorder()
+	middleware.Wrap(next).ServeHTTP(rec, signedRequest(body, timestamp, nonce, sign(secret, timestamp, nonce, body)))
+
+	if !called {
+		t.Fatal("next handler was not called")
+	}
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
 func TestHMACZerosBodyAfterNextHandler(t *testing.T) {
 	t.Parallel()
 
@@ -117,9 +147,10 @@ func TestHMACRecordsUnauthorizedRejection(t *testing.T) {
 	recorder := observability.NewCaptureRecorder()
 	var logs bytes.Buffer
 	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
-		ProblemBase: "https://nycu.edu.tw/problems",
-		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
-		Recorder:    recorder,
+		ProblemBase:  "https://nycu.edu.tw/problems",
+		MaxBodyBytes: defaultHMACMaxBodyBytes,
+		Logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewHMACWithOptions returned error: %v", err)
@@ -161,8 +192,9 @@ func TestHMACRecordsReadBodyFailureRejection(t *testing.T) {
 	recorder := observability.NewCaptureRecorder()
 	var logs bytes.Buffer
 	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
-		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
-		Recorder: recorder,
+		MaxBodyBytes: defaultHMACMaxBodyBytes,
+		Logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewHMACWithOptions returned error: %v", err)
@@ -189,6 +221,71 @@ func TestHMACRecordsReadBodyFailureRejection(t *testing.T) {
 	}
 }
 
+func TestHMACRejectsBodyAboveConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	body := []byte("more than eight bytes")
+	secret := "shared-secret"
+	timestamp := time.Now().Unix()
+	nonce := "aabbccddeeff00112233445566778899"
+	recorder := observability.NewCaptureRecorder()
+	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		ProblemBase:  "https://nycu.edu.tw/problems",
+		MaxBodyBytes: 8,
+		Recorder:     recorder,
+	})
+	if err != nil {
+		t.Fatalf("NewHMACWithOptions returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, signedRequest(body, timestamp, nonce, sign(secret, timestamp, nonce, body)))
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"type":"https://nycu.edu.tw/problems/payload-too-large"`)) {
+		t.Fatalf("problem body = %s", rec.Body.String())
+	}
+	samples := recorder.Counters(observability.MetricMiddlewareRequestsTotal)
+	if len(samples) != 1 {
+		t.Fatalf("middleware samples = %d, want 1", len(samples))
+	}
+	labels := samples[0].Labels
+	if labels["middleware"] != "hmac" || labels["status"] != "413" || labels["outcome"] != "payload_too_large" || labels["reason"] != "request_body_too_large" {
+		t.Fatalf("labels = %#v, want hmac payload-too-large labels", labels)
+	}
+}
+
+func TestHMACUsesGenericClientDetailForAuthFailures(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"cn":"311551001"}`)
+	timestamp := time.Now().Unix()
+	nonce := "ffeeddccbbaa99887766554433221100"
+	middleware, err := NewHMAC("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second)
+	if err != nil {
+		t.Fatalf("NewHMAC returned error: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	middleware.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, signedRequest(body, timestamp, nonce, sign("wrong-secret", timestamp, nonce, body)))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte(`"detail":"request authentication failed"`)) {
+		t.Fatalf("problem body = %s, want generic detail", rec.Body.String())
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("signature mismatch")) {
+		t.Fatalf("problem body leaked internal reason: %s", rec.Body.String())
+	}
+}
+
 func TestHMACRecordsStaleTimestampRejection(t *testing.T) {
 	t.Parallel()
 
@@ -200,8 +297,9 @@ func TestHMACRecordsStaleTimestampRejection(t *testing.T) {
 	recorder := observability.NewCaptureRecorder()
 	var logs bytes.Buffer
 	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
-		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
-		Recorder: recorder,
+		MaxBodyBytes: defaultHMACMaxBodyBytes,
+		Logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewHMACWithOptions returned error: %v", err)
@@ -233,8 +331,9 @@ func TestHMACRecordsSignatureMismatchRejection(t *testing.T) {
 	recorder := observability.NewCaptureRecorder()
 	var logs bytes.Buffer
 	middleware, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
-		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
-		Recorder: recorder,
+		MaxBodyBytes: defaultHMACMaxBodyBytes,
+		Logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewHMACWithOptions returned error: %v", err)
@@ -268,8 +367,9 @@ func TestHMACRecordsNonceReplayRejection(t *testing.T) {
 	recorder := observability.NewCaptureRecorder()
 	var logs bytes.Buffer
 	middleware, err := NewHMACWithOptions(secret, NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
-		Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
-		Recorder: recorder,
+		MaxBodyBytes: defaultHMACMaxBodyBytes,
+		Logger:       slog.New(slog.NewJSONHandler(&logs, nil)),
+		Recorder:     recorder,
 	})
 	if err != nil {
 		t.Fatalf("NewHMACWithOptions returned error: %v", err)
@@ -429,6 +529,20 @@ func TestNewHMACRejectsEmptySecret(t *testing.T) {
 	_, err := NewHMAC("", NewMemoryNonceStore(60*time.Second), 30*time.Second)
 	if err == nil {
 		t.Fatal("NewHMAC returned nil error for empty secret")
+	}
+}
+
+func TestNewHMACWithOptionsRejectsInvalidBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewHMACWithOptions("shared-secret", NewMemoryNonceStore(60*time.Second), 30*time.Second, HMACOptions{
+		MaxBodyBytes: -1,
+	})
+	if err == nil {
+		t.Fatal("NewHMACWithOptions returned nil error")
+	}
+	if err.Error() != "hmac max body bytes must not be negative" {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

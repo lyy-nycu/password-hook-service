@@ -36,7 +36,30 @@ func TestRateLimiterRejectsNonAllowlistedIP(t *testing.T) {
 	}
 }
 
-func TestRateLimiterRejectsRequestAboveThreshold(t *testing.T) {
+func TestRateLimiterAllowsAllowlistedSource(t *testing.T) {
+	t.Parallel()
+
+	limiter := NewRateLimiter(RateLimitConfig{
+		AllowedCIDRs: []string{"192.0.2.0/24"},
+		LimitPerIP:   500,
+		Window:       time.Second,
+		ProblemBase:  "https://nycu.edu.tw/problems",
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+
+	limiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
+func TestRateLimiterLimitsImmediatePortalSource(t *testing.T) {
 	t.Parallel()
 
 	limiter := NewRateLimiter(RateLimitConfig{
@@ -63,6 +86,70 @@ func TestRateLimiterRejectsRequestAboveThreshold(t *testing.T) {
 	handler.ServeHTTP(second, req)
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("second status = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRateLimiterIgnoresForwardedForWhenKeyingPortalSource(t *testing.T) {
+	t.Parallel()
+
+	limiter := NewRateLimiter(RateLimitConfig{
+		AllowedCIDRs: []string{"192.0.2.0/24"},
+		LimitPerIP:   1,
+		Window:       time.Second,
+		ProblemBase:  "https://nycu.edu.tw/problems",
+	})
+	handler := limiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	first := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	handler.ServeHTTP(first, req)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want %d", first.Code, http.StatusAccepted)
+	}
+
+	second := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.Header.Set("X-Forwarded-For", "203.0.113.2")
+	handler.ServeHTTP(second, req)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("second status = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestRateLimiterResetsAfterWindow(t *testing.T) {
+	t.Parallel()
+
+	limiter := NewRateLimiter(RateLimitConfig{
+		AllowedCIDRs: []string{"192.0.2.0/24"},
+		LimitPerIP:   1,
+		Window:       time.Millisecond,
+		ProblemBase:  "https://nycu.edu.tw/problems",
+	})
+	handler := limiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	first := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	handler.ServeHTTP(first, req)
+	if first.Code != http.StatusAccepted {
+		t.Fatalf("first status = %d, want %d", first.Code, http.StatusAccepted)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+
+	second := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	handler.ServeHTTP(second, req)
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second status = %d, want %d", second.Code, http.StatusAccepted)
 	}
 }
 

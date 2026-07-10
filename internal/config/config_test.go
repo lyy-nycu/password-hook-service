@@ -110,6 +110,81 @@ func TestValidateRejectsInvalidPortalAllowedCIDR(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRequiresPortalAllowedCIDRs(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.PortalAllowedCIDRs = nil
+
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != "PORTAL_ALLOWED_CIDRS is required" {
+		t.Fatalf("ValidateHTTP error = %v, want PORTAL_ALLOWED_CIDRS is required", err)
+	}
+}
+
+func TestValidateHTTPRequiresNonBlankPortalAllowedCIDRs(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.PortalAllowedCIDRs = []string{" ", ""}
+
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != "PORTAL_ALLOWED_CIDRS is required" {
+		t.Fatalf("ValidateHTTP error = %v, want PORTAL_ALLOWED_CIDRS is required", err)
+	}
+}
+
+func TestLoadAPIProtectionSettings(t *testing.T) {
+	t.Setenv("PORTAL_ALLOWED_CIDRS", " 192.0.2.0/24, 2001:db8::/32 ")
+	t.Setenv("RATE_LIMIT_PER_IP", "750")
+	t.Setenv("RATE_LIMIT_WINDOW", "2s")
+	t.Setenv("HOOK_MAX_BODY_BYTES", "32768")
+
+	cfg := Load()
+
+	if got, want := cfg.PortalAllowedCIDRs, []string{"192.0.2.0/24", "2001:db8::/32"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("PortalAllowedCIDRs = %#v, want %#v", got, want)
+	}
+	if cfg.RateLimitPerIP != 750 {
+		t.Fatalf("RateLimitPerIP = %d, want 750", cfg.RateLimitPerIP)
+	}
+	if cfg.RateLimitWindow != 2*time.Second {
+		t.Fatalf("RateLimitWindow = %s, want 2s", cfg.RateLimitWindow)
+	}
+	if cfg.HookMaxBodyBytes != 32768 {
+		t.Fatalf("HookMaxBodyBytes = %d, want 32768", cfg.HookMaxBodyBytes)
+	}
+}
+
+func TestValidateHTTPRejectsInvalidAPIProtectionSettings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "zero rate limit", edit: func(cfg *Config) { cfg.RateLimitPerIP = 0 }, want: "RateLimitPerIP must be positive"},
+		{name: "negative rate limit", edit: func(cfg *Config) { cfg.RateLimitPerIP = -1 }, want: "RateLimitPerIP must be positive"},
+		{name: "zero rate window", edit: func(cfg *Config) { cfg.RateLimitWindow = 0 }, want: "RateLimitWindow must be positive"},
+		{name: "negative rate window", edit: func(cfg *Config) { cfg.RateLimitWindow = -time.Second }, want: "RateLimitWindow must be positive"},
+		{name: "zero max body", edit: func(cfg *Config) { cfg.HookMaxBodyBytes = 0 }, want: "HookMaxBodyBytes must be positive"},
+		{name: "negative max body", edit: func(cfg *Config) { cfg.HookMaxBodyBytes = -1 }, want: "HookMaxBodyBytes must be positive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := completeConfig()
+			tt.edit(&cfg)
+
+			err := cfg.ValidateHTTP()
+			if err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateRequiresServiceBusConnectionString(t *testing.T) {
 	t.Parallel()
 
@@ -337,9 +412,10 @@ func completeConfig() Config {
 		ProblemBaseURL:                "https://nycu.edu.tw/problems",
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
-		PortalAllowedCIDRs:            nil,
+		PortalAllowedCIDRs:            []string{"192.0.2.0/24"},
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
+		HookMaxBodyBytes:              64 * 1024,
 		ServiceBusConnectionString:    testServiceBusConnectionString,
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",

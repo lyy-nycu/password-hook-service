@@ -83,6 +83,25 @@ func TestTooManyRequestsHelper(t *testing.T) {
 	}
 }
 
+func TestPayloadTooLargeProblem(t *testing.T) {
+	t.Parallel()
+
+	p := PayloadTooLarge("https://nycu.edu.tw/problems", "/api/v1/hook/password", "trace-123", "request body is too large")
+
+	if p.Type != "https://nycu.edu.tw/problems/payload-too-large" {
+		t.Fatalf("type = %q", p.Type)
+	}
+	if p.Title != "Payload Too Large" {
+		t.Fatalf("title = %q", p.Title)
+	}
+	if p.Status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d", p.Status)
+	}
+	if p.TraceID != "trace-123" {
+		t.Fatalf("traceId = %q", p.TraceID)
+	}
+}
+
 func TestInternalHelper(t *testing.T) {
 	t.Parallel()
 

@@ -41,6 +41,7 @@ type Config struct {
 	PortalAllowedCIDRs            []string
 	RateLimitPerIP                int
 	RateLimitWindow               time.Duration
+	HookMaxBodyBytes              int64
 	ServiceBusConnectionString    string
 	ServiceBusQueueName           string
 	ServiceBusDeadLetterQueueName string
@@ -76,7 +77,8 @@ func Load() Config {
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            csvEnv("PORTAL_ALLOWED_CIDRS"),
 		RateLimitPerIP:                intEnv("RATE_LIMIT_PER_IP", 500),
-		RateLimitWindow:               time.Second,
+		RateLimitWindow:               durationEnv("RATE_LIMIT_WINDOW", time.Second),
+		HookMaxBodyBytes:              int64Env("HOOK_MAX_BODY_BYTES", 64*1024),
 		ServiceBusConnectionString:    strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
 		ServiceBusQueueName:           env("SERVICEBUS_QUEUE_NAME", "password-sync"),
 		ServiceBusDeadLetterQueueName: env("SERVICEBUS_DEADLETTER_QUEUE_NAME", "password-sync-dlq"),
@@ -169,10 +171,14 @@ func (c Config) ValidateHTTP() error {
 		return errors.New("HMACClockSkew must be positive")
 	case c.NonceTTL <= 0:
 		return errors.New("NonceTTL must be positive")
-	case c.RateLimitPerIP < 0:
-		return errors.New("RateLimitPerIP must not be negative")
-	case c.RateLimitWindow < 0:
-		return errors.New("RateLimitWindow must not be negative")
+	case !hasNonBlank(c.PortalAllowedCIDRs):
+		return errors.New("PORTAL_ALLOWED_CIDRS is required")
+	case c.RateLimitPerIP <= 0:
+		return errors.New("RateLimitPerIP must be positive")
+	case c.RateLimitWindow <= 0:
+		return errors.New("RateLimitWindow must be positive")
+	case c.HookMaxBodyBytes <= 0:
+		return errors.New("HookMaxBodyBytes must be positive")
 	default:
 		return validateCIDRs(c.PortalAllowedCIDRs)
 	}
@@ -206,6 +212,15 @@ func (c Config) ValidateSecretLoadingInputs() error {
 	default:
 		return errors.New("SECRETS_SOURCE must be env or keyvault")
 	}
+}
+
+func hasNonBlank(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCIDRs(values []string) error {
@@ -251,6 +266,30 @@ func intEnv(key string, fallback int) int {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func int64Env(key string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := time.ParseDuration(raw)
 	if err != nil {
 		return fallback
 	}
