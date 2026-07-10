@@ -541,7 +541,7 @@ func TestNewHMACWithOptionsRejectsInvalidBodyLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewHMACWithOptions returned nil error")
 	}
-	if err.Error() != "hmac max body bytes must be positive" {
+	if err.Error() != "hmac max body bytes must not be negative" {
 		t.Fatalf("error = %q", err.Error())
 	}
 }
