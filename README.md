@@ -273,9 +273,9 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
 | `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated source CIDR allowlist for portal web-server egress IPs |
-| `RATE_LIMIT_PER_IP` | `500` | Required positive value; per-source-IP request threshold during `RATE_LIMIT_WINDOW`; with two portal web servers, aggregate capacity is approximately `2 * RATE_LIMIT_PER_IP` |
-| `RATE_LIMIT_WINDOW` | `1s` | Required positive Go duration for the anomaly rate-limit window |
-| `HOOK_MAX_BODY_BYTES` | `65536` | Required positive byte limit for signed hook request bodies |
+| `RATE_LIMIT_PER_IP` | `500` | Optional; defaults to `500`; must be positive when set; per-source-IP request threshold during `RATE_LIMIT_WINDOW`; with two portal web servers, aggregate capacity is approximately `2 * RATE_LIMIT_PER_IP` |
+| `RATE_LIMIT_WINDOW` | `1s` | Optional; defaults to `1s`; must be a positive Go duration when set; anomaly rate-limit window |
+| `HOOK_MAX_BODY_BYTES` | `65536` | Optional; defaults to `65536`; must be a positive byte limit when set; signed hook request body limit |
 | `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure Container Apps managed OpenTelemetry agent endpoint for traces |
 | `AZURE_MONITOR_METRIC_RESOURCE_ID` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure resource ID that owns custom metrics |
