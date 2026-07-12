@@ -56,7 +56,7 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 ## Local Run
 
-Set the required environment variables:
+For local development with connection string (fallback):
 
 ```bash
 export SECRETS_SOURCE="env"
@@ -64,6 +64,7 @@ export HOOK_HMAC_SECRET="local-development-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
 export PROBLEM_BASE_URL="https://nycu.edu.tw/problems"
 export HTTP_ADDR=":8080"
+export SERVICEBUS_AUTH_MODE="connection_string"
 export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
@@ -78,9 +79,23 @@ export RATE_LIMIT_WINDOW="1s"
 export HOOK_MAX_BODY_BYTES="65536"
 ```
 
+For production with managed identity:
+
+```bash
+export SECRETS_SOURCE="keyvault"
+export SERVICEBUS_AUTH_MODE="managed_identity"
+export SERVICEBUS_NAMESPACE_FQDN="<namespace>.servicebus.windows.net"
+export SERVICEBUS_QUEUE_NAME="password-sync"
+export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+```
+
 Production `app.New` requires `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, and `GRAPH_CLIENT_SECRET`. The Graph app registration needs the approved application permission `User.ReadWrite.All`.
 
-Use a queue- or topic-level Shared Access Policy with the permissions needed by this runtime to send hook messages, receive worker messages, and send safe DLQ messages. Do not use namespace-level manage policies for application runtime credentials.
+### Service Bus Managed Identity
+
+Production uses the Container App managed identity rather than a Service Bus connection string or Shared Access Signature (SAS). Assign the identity the narrowest Service Bus RBAC roles needed to send active-queue hook messages, receive and settle active-queue worker messages, and send safe-DLQ messages. Scope roles to the relevant queue or topic where supported; do not grant namespace-level management access to the application runtime.
+
+`SERVICEBUS_AUTH_MODE=connection_string` and its SAS connection string remain supported for local development and an explicitly approved emergency rollback only. They are not the production authentication path.
 
 Run the service:
 
@@ -92,7 +107,9 @@ docker run --rm -p 8080:8080 \
   -e ENTRA_PRIMARY_DOMAIN \
   -e PROBLEM_BASE_URL \
   -e HTTP_ADDR \
+  -e SERVICEBUS_AUTH_MODE \
   -e SERVICEBUS_CONNECTION_STRING \
+  -e SERVICEBUS_NAMESPACE_FQDN \
   -e SERVICEBUS_QUEUE_NAME \
   -e SERVICEBUS_DEADLETTER_QUEUE_NAME \
   -e PASSWORD_ENCRYPTION_KEY_B64 \
@@ -127,6 +144,7 @@ Production uses Managed Identity through Azure SDK `DefaultAzureCredential`.
 export SECRETS_SOURCE="keyvault"
 export KEY_VAULT_URL="https://<vault-name>.vault.azure.net/"
 export KEY_VAULT_HMAC_SECRET_NAME="hook-hmac-secret"
+# Required only when SERVICEBUS_AUTH_MODE=connection_string.
 export KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME="servicebus-conn-str"
 export KEY_VAULT_GRAPH_CLIENT_SECRET_NAME="graph-client-secret"
 export ENTRA_PRIMARY_DOMAIN="nycu.edu.tw"
@@ -137,6 +155,8 @@ export SERVICEBUS_QUEUE_NAME="password-sync"
 ```
 
 The managed identity assigned to the container app must have `secrets/get` permission for the configured Key Vault. Local development must opt into `SECRETS_SOURCE=env`; the service does not silently fall back from Key Vault to environment secrets.
+
+When using `SERVICEBUS_AUTH_MODE=managed_identity`, `KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME` is not required. The managed identity authenticates to Service Bus through RBAC instead of a connection string.
 
 ## Local HMAC Request
 
@@ -257,7 +277,7 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `SECRETS_SOURCE` | empty | Required; `env` for explicit local fallback or `keyvault` for Azure Key Vault |
 | `KEY_VAULT_URL` | empty | Required when `SECRETS_SOURCE=keyvault` |
 | `KEY_VAULT_HMAC_SECRET_NAME` | `hook-hmac-secret` | Key Vault secret name for the HMAC shared secret |
-| `KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME` | `servicebus-conn-str` | Key Vault secret name for the Service Bus connection string |
+| `KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME` | `servicebus-conn-str` | Service Bus connection-string secret name; required only when `SERVICEBUS_AUTH_MODE=connection_string` |
 | `KEY_VAULT_GRAPH_CLIENT_SECRET_NAME` | `graph-client-secret` | Key Vault secret name for the Graph client secret |
 | `HTTP_ADDR` | `:8080` | HTTP bind address |
 | `HOOK_HMAC_SECRET` | empty | HMAC shared secret when `SECRETS_SOURCE=env` |
@@ -267,7 +287,9 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `GRAPH_CLIENT_ID` | empty | Required for production; app registration client ID for Graph app-only auth |
 | `GRAPH_CLIENT_SECRET` | empty | Graph app client secret when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
 | `PROBLEM_BASE_URL` | `https://nycu.edu.tw/problems` | RFC 9457 problem type base URL |
-| `SERVICEBUS_CONNECTION_STRING` | empty | Azure Service Bus connection string when `SECRETS_SOURCE=env`; loaded from Key Vault when `SECRETS_SOURCE=keyvault` |
+| `SERVICEBUS_AUTH_MODE` | `connection_string` | `connection_string` for local or emergency rollback, or `managed_identity` for production Service Bus RBAC authentication |
+| `SERVICEBUS_CONNECTION_STRING` | empty | Local or rollback Service Bus connection string when `SERVICEBUS_AUTH_MODE=connection_string`; loaded from Key Vault only in that mode |
+| `SERVICEBUS_NAMESPACE_FQDN` | empty | Required when `SERVICEBUS_AUTH_MODE=managed_identity`; Service Bus namespace FQDN authenticated through managed identity and RBAC |
 | `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |
 | `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |

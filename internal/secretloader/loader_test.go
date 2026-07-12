@@ -176,6 +176,38 @@ func TestResolveKeyVaultSourcePropagatesContextCancellation(t *testing.T) {
 	}
 }
 
+func TestResolveKeyVaultManagedIdentitySkipsServiceBusConnectionSecret(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.SecretsSource = config.SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
+	cfg.ServiceBusAuthMode = config.ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = "nycu-password-hook.servicebus.windows.net"
+	cfg.HMACSecret = ""
+	cfg.GraphClientSecret = ""
+	cfg.PasswordEncryptionKeyB64 = ""
+	getter := &fakeGetter{values: map[string]string{
+		"hook-hmac-secret":                "kv-hmac",
+		"graph-client-secret":             "kv-graph-secret",
+		"password-payload-encryption-key": base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
+	}}
+
+	got, err := Resolve(context.Background(), cfg, getter)
+	if err != nil {
+		t.Fatalf("Resolve returned error: %v", err)
+	}
+
+	if got.ServiceBusConnectionString != "" {
+		t.Fatalf("ServiceBusConnectionString = %q, want empty", got.ServiceBusConnectionString)
+	}
+	wantCalls := []string{"hook-hmac-secret", "graph-client-secret", "password-payload-encryption-key"}
+	if strings.Join(getter.calls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("calls = %v, want %v", getter.calls, wantCalls)
+	}
+}
+
 type fakeGetter struct {
 	values map[string]string
 	errs   map[string]error
@@ -208,6 +240,8 @@ func completeConfig() config.Config {
 		PortalAllowedCIDRs:            nil,
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
+		ServiceBusAuthMode:            config.ServiceBusAuthConnectionString,
+		ServiceBusNamespaceFQDN:       "",
 		ServiceBusConnectionString:    "Endpoint=sb://example.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=dGVzdA==",
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",

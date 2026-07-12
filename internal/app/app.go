@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -112,6 +113,15 @@ type observabilityRuntime struct {
 	closers  []appCloser
 }
 
+type serviceBusRuntime struct {
+	queue    migration.Queue
+	receiver worker.Receiver
+	dlq      worker.DeadLetterSink
+	closers  []appCloser
+}
+
+var buildServiceBusRuntime = newServiceBusRuntime
+
 type App struct {
 	server  *httpserver.Server
 	worker  appWorker
@@ -129,23 +139,11 @@ func New(cfg config.Config) (*App, error) {
 	}
 	closers := append([]appCloser(nil), observabilityRuntime.closers...)
 
-	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	serviceBus, err := buildServiceBusRuntime(cfg)
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
 	}
-	closers = append(closers, queue)
-
-	receiver, err := servicebusqueue.NewReceiverFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName)
-	if err != nil {
-		return nil, closeAfterWiringError(err, closers)
-	}
-	closers = append(closers, receiver)
-
-	dlq, err := servicebusqueue.NewDeadLetterQueueFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusDeadLetterQueueName)
-	if err != nil {
-		return nil, closeAfterWiringError(err, closers)
-	}
-	closers = append(closers, dlq)
+	closers = append(closers, serviceBus.closers...)
 
 	credential, err := azidentity.NewClientSecretCredential(cfg.GraphTenantID, cfg.GraphClientID, cfg.GraphClientSecret, nil)
 	if err != nil {
@@ -168,7 +166,7 @@ func New(cfg config.Config) (*App, error) {
 		return nil, closeAfterWiringError(err, closers)
 	}
 
-	return newWithWorkerDependenciesWithRecorder(cfg, queue, receiver, processor, dlq, passwordCodec, observabilityRuntime.recorder, closers...)
+	return newWithWorkerDependenciesWithRecorder(cfg, serviceBus.queue, serviceBus.receiver, processor, serviceBus.dlq, passwordCodec, observabilityRuntime.recorder, closers...)
 }
 
 func newObservabilityRuntime(ctx context.Context, cfg config.Config) (observabilityRuntime, error) {
@@ -197,6 +195,66 @@ func newObservabilityRuntime(ctx context.Context, cfg config.Config) (observabil
 		recorder: recorder,
 		closers:  []appCloser{appCloserFunc(shutdown), newPeriodicMetricFlusher(recorder, azureMonitorMetricFlushInterval)},
 	}, nil
+}
+
+func newServiceBusRuntime(cfg config.Config) (serviceBusRuntime, error) {
+	switch cfg.ServiceBusAuthMode {
+	case "", config.ServiceBusAuthConnectionString:
+		return newConnectionStringServiceBusRuntime(cfg)
+	case config.ServiceBusAuthManagedIdentity:
+		return newManagedIdentityServiceBusRuntime(cfg)
+	default:
+		return serviceBusRuntime{}, errors.New("SERVICEBUS_AUTH_MODE must be connection_string or managed_identity")
+	}
+}
+
+func newConnectionStringServiceBusRuntime(cfg config.Config) (serviceBusRuntime, error) {
+	queue, err := servicebusqueue.NewFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	if err != nil {
+		return serviceBusRuntime{}, err
+	}
+	closers := []appCloser{queue}
+
+	receiver, err := servicebusqueue.NewReceiverFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusQueueName)
+	if err != nil {
+		return serviceBusRuntime{}, closeAfterWiringError(err, closers)
+	}
+	closers = append(closers, receiver)
+
+	dlq, err := servicebusqueue.NewDeadLetterQueueFromConnectionString(cfg.ServiceBusConnectionString, cfg.ServiceBusDeadLetterQueueName)
+	if err != nil {
+		return serviceBusRuntime{}, closeAfterWiringError(err, closers)
+	}
+	closers = append(closers, dlq)
+
+	return serviceBusRuntime{queue: queue, receiver: receiver, dlq: dlq, closers: closers}, nil
+}
+
+func newManagedIdentityServiceBusRuntime(cfg config.Config) (serviceBusRuntime, error) {
+	credential, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		return serviceBusRuntime{}, fmt.Errorf("create Azure credential: %w", err)
+	}
+
+	queue, err := servicebusqueue.NewFromNamespace(cfg.ServiceBusNamespaceFQDN, credential, cfg.ServiceBusQueueName, cfg.PasswordMessageTTL)
+	if err != nil {
+		return serviceBusRuntime{}, err
+	}
+	closers := []appCloser{queue}
+
+	receiver, err := servicebusqueue.NewReceiverFromNamespace(cfg.ServiceBusNamespaceFQDN, credential, cfg.ServiceBusQueueName)
+	if err != nil {
+		return serviceBusRuntime{}, closeAfterWiringError(err, closers)
+	}
+	closers = append(closers, receiver)
+
+	dlq, err := servicebusqueue.NewDeadLetterQueueFromNamespace(cfg.ServiceBusNamespaceFQDN, credential, cfg.ServiceBusDeadLetterQueueName)
+	if err != nil {
+		return serviceBusRuntime{}, closeAfterWiringError(err, closers)
+	}
+	closers = append(closers, dlq)
+
+	return serviceBusRuntime{queue: queue, receiver: receiver, dlq: dlq, closers: closers}, nil
 }
 
 func NewWithQueue(cfg config.Config, queue migration.Queue) (*App, error) {

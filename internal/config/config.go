@@ -13,6 +13,9 @@ import (
 const (
 	SecretsSourceEnv      = "env"
 	SecretsSourceKeyVault = "keyvault"
+
+	ServiceBusAuthConnectionString = "connection_string"
+	ServiceBusAuthManagedIdentity  = "managed_identity"
 )
 
 const (
@@ -42,6 +45,8 @@ type Config struct {
 	RateLimitPerIP                int
 	RateLimitWindow               time.Duration
 	HookMaxBodyBytes              int64
+	ServiceBusAuthMode            string
+	ServiceBusNamespaceFQDN       string
 	ServiceBusConnectionString    string
 	ServiceBusQueueName           string
 	ServiceBusDeadLetterQueueName string
@@ -79,6 +84,8 @@ func Load() Config {
 		RateLimitPerIP:                intEnv("RATE_LIMIT_PER_IP", 500),
 		RateLimitWindow:               durationEnv("RATE_LIMIT_WINDOW", time.Second),
 		HookMaxBodyBytes:              int64Env("HOOK_MAX_BODY_BYTES", 64*1024),
+		ServiceBusAuthMode:            env("SERVICEBUS_AUTH_MODE", ServiceBusAuthConnectionString),
+		ServiceBusNamespaceFQDN:       strings.TrimSpace(os.Getenv("SERVICEBUS_NAMESPACE_FQDN")),
 		ServiceBusConnectionString:    strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
 		ServiceBusQueueName:           env("SERVICEBUS_QUEUE_NAME", "password-sync"),
 		ServiceBusDeadLetterQueueName: env("SERVICEBUS_DEADLETTER_QUEUE_NAME", "password-sync-dlq"),
@@ -103,18 +110,13 @@ func (c Config) Validate() error {
 	if err := c.ValidateHTTP(); err != nil {
 		return err
 	}
+	if err := c.validateServiceBus(); err != nil {
+		return err
+	}
 	if err := c.validateObservability(); err != nil {
 		return err
 	}
 	switch {
-	case strings.TrimSpace(c.ServiceBusConnectionString) == "":
-		return errors.New("SERVICEBUS_CONNECTION_STRING is required")
-	case strings.TrimSpace(c.ServiceBusQueueName) == "":
-		return errors.New("SERVICEBUS_QUEUE_NAME is required")
-	case strings.TrimSpace(c.ServiceBusDeadLetterQueueName) == "":
-		return errors.New("SERVICEBUS_DEADLETTER_QUEUE_NAME is required")
-	case c.PasswordMessageTTL <= 0:
-		return errors.New("PasswordMessageTTL must be positive")
 	case strings.TrimSpace(c.PasswordEncryptionKeyB64) == "":
 		return errors.New("PASSWORD_ENCRYPTION_KEY_B64 is required")
 	case strings.TrimSpace(c.PasswordEncryptionKeyID) == "":
@@ -125,6 +127,35 @@ func (c Config) Validate() error {
 		return errors.New("GRAPH_CLIENT_ID is required")
 	case strings.TrimSpace(c.GraphClientSecret) == "":
 		return errors.New("GRAPH_CLIENT_SECRET is required")
+	default:
+		return nil
+	}
+}
+
+func (c Config) validateServiceBus() error {
+	switch c.ServiceBusAuthMode {
+	case "", ServiceBusAuthConnectionString:
+		if strings.TrimSpace(c.ServiceBusConnectionString) == "" {
+			return errors.New("SERVICEBUS_CONNECTION_STRING is required")
+		}
+	case ServiceBusAuthManagedIdentity:
+		namespaceFQDN := strings.ToLower(strings.TrimSpace(c.ServiceBusNamespaceFQDN))
+		if namespaceFQDN == "" {
+			return errors.New("SERVICEBUS_NAMESPACE_FQDN is required when SERVICEBUS_AUTH_MODE=managed_identity")
+		}
+		if strings.Contains(namespaceFQDN, "://") || !strings.HasSuffix(namespaceFQDN, ".servicebus.windows.net") {
+			return errors.New("SERVICEBUS_NAMESPACE_FQDN must be a Service Bus namespace host name")
+		}
+	default:
+		return errors.New("SERVICEBUS_AUTH_MODE must be connection_string or managed_identity")
+	}
+	switch {
+	case strings.TrimSpace(c.ServiceBusQueueName) == "":
+		return errors.New("SERVICEBUS_QUEUE_NAME is required")
+	case strings.TrimSpace(c.ServiceBusDeadLetterQueueName) == "":
+		return errors.New("SERVICEBUS_DEADLETTER_QUEUE_NAME is required")
+	case c.PasswordMessageTTL <= 0:
+		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return nil
 	}
@@ -200,7 +231,7 @@ func (c Config) ValidateSecretLoadingInputs() error {
 		switch {
 		case strings.TrimSpace(c.KeyVaultSecretNames.HMACSecret) == "":
 			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
-		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
+		case c.ServiceBusAuthMode != ServiceBusAuthManagedIdentity && strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
 			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
 		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
 			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")

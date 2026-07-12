@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
 	"github.com/nycu/password-hook-service/internal/observability"
@@ -201,6 +203,42 @@ func TestNewFromConnectionStringWrapsClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "create service bus client") {
 		t.Fatalf("error = %q, want create service bus client", err.Error())
+	}
+}
+
+func TestNewFromNamespaceRejectsEmptyNamespace(t *testing.T) {
+	t.Parallel()
+
+	queue, err := NewFromNamespace("", fakeTokenCredential{}, "password-sync", 300*time.Second)
+	if err == nil || err.Error() != "service bus namespace FQDN is required" {
+		t.Fatalf("NewFromNamespace error = %v, want namespace error", err)
+	}
+	if queue != nil {
+		t.Fatalf("NewFromNamespace queue = %#v, want nil", queue)
+	}
+}
+
+func TestNewFromNamespaceRejectsNilCredential(t *testing.T) {
+	t.Parallel()
+
+	queue, err := NewFromNamespace("example.servicebus.windows.net", nil, "password-sync", 300*time.Second)
+	if err == nil || err.Error() != "service bus token credential is required" {
+		t.Fatalf("NewFromNamespace error = %v, want credential error", err)
+	}
+	if queue != nil {
+		t.Fatalf("NewFromNamespace queue = %#v, want nil", queue)
+	}
+}
+
+func TestNewReceiverFromNamespaceRejectsEmptyQueue(t *testing.T) {
+	t.Parallel()
+
+	receiver, err := NewReceiverFromNamespace("example.servicebus.windows.net", fakeTokenCredential{}, "")
+	if err == nil || err.Error() != "service bus queue name is required" {
+		t.Fatalf("NewReceiverFromNamespace error = %v, want queue name error", err)
+	}
+	if receiver != nil {
+		t.Fatalf("NewReceiverFromNamespace receiver = %#v, want nil", receiver)
 	}
 }
 
@@ -514,6 +552,12 @@ func mustNewQueueWithClient(t *testing.T, sender sender, client closer, ttl time
 		t.Fatalf("NewWithClient returned error: %v", err)
 	}
 	return queue
+}
+
+type fakeTokenCredential struct{}
+
+func (fakeTokenCredential) GetToken(ctx context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	return azcore.AccessToken{Token: "token", ExpiresOn: time.Now().Add(time.Hour)}, nil
 }
 
 type captureServiceBusReceiver struct {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/migration"
 	"github.com/nycu/password-hook-service/internal/observability"
@@ -136,6 +137,63 @@ func NewFromConnectionString(connectionString string, queueName string, ttl time
 	}
 
 	return NewWithClient(sender, client, ttl)
+}
+
+func newClientFromNamespace(namespaceFQDN string, credential azcore.TokenCredential) (*azservicebus.Client, error) {
+	namespaceFQDN = strings.TrimSpace(namespaceFQDN)
+	if namespaceFQDN == "" {
+		return nil, errors.New("service bus namespace FQDN is required")
+	}
+	if credential == nil {
+		return nil, errors.New("service bus token credential is required")
+	}
+	client, err := azservicebus.NewClient(namespaceFQDN, credential, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create service bus client: %w", err)
+	}
+	return client, nil
+}
+
+func NewFromNamespace(namespaceFQDN string, credential azcore.TokenCredential, queueName string, ttl time.Duration) (*Queue, error) {
+	if strings.TrimSpace(queueName) == "" {
+		return nil, errors.New("service bus queue name is required")
+	}
+	client, err := newClientFromNamespace(namespaceFQDN, credential)
+	if err != nil {
+		return nil, err
+	}
+
+	sender, err := client.NewSender(queueName, nil)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("create service bus sender: %w", err),
+			closeWithTimeout(context.Background(), client),
+		)
+	}
+
+	return NewWithClient(sender, client, ttl)
+}
+
+func NewReceiverFromNamespace(namespaceFQDN string, credential azcore.TokenCredential, queueName string) (*Receiver, error) {
+	if strings.TrimSpace(queueName) == "" {
+		return nil, errors.New("service bus queue name is required")
+	}
+	client, err := newClientFromNamespace(namespaceFQDN, credential)
+	if err != nil {
+		return nil, err
+	}
+
+	receiver, err := client.NewReceiverForQueue(queueName, &azservicebus.ReceiverOptions{
+		ReceiveMode: azservicebus.ReceiveModePeekLock,
+	})
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("create service bus receiver: %w", err),
+			closeWithTimeout(context.Background(), client),
+		)
+	}
+
+	return NewReceiverWithClient(receiver, client), nil
 }
 
 func closeWithTimeout(ctx context.Context, closer closer) error {
