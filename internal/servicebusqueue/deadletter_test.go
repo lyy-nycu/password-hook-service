@@ -2,6 +2,7 @@ package servicebusqueue
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,32 @@ func TestDeadLetterQueueSendsSanitizedPasswordSyncFailure(t *testing.T) {
 		if text, ok := value.(string); ok && strings.Contains(text, "must-not-appear") {
 			t.Fatalf("application property %q leaked password value", key)
 		}
+	}
+}
+
+func TestDeadLetterQueueWrapsSendError(t *testing.T) {
+	sendErr := errors.New("service bus send failed")
+	queue, err := NewDeadLetterQueue(&captureSender{sendErr: sendErr})
+	if err != nil {
+		t.Fatalf("NewDeadLetterQueue returned error: %v", err)
+	}
+
+	err = queue.RecordPasswordSyncFailure(context.Background(), worker.DeadLetterEntry{
+		Kind:     "password-sync",
+		CN:       "u1234567",
+		UPN:      "u1234567@example.edu",
+		Reason:   worker.DeadLetterReasonPermanentProcessor,
+		Attempts: 1,
+		FailedAt: time.Date(2026, 6, 29, 9, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("RecordPasswordSyncFailure returned nil error")
+	}
+	if !errors.Is(err, sendErr) {
+		t.Fatalf("error = %v, want send error", err)
+	}
+	if !strings.Contains(err.Error(), "send password sync dead-letter message") {
+		t.Fatalf("error = %q, want send password sync dead-letter message", err.Error())
 	}
 }
 
