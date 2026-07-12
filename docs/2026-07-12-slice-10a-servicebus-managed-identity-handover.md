@@ -4,7 +4,7 @@
 
 The previous Copilot session working on `slice-10a-servicebus-managed-identity` ended after a server error and reported a GitHub API timeout. This handover records the repository state locally; the API timeout itself was not independently reproduced.
 
-Worktree: `/Users/lyy/dev/research/password-hook-service/.worktrees/slice-10a-servicebus-managed-identity`
+Worktree: `slice-10a-servicebus-managed-identity`
 
 Branch: `slice-10a-servicebus-managed-identity`
 
@@ -16,7 +16,7 @@ Base: `main` / `c9dc07c`
 
 - The branch is 8 commits ahead of `main`.
 - `README.md` was already modified and uncommitted before the handover/finalization work began.
-- This handover and `docs/superpowers/plans/active/2026-07-12-slice-10a-servicebus-managed-identity-finalization.md` were then added as untracked documentation.
+- This handover and the finalization plan were added as documentation during Slice 10A finalization.
 - Do not discard the `README.md` change without reviewing it first. It contains the in-progress managed identity documentation.
 - The Slice 10A implementation and finalization plans are now under `docs/superpowers/plans/completed/`. The current worktree changes are not committed.
 

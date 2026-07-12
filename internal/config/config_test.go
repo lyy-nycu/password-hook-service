@@ -441,6 +441,19 @@ func TestValidateManagedIdentityRequiresNamespaceNotConnectionString(t *testing.
 	}
 }
 
+func TestValidateManagedIdentityNormalizesNamespaceFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusAuthMode = ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = "  NYCU-PASSWORD-HOOK.SERVICEBUS.WINDOWS.NET  "
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
 func TestValidateManagedIdentityRequiresNamespaceFQDN(t *testing.T) {
 	t.Parallel()
 

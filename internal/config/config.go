@@ -139,10 +139,11 @@ func (c Config) validateServiceBus() error {
 			return errors.New("SERVICEBUS_CONNECTION_STRING is required")
 		}
 	case ServiceBusAuthManagedIdentity:
-		if strings.TrimSpace(c.ServiceBusNamespaceFQDN) == "" {
+		namespaceFQDN := strings.ToLower(strings.TrimSpace(c.ServiceBusNamespaceFQDN))
+		if namespaceFQDN == "" {
 			return errors.New("SERVICEBUS_NAMESPACE_FQDN is required when SERVICEBUS_AUTH_MODE=managed_identity")
 		}
-		if strings.Contains(c.ServiceBusNamespaceFQDN, "://") || !strings.HasSuffix(c.ServiceBusNamespaceFQDN, ".servicebus.windows.net") {
+		if strings.Contains(namespaceFQDN, "://") || !strings.HasSuffix(namespaceFQDN, ".servicebus.windows.net") {
 			return errors.New("SERVICEBUS_NAMESPACE_FQDN must be a Service Bus namespace host name")
 		}
 	default:
