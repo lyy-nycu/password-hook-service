@@ -23,7 +23,7 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plan
 
-No detailed plan is currently active. Slice 10A Service Bus Managed Identity is complete; see `completed/2026-07-03-slice-10a-servicebus-managed-identity.md` and its finalization record.
+Slice 10 Infrastructure and Durable Sync Status is active: `active/2026-07-03-slice-10-infrastructure.md`.
 
 ## Status Labels
 
