@@ -1,8 +1,10 @@
 # Slice 10A Service Bus Managed Identity Implementation Plan
 
-> **Plan Status:** Active
+> **Plan Status:** Completed
 >
 > **Source Refresh:** Refreshed on 2026-07-10 against `main` at `c9dc07c` (post Slice 9 API Protection). Verified `internal/config/config.go`, `internal/secretloader/loader.go`, `internal/servicebusqueue/queue.go`/`deadletter.go`, `internal/app/app.go`, and their test helpers (`completeConfig`, `completeAppConfig`, `captureQueue`, `captureDeadLetterSink`, `newBlockingReceiver`, `captureCloser`, `fakeGetter`) still match every code snippet below; no task content changed. The owner selected this slice to execute before Slice 10 Infrastructure.
+>
+> **Completion Note:** Application-side Service Bus managed identity support, documentation, unit tests, `go vet`, and leak-focused scans completed on 2026-07-12. Terraform, managed-identity assignment, Service Bus RBAC provisioning, and live Azure staging validation remain outside this slice.
 >
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -146,4 +146,3 @@ func TestNewDeadLetterQueueFromNamespaceRejectsEmptyNamespace(t *testing.T) {
 		t.Fatalf("NewDeadLetterQueueFromNamespace queue = %#v, want nil", queue)
 	}
 }
-

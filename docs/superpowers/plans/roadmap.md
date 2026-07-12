@@ -33,7 +33,7 @@
 
 ## Active Detailed Plan
 
-Slice 10A Service Bus Managed Identity is active for implementation planning: `active/2026-07-03-slice-10a-servicebus-managed-identity.md`. The owner chose to execute this before Slice 10 Infrastructure so Infrastructure can grant RBAC instead of managing a Service Bus connection string secret.
+No detailed plan is currently active. Slice 10A Service Bus Managed Identity is complete: `completed/2026-07-03-slice-10a-servicebus-managed-identity.md`. The owner executed it before Slice 10 Infrastructure so Infrastructure can grant RBAC instead of managing a Service Bus connection string secret.
 
 ---
 
@@ -49,7 +49,7 @@ Slice 6 should isolate Microsoft Graph API behavior behind a client package and 
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
 
-Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, and Slice 9 have already been refreshed and completed. Slice 10A has been refreshed against current `main` (post-Slice 9) and promoted to active. Slice 10 Infrastructure draft still needs refreshing before promotion, and should incorporate Slice 10A's Managed Identity outcome once it lands.
+Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, Slice 9, and Slice 10A have been refreshed and completed. Slice 10 Infrastructure draft still needs refreshing before promotion, and should incorporate Slice 10A's Managed Identity outcome.
 
 ---
 
@@ -73,6 +73,6 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
 | 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
 | 10. Infrastructure | Not planned | Not created |  |
-| 10A. Service Bus Managed Identity | Active | `active/2026-07-03-slice-10a-servicebus-managed-identity.md` | Promoted 2026-07-10 after refreshing against `main` post-Slice 9; owner chose to execute this before Slice 10 Infrastructure. |
+| 10A. Service Bus Managed Identity | Done | `completed/2026-07-03-slice-10a-servicebus-managed-identity.md` | Application-side managed identity auth is complete: config/auth-mode validation, conditional Key Vault loading, producer/receiver/safe-DLQ namespace constructors, app wiring, docs, unit tests, `go vet`, and leak scans. Terraform, RBAC provisioning, and live Azure validation remain future work. |
 | 11. CI/CD and Security Gates | Not planned | Not created |  |
 | 12. Integration and Production Readiness | Not planned | Not created |  |
