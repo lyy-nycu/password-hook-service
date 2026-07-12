@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/nycu/password-hook-service/internal/observability"
 	"github.com/nycu/password-hook-service/internal/worker"
@@ -46,6 +48,26 @@ func NewDeadLetterQueueFromConnectionString(connectionString string, queueName s
 	client, err := azservicebus.NewClientFromConnectionString(connectionString, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create service bus client: %w", err)
+	}
+
+	sender, err := client.NewSender(queueName, nil)
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("create service bus dead-letter sender: %w", err),
+			closeWithTimeout(context.Background(), client),
+		)
+	}
+
+	return NewDeadLetterQueueWithClient(sender, client)
+}
+
+func NewDeadLetterQueueFromNamespace(namespaceFQDN string, credential azcore.TokenCredential, queueName string) (*DeadLetterQueue, error) {
+	if strings.TrimSpace(queueName) == "" {
+		return nil, errors.New("service bus dead-letter queue name is required")
+	}
+	client, err := newClientFromNamespace(namespaceFQDN, credential)
+	if err != nil {
+		return nil, err
 	}
 
 	sender, err := client.NewSender(queueName, nil)

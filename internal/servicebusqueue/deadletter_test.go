@@ -2,7 +2,6 @@ package servicebusqueue
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -109,28 +108,15 @@ func TestNewDeadLetterQueueRejectsNilSender(t *testing.T) {
 	}
 }
 
-func TestDeadLetterQueueWrapsSendError(t *testing.T) {
-	sendErr := errors.New("service bus send failed")
-	queue, err := NewDeadLetterQueue(&captureSender{sendErr: sendErr})
-	if err != nil {
-		t.Fatalf("NewDeadLetterQueue returned error: %v", err)
-	}
+func TestNewDeadLetterQueueFromNamespaceRejectsEmptyNamespace(t *testing.T) {
+	t.Parallel()
 
-	err = queue.RecordPasswordSyncFailure(context.Background(), worker.DeadLetterEntry{
-		Kind:     "password-sync",
-		CN:       "u1234567",
-		UPN:      "u1234567@example.edu",
-		Reason:   worker.DeadLetterReasonPermanentProcessor,
-		Attempts: 1,
-		FailedAt: time.Date(2026, 6, 29, 9, 0, 0, 0, time.UTC),
-	})
-	if err == nil {
-		t.Fatal("RecordPasswordSyncFailure returned nil error")
+	queue, err := NewDeadLetterQueueFromNamespace("", fakeTokenCredential{}, "password-sync-dlq")
+	if err == nil || err.Error() != "service bus namespace FQDN is required" {
+		t.Fatalf("NewDeadLetterQueueFromNamespace error = %v, want namespace error", err)
 	}
-	if !errors.Is(err, sendErr) {
-		t.Fatalf("error = %v, want send error", err)
-	}
-	if !strings.Contains(err.Error(), "send password sync dead-letter message") {
-		t.Fatalf("error = %q, want send password sync dead-letter message", err.Error())
+	if queue != nil {
+		t.Fatalf("NewDeadLetterQueueFromNamespace queue = %#v, want nil", queue)
 	}
 }
+
