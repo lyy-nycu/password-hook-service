@@ -859,3 +859,25 @@ func TestNewClosesServiceBusRuntimeWhenLaterWiringFails(t *testing.T) {
 		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
 	}
 }
+
+func TestNewClosesObservabilityRuntimeWhenServiceBusRuntimeFails(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ObservabilityExporter = config.ObservabilityExporterAzureMonitor
+	cfg.OTLPExporterEndpoint = "http://localhost:4318"
+	cfg.AzureMonitorMetricResourceID = "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.App/containerApps/password-hook"
+	cfg.AzureMonitorMetricRegion = "eastasia"
+	cfg.AzureMonitorMetricNamespace = "password-hook-service"
+	restore := replaceServiceBusRuntimeBuilder(func(config.Config) (serviceBusRuntime, error) {
+		return serviceBusRuntime{}, fmt.Errorf("service bus runtime build failed")
+	})
+	defer restore()
+
+	application, err := New(cfg)
+
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("New application = %#v, want nil", application)
+	}
+}
