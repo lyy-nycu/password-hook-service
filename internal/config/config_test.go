@@ -441,6 +441,20 @@ func TestValidateManagedIdentityRequiresNamespaceNotConnectionString(t *testing.
 	}
 }
 
+func TestValidateManagedIdentityRequiresNamespaceFQDN(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.ServiceBusAuthMode = ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = ""
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "SERVICEBUS_NAMESPACE_FQDN is required when SERVICEBUS_AUTH_MODE=managed_identity" {
+		t.Fatalf("Validate error = %v", err)
+	}
+}
+
 func TestValidateKeyVaultManagedIdentityDoesNotRequireServiceBusSecretName(t *testing.T) {
 	t.Parallel()
 
