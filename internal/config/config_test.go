@@ -441,17 +441,19 @@ func TestValidateManagedIdentityRequiresNamespaceNotConnectionString(t *testing.
 	}
 }
 
-func TestValidateManagedIdentityRequiresNamespaceFQDN(t *testing.T) {
+func TestValidateKeyVaultManagedIdentityDoesNotRequireServiceBusSecretName(t *testing.T) {
 	t.Parallel()
 
 	cfg := completeConfig()
+	cfg.SecretsSource = SecretsSourceKeyVault
+	cfg.KeyVaultURL = "https://nycu-password-hook.vault.azure.net/"
 	cfg.ServiceBusAuthMode = ServiceBusAuthManagedIdentity
 	cfg.ServiceBusConnectionString = ""
-	cfg.ServiceBusNamespaceFQDN = ""
+	cfg.ServiceBusNamespaceFQDN = "nycu-password-hook.servicebus.windows.net"
+	cfg.KeyVaultSecretNames.ServiceBusConnectionString = ""
 
-	err := cfg.Validate()
-	if err == nil || err.Error() != "SERVICEBUS_NAMESPACE_FQDN is required when SERVICEBUS_AUTH_MODE=managed_identity" {
-		t.Fatalf("Validate error = %v", err)
+	if err := cfg.ValidateSecretLoadingInputs(); err != nil {
+		t.Fatalf("ValidateSecretLoadingInputs returned error: %v", err)
 	}
 }
 

@@ -230,7 +230,7 @@ func (c Config) ValidateSecretLoadingInputs() error {
 		switch {
 		case strings.TrimSpace(c.KeyVaultSecretNames.HMACSecret) == "":
 			return errors.New("KEY_VAULT_HMAC_SECRET_NAME is required when SECRETS_SOURCE=keyvault")
-		case strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
+		case c.ServiceBusAuthMode != ServiceBusAuthManagedIdentity && strings.TrimSpace(c.KeyVaultSecretNames.ServiceBusConnectionString) == "":
 			return errors.New("KEY_VAULT_SERVICEBUS_CONNECTION_STRING_NAME is required when SECRETS_SOURCE=keyvault")
 		case strings.TrimSpace(c.KeyVaultSecretNames.GraphClientSecret) == "":
 			return errors.New("KEY_VAULT_GRAPH_CLIENT_SECRET_NAME is required when SECRETS_SOURCE=keyvault")

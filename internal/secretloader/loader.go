@@ -75,9 +75,12 @@ func resolveKeyVault(ctx context.Context, cfg config.Config, getter Getter) (con
 	if err != nil {
 		return config.Config{}, err
 	}
-	serviceBusConnectionString, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.ServiceBusConnectionString)
-	if err != nil {
-		return config.Config{}, err
+	if cfg.ServiceBusAuthMode != config.ServiceBusAuthManagedIdentity {
+		serviceBusConnectionString, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.ServiceBusConnectionString)
+		if err != nil {
+			return config.Config{}, err
+		}
+		cfg.ServiceBusConnectionString = serviceBusConnectionString
 	}
 	graphClientSecret, err := getRequiredSecret(ctx, getter, cfg.KeyVaultSecretNames.GraphClientSecret)
 	if err != nil {
@@ -89,7 +92,6 @@ func resolveKeyVault(ctx context.Context, cfg config.Config, getter Getter) (con
 	}
 
 	cfg.HMACSecret = hmacSecret
-	cfg.ServiceBusConnectionString = serviceBusConnectionString
 	cfg.GraphClientSecret = graphClientSecret
 	cfg.PasswordEncryptionKeyB64 = passwordEncryptionKey
 	return cfg, nil
