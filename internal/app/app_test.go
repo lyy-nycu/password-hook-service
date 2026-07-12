@@ -719,6 +719,8 @@ func completeAppConfig() config.Config {
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
 		HookMaxBodyBytes:              64 * 1024,
+		ServiceBusAuthMode:            config.ServiceBusAuthConnectionString,
+		ServiceBusNamespaceFQDN:       "",
 		ServiceBusConnectionString:    testServiceBusConnectionString,
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",
@@ -750,4 +752,110 @@ func signRequest(req *http.Request, secret string, body []byte) {
 	req.Header.Set("X-Hook-Timestamp", fmt.Sprintf("%d", timestamp))
 	req.Header.Set("X-Hook-Nonce", nonce)
 	req.Header.Set("X-Hook-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+}
+
+type captureServiceBusRuntimeBuilder struct {
+	authMode         string
+	namespaceFQDN    string
+	connectionString string
+	closers          []appCloser
+}
+
+func (b *captureServiceBusRuntimeBuilder) build(cfg config.Config) (serviceBusRuntime, error) {
+	b.authMode = cfg.ServiceBusAuthMode
+	b.namespaceFQDN = cfg.ServiceBusNamespaceFQDN
+	b.connectionString = cfg.ServiceBusConnectionString
+	return serviceBusRuntime{
+		queue:    &captureQueue{},
+		receiver: newBlockingReceiver(),
+		dlq:      &captureDeadLetterSink{},
+		closers:  b.closers,
+	}, nil
+}
+
+func replaceServiceBusRuntimeBuilder(fn func(config.Config) (serviceBusRuntime, error)) func() {
+	original := buildServiceBusRuntime
+	buildServiceBusRuntime = fn
+	return func() {
+		buildServiceBusRuntime = original
+	}
+}
+
+func TestNewUsesManagedIdentityServiceBusRuntime(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ServiceBusAuthMode = config.ServiceBusAuthManagedIdentity
+	cfg.ServiceBusConnectionString = ""
+	cfg.ServiceBusNamespaceFQDN = "nycu-password-hook.servicebus.windows.net"
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	builder := &captureServiceBusRuntimeBuilder{}
+	restore := replaceServiceBusRuntimeBuilder(builder.build)
+	defer restore()
+
+	application, err := New(cfg)
+
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if application == nil {
+		t.Fatal("New returned nil application")
+	}
+	if builder.authMode != config.ServiceBusAuthManagedIdentity {
+		t.Fatalf("auth mode = %q, want managed_identity", builder.authMode)
+	}
+	if builder.namespaceFQDN != "nycu-password-hook.servicebus.windows.net" {
+		t.Fatalf("namespace = %q", builder.namespaceFQDN)
+	}
+	if builder.connectionString != "" {
+		t.Fatalf("connection string = %q, want empty", builder.connectionString)
+	}
+}
+
+func TestNewUsesConnectionStringServiceBusRuntime(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.ServiceBusAuthMode = config.ServiceBusAuthConnectionString
+	cfg.ServiceBusNamespaceFQDN = ""
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	builder := &captureServiceBusRuntimeBuilder{}
+	restore := replaceServiceBusRuntimeBuilder(builder.build)
+	defer restore()
+
+	application, err := New(cfg)
+
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if application == nil {
+		t.Fatal("New returned nil application")
+	}
+	if builder.authMode != config.ServiceBusAuthConnectionString {
+		t.Fatalf("auth mode = %q, want connection_string", builder.authMode)
+	}
+	if builder.connectionString != cfg.ServiceBusConnectionString {
+		t.Fatalf("connection string = %q, want config value", builder.connectionString)
+	}
+}
+
+func TestNewClosesServiceBusRuntimeWhenLaterWiringFails(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.PasswordEncryptionKeyB64 = "not-base64"
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	closer := &captureCloser{}
+	builder := &captureServiceBusRuntimeBuilder{closers: []appCloser{closer}}
+	restore := replaceServiceBusRuntimeBuilder(builder.build)
+	defer restore()
+
+	application, err := New(cfg)
+
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("New application = %#v, want nil", application)
+	}
+	if closer.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", closer.closeCalls)
+	}
 }
