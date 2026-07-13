@@ -359,12 +359,13 @@ func newWithQueueWithRecorder(
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
 	}
 	rateLimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
-		AllowedCIDRs: cfg.PortalAllowedCIDRs,
-		LimitPerIP:   cfg.RateLimitPerIP,
-		Window:       cfg.RateLimitWindow,
-		ProblemBase:  cfg.ProblemBaseURL,
-		Logger:       slog.Default(),
-		Recorder:     recorder,
+		AllowedCIDRs:      cfg.PortalAllowedCIDRs,
+		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
+		LimitPerIP:        cfg.RateLimitPerIP,
+		Window:            cfg.RateLimitWindow,
+		ProblemBase:       cfg.ProblemBaseURL,
+		Logger:            slog.Default(),
+		Recorder:          recorder,
 	})
 
 	hookHandler := hmacMiddleware.Wrap(hook)

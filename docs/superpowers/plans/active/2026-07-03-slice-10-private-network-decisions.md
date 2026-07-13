@@ -173,7 +173,7 @@ Public authoritative DNS must not publish the private frontend address. From eve
 
 ## Trusted Proxy Inputs
 
-The application currently uses `RemoteAddr` and deliberately ignores `X-Forwarded-For`; Task 0A must be completed before this topology can enforce portal CIDRs behind Application Gateway/ACA.
+Task 0A now resolves forwarded client addresses only across explicitly configured trusted proxies and uses the result for both the application allowlist and per-client rate limiting. The production topology remains blocked until staging records the actual ACA immediate peer and sanitized forwarded-chain shape needed to set `TRUSTED_PROXY_CIDRS`.
 
 `TRUSTED_PROXY_CIDRS` must be derived from the actual immediate peers observed at the Container App, not from the portal CIDRs or broad VNet ranges. Staging verification must record only a sanitized hop shape and prove:
 
@@ -266,7 +266,8 @@ Model allocation, when the client supports it:
 - [x] Managed Redis `Balanced_B0`, HA enabled, GA `OSSCluster`, Entra/TLS, and application ClusterClient implication approved.
 - [ ] Staging hostname approved as split-horizon `api.test.nycu.edu.tw`; SAN, served chain, renewal source, and recent runs are verified. Actual portal-server trust plus workflow preservation/verification of both listener bindings remain outstanding.
 - [ ] Verify the protected self-hosted runner resolves and reaches the Key Vault private endpoint before selecting it as the secret injection/rotation path; portal servers never receive Key Vault connectivity.
-- [ ] Implement Task 0A and measure the actual ACA immediate peer/forwarded chain in staging before setting production `TRUSTED_PROXY_CIDRS`.
+- [x] Implement Task 0A trusted-proxy source resolution and application enforcement.
+- [ ] Measure the actual ACA immediate peer/forwarded chain in staging before setting production `TRUSTED_PROXY_CIDRS`.
 - [x] Sync-status terminal TTL approved as `90d`.
 
 Owner decision discussion is complete. Unchecked boxes are staging preflight/live-validation gates, not invitations to redesign the approved topology. Terraform validation or the presence of existing resource IDs does not constitute deployment approval.

@@ -134,6 +134,8 @@ func TestValidateHTTPRequiresNonBlankPortalAllowedCIDRs(t *testing.T) {
 
 func TestLoadAPIProtectionSettings(t *testing.T) {
 	t.Setenv("PORTAL_ALLOWED_CIDRS", " 192.0.2.0/24, 2001:db8::/32 ")
+	t.Setenv("TRUSTED_PROXY_CIDRS", " 10.0.0.0/24, 2001:db8:1::/64 ")
+	t.Setenv("DIRECT_CLIENT_MODE", "false")
 	t.Setenv("RATE_LIMIT_PER_IP", "750")
 	t.Setenv("RATE_LIMIT_WINDOW", "2s")
 	t.Setenv("HOOK_MAX_BODY_BYTES", "32768")
@@ -143,6 +145,9 @@ func TestLoadAPIProtectionSettings(t *testing.T) {
 	if got, want := cfg.PortalAllowedCIDRs, []string{"192.0.2.0/24", "2001:db8::/32"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("PortalAllowedCIDRs = %#v, want %#v", got, want)
 	}
+	if got, want := cfg.TrustedProxyCIDRs, []string{"10.0.0.0/24", "2001:db8:1::/64"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("TrustedProxyCIDRs = %#v, want %#v", got, want)
+	}
 	if cfg.RateLimitPerIP != 750 {
 		t.Fatalf("RateLimitPerIP = %d, want 750", cfg.RateLimitPerIP)
 	}
@@ -151,6 +156,62 @@ func TestLoadAPIProtectionSettings(t *testing.T) {
 	}
 	if cfg.HookMaxBodyBytes != 32768 {
 		t.Fatalf("HookMaxBodyBytes = %d, want 32768", cfg.HookMaxBodyBytes)
+	}
+}
+
+func TestValidateHTTPRequiresExplicitClientAddressMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		direct       bool
+		trustedCIDRs []string
+		want         string
+	}{
+		{name: "neither mode", want: "TRUSTED_PROXY_CIDRS is required when DIRECT_CLIENT_MODE=false"},
+		{name: "both modes", direct: true, trustedCIDRs: []string{"10.0.0.0/24"}, want: "TRUSTED_PROXY_CIDRS must be empty when DIRECT_CLIENT_MODE=true"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = tt.direct
+			cfg.TrustedProxyCIDRs = tt.trustedCIDRs
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPAcceptsTrustedProxyMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24", "2001:db8:1::/64"}
+	if err := cfg.ValidateHTTP(); err != nil {
+		t.Fatalf("ValidateHTTP returned error: %v", err)
+	}
+}
+
+func TestValidateHTTPRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"not-a-cidr"}
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != `TRUSTED_PROXY_CIDRS contains invalid CIDR "not-a-cidr"` {
+		t.Fatalf("ValidateHTTP error = %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidDirectClientMode(t *testing.T) {
+	t.Setenv("DIRECT_CLIENT_MODE", "sometimes")
+	cfg := Load()
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != "DIRECT_CLIENT_MODE must be a boolean" {
+		t.Fatalf("ValidateHTTP error = %v", err)
 	}
 }
 
@@ -509,6 +570,7 @@ func completeConfig() Config {
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            []string{"192.0.2.0/24"},
+		DirectClientMode:              true,
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
 		HookMaxBodyBytes:              64 * 1024,

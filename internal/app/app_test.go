@@ -130,6 +130,103 @@ func TestAppRejectsNonAllowlistedSourceBeforeHMAC(t *testing.T) {
 	}
 }
 
+func TestAppUsesResolvedClientBehindTrustedProxy(t *testing.T) {
+	queue := &captureQueue{}
+	cfg := completeAppConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24"}
+	application, err := NewWithQueue(cfg, queue)
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"secret","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	req.RemoteAddr = "10.0.0.10:443"
+	req.Header.Set("X-Forwarded-For", "192.0.2.10")
+	signRequest(req, cfg.HMACSecret, body)
+	rec := httptest.NewRecorder()
+
+	application.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
+func TestAppTrustedProxyMissingForwardedChainFailsClosed(t *testing.T) {
+	logs, restore := captureDefaultLogger()
+	defer restore()
+
+	cfg := completeAppConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24"}
+	application, err := NewWithQueue(cfg, &captureQueue{})
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "10.0.0.10:443"
+	rec := httptest.NewRecorder()
+	application.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if strings.Contains(logs.String(), "X-Forwarded-For") {
+		t.Fatalf("logs exposed forwarded header: %s", logs.String())
+	}
+}
+
+func TestAppTrustedProxyMalformedChainFailsClosed(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24"}
+	application, err := NewWithQueue(cfg, &captureQueue{})
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+	req.RemoteAddr = "10.0.0.10:443"
+	req.Header.Set("X-Forwarded-For", "invalid, 192.0.2.10")
+	rec := httptest.NewRecorder()
+	application.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestAppRateLimitsResolvedClientsIndependentlyBehindTrustedProxy(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24"}
+	cfg.RateLimitPerIP = 1
+	application, err := NewWithQueue(cfg, &captureQueue{})
+	if err != nil {
+		t.Fatalf("NewWithQueue returned error: %v", err)
+	}
+
+	request := func(client string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", nil)
+		req.RemoteAddr = "10.0.0.10:443"
+		req.Header.Set("X-Forwarded-For", client)
+		rec := httptest.NewRecorder()
+		application.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := request("192.0.2.10"); got != http.StatusUnauthorized {
+		t.Fatalf("first client status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request("192.0.2.11"); got != http.StatusUnauthorized {
+		t.Fatalf("second client status = %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := request("192.0.2.10"); got != http.StatusTooManyRequests {
+		t.Fatalf("repeated first client status = %d, want %d", got, http.StatusTooManyRequests)
+	}
+}
+
 func TestAppRateLimitsBeforeHMAC(t *testing.T) {
 	queue := &captureQueue{}
 	cfg := completeAppConfig()
@@ -716,6 +813,7 @@ func completeAppConfig() config.Config {
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            []string{"192.0.2.0/24"},
+		DirectClientMode:              true,
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
 		HookMaxBodyBytes:              64 * 1024,

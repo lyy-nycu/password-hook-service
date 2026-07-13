@@ -42,6 +42,8 @@ type Config struct {
 	HMACClockSkew                 time.Duration
 	NonceTTL                      time.Duration
 	PortalAllowedCIDRs            []string
+	TrustedProxyCIDRs             []string
+	DirectClientMode              bool
 	RateLimitPerIP                int
 	RateLimitWindow               time.Duration
 	HookMaxBodyBytes              int64
@@ -61,10 +63,12 @@ type Config struct {
 	AzureMonitorMetricResourceID  string
 	AzureMonitorMetricRegion      string
 	AzureMonitorMetricNamespace   string
+	directClientModeErr           error
 }
 
 func Load() Config {
-	return Config{
+	directClientMode, directClientModeErr := boolEnv("DIRECT_CLIENT_MODE")
+	cfg := Config{
 		SecretsSource: strings.TrimSpace(os.Getenv("SECRETS_SOURCE")),
 		KeyVaultURL:   strings.TrimSpace(os.Getenv("KEY_VAULT_URL")),
 		KeyVaultSecretNames: KeyVaultSecretNames{
@@ -81,6 +85,8 @@ func Load() Config {
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            csvEnv("PORTAL_ALLOWED_CIDRS"),
+		TrustedProxyCIDRs:             csvEnv("TRUSTED_PROXY_CIDRS"),
+		DirectClientMode:              directClientMode,
 		RateLimitPerIP:                intEnv("RATE_LIMIT_PER_IP", 500),
 		RateLimitWindow:               durationEnv("RATE_LIMIT_WINDOW", time.Second),
 		HookMaxBodyBytes:              int64Env("HOOK_MAX_BODY_BYTES", 64*1024),
@@ -101,6 +107,8 @@ func Load() Config {
 		AzureMonitorMetricRegion:      strings.TrimSpace(os.Getenv("AZURE_MONITOR_METRIC_REGION")),
 		AzureMonitorMetricNamespace:   env("AZURE_MONITOR_METRIC_NAMESPACE", "password-hook-service"),
 	}
+	cfg.directClientModeErr = directClientModeErr
+	return cfg
 }
 
 func (c Config) Validate() error {
@@ -186,6 +194,8 @@ func (c Config) validateObservability() error {
 
 func (c Config) ValidateHTTP() error {
 	switch {
+	case c.directClientModeErr != nil:
+		return c.directClientModeErr
 	case strings.TrimSpace(c.HTTPAddr) == "":
 		return errors.New("HTTP_ADDR is required")
 	case strings.TrimSpace(c.HMACSecret) == "":
@@ -204,6 +214,10 @@ func (c Config) ValidateHTTP() error {
 		return errors.New("NonceTTL must be positive")
 	case !hasNonBlank(c.PortalAllowedCIDRs):
 		return errors.New("PORTAL_ALLOWED_CIDRS is required")
+	case c.DirectClientMode && hasNonBlank(c.TrustedProxyCIDRs):
+		return errors.New("TRUSTED_PROXY_CIDRS must be empty when DIRECT_CLIENT_MODE=true")
+	case !c.DirectClientMode && !hasNonBlank(c.TrustedProxyCIDRs):
+		return errors.New("TRUSTED_PROXY_CIDRS is required when DIRECT_CLIENT_MODE=false")
 	case c.RateLimitPerIP <= 0:
 		return errors.New("RateLimitPerIP must be positive")
 	case c.RateLimitWindow <= 0:
@@ -211,7 +225,10 @@ func (c Config) ValidateHTTP() error {
 	case c.HookMaxBodyBytes <= 0:
 		return errors.New("HookMaxBodyBytes must be positive")
 	default:
-		return validateCIDRs(c.PortalAllowedCIDRs)
+		if err := validateCIDRs("PORTAL_ALLOWED_CIDRS", c.PortalAllowedCIDRs); err != nil {
+			return err
+		}
+		return validateCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs)
 	}
 }
 
@@ -254,17 +271,29 @@ func hasNonBlank(values []string) bool {
 	return false
 }
 
-func validateCIDRs(values []string) error {
+func validateCIDRs(envName string, values []string) error {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			continue
 		}
 		if _, _, err := net.ParseCIDR(value); err != nil {
-			return fmt.Errorf("PORTAL_ALLOWED_CIDRS contains invalid CIDR %q", value)
+			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
 		}
 	}
 	return nil
+}
+
+func boolEnv(key string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return value, nil
 }
 
 func env(key string, fallback string) string {

@@ -74,6 +74,7 @@ export GRAPH_TENANT_ID="<tenant-id>"
 export GRAPH_CLIENT_ID="<app-client-id>"
 export GRAPH_CLIENT_SECRET="<app-client-secret>"
 export PORTAL_ALLOWED_CIDRS="127.0.0.1/32,::1/128"
+export DIRECT_CLIENT_MODE="true"
 export RATE_LIMIT_PER_IP="500"
 export RATE_LIMIT_WINDOW="1s"
 export HOOK_MAX_BODY_BYTES="65536"
@@ -87,6 +88,8 @@ export SERVICEBUS_AUTH_MODE="managed_identity"
 export SERVICEBUS_NAMESPACE_FQDN="<namespace>.servicebus.windows.net"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export DIRECT_CLIENT_MODE="false"
+export TRUSTED_PROXY_CIDRS="<observed-immediate-proxy-cidr>"
 ```
 
 Production `app.New` requires `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, and `GRAPH_CLIENT_SECRET`. The Graph app registration needs the approved application permission `User.ReadWrite.All`.
@@ -118,6 +121,8 @@ docker run --rm -p 8080:8080 \
   -e GRAPH_CLIENT_ID \
   -e GRAPH_CLIENT_SECRET \
   -e PORTAL_ALLOWED_CIDRS \
+  -e TRUSTED_PROXY_CIDRS \
+  -e DIRECT_CLIENT_MODE \
   -e RATE_LIMIT_PER_IP \
   -e RATE_LIMIT_WINDOW \
   -e HOOK_MAX_BODY_BYTES \
@@ -192,9 +197,9 @@ The portal and password hook service share the HMAC secret for this API. The por
 
 Each hook request represents one successful-login password event for one LDAP identity. The service can process a single end-user event, but Slice 9 does not add per-user rate limiting. Any future per-user limiter must run after HMAC succeeds because only then can the service trust signed body fields such as `cn`.
 
-For the current portal topology, configure `PORTAL_ALLOWED_CIDRS` to the full `/32` CIDRs for the two portal web-server egress addresses (`<portal-egress-ip-1>` and `<portal-egress-ip-2>` as currently described). `RATE_LIMIT_PER_IP` is enforced per immediate portal web-server source IP. With two portal web servers, the expected aggregate cap is approximately `2 * RATE_LIMIT_PER_IP` when traffic is evenly balanced.
+For local or test traffic that reaches the process directly, set `DIRECT_CLIENT_MODE=true` and leave `TRUSTED_PROXY_CIDRS` empty. Production must set `DIRECT_CLIENT_MODE=false` and configure `TRUSTED_PROXY_CIDRS` only with the immediate ACA/Application Gateway proxy peers observed and approved during staging. The two modes are mutually exclusive.
 
-The application intentionally does not use `X-Forwarded-For` as the anomaly rate-limit key in this slice. The goal is to catch abnormal hook output from either portal web server, including retry loops, bugs, or uneven load balancer distribution.
+When the immediate peer is untrusted, the application ignores `X-Forwarded-For` and uses the peer address. When it is trusted, the application strictly validates the complete forwarded chain from the nearest hop toward the client. Missing, malformed, ambiguous, or all-trusted chains fail closed. The resolved address is independently checked against `PORTAL_ALLOWED_CIDRS` and used as the per-client rate-limit key. WAF also enforces the portal CIDRs at Application Gateway; neither layer replaces the other. Before production rollout, record the sanitized staging peer/header shape and stop if it cannot satisfy this trust-boundary algorithm instead of widening the trusted range.
 
 Size `RATE_LIMIT_PER_IP` from observed peak successful-login hook rate per portal web server, with enough headroom that normal login bursts do not receive `429`. The default `500` is a guardrail, not a fixed production capacity decision. The portal must not fail user login on `429`, and it must not immediately retry in a tight loop.
 
@@ -294,8 +299,10 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
-| `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated source CIDR allowlist for portal web-server egress IPs |
-| `RATE_LIMIT_PER_IP` | `500` | Optional; defaults to `500`; must be positive when set; per-source-IP request threshold during `RATE_LIMIT_WINDOW`; with two portal web servers, aggregate capacity is approximately `2 * RATE_LIMIT_PER_IP` |
+| `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated allowlist applied to the resolved portal client address |
+| `TRUSTED_PROXY_CIDRS` | empty | Required in proxy mode; comma-separated immediate trusted proxy CIDRs established from the approved topology; never portal CIDRs or unrestricted networks |
+| `DIRECT_CLIENT_MODE` | `false` | Explicit local/test mode; when `true`, `TRUSTED_PROXY_CIDRS` must be empty; production uses `false` |
+| `RATE_LIMIT_PER_IP` | `500` | Optional; defaults to `500`; must be positive when set; per-resolved-client-IP threshold during `RATE_LIMIT_WINDOW` |
 | `RATE_LIMIT_WINDOW` | `1s` | Optional; defaults to `1s`; must be a positive Go duration when set; anomaly rate-limit window |
 | `HOOK_MAX_BODY_BYTES` | `65536` | Optional; defaults to `65536`; must be a positive byte limit when set; signed hook request body limit |
 | `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |

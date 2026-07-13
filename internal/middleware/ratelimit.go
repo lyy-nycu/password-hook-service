@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,23 +16,25 @@ import (
 )
 
 type RateLimitConfig struct {
-	AllowedCIDRs []string
-	LimitPerIP   int
-	Window       time.Duration
-	ProblemBase  string
-	Logger       *slog.Logger
-	Recorder     observability.Recorder
+	AllowedCIDRs      []string
+	TrustedProxyCIDRs []string
+	LimitPerIP        int
+	Window            time.Duration
+	ProblemBase       string
+	Logger            *slog.Logger
+	Recorder          observability.Recorder
 }
 
 type RateLimiter struct {
-	allowedCIDRs []*net.IPNet
-	limitPerIP   int
-	window       time.Duration
-	problemBase  string
-	logger       *slog.Logger
-	recorder     observability.Recorder
-	mu           sync.Mutex
-	counts       map[string]rateWindow
+	allowedCIDRs      []*net.IPNet
+	trustedProxyCIDRs []*net.IPNet
+	limitPerIP        int
+	window            time.Duration
+	problemBase       string
+	logger            *slog.Logger
+	recorder          observability.Recorder
+	mu                sync.Mutex
+	counts            map[string]rateWindow
 }
 
 type rateWindow struct {
@@ -53,19 +57,20 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 	}
 
 	return &RateLimiter{
-		allowedCIDRs: parseCIDRs(cfg.AllowedCIDRs),
-		limitPerIP:   cfg.LimitPerIP,
-		window:       cfg.Window,
-		problemBase:  cfg.ProblemBase,
-		logger:       cfg.Logger,
-		recorder:     cfg.Recorder,
-		counts:       map[string]rateWindow{},
+		allowedCIDRs:      parseCIDRs(cfg.AllowedCIDRs),
+		trustedProxyCIDRs: parseCIDRs(cfg.TrustedProxyCIDRs),
+		limitPerIP:        cfg.LimitPerIP,
+		window:            cfg.Window,
+		problemBase:       cfg.ProblemBase,
+		logger:            cfg.Logger,
+		recorder:          cfg.Recorder,
+		counts:            map[string]rateWindow{},
 	}
 }
 
 func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sourceIP := remoteIP(r)
+		sourceIP := l.sourceIP(r)
 		if !l.sourceAllowed(sourceIP) {
 			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusUnauthorized, "unauthorized", "source_ip_not_allowed")
 			problem.Write(w, problem.Unauthorized(l.problemBase, r.URL.Path, requestid.From(r.Context()), "source ip is not allowed"))
@@ -85,6 +90,38 @@ func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 
 func (l *RateLimiter) sourceAllowed(sourceIP net.IP) bool {
 	return len(l.allowedCIDRs) > 0 && containsIP(l.allowedCIDRs, sourceIP)
+}
+
+// sourceIP resolves a forwarded caller only across an explicitly trusted proxy
+// boundary. An empty trusted-proxy set is direct-client mode.
+func (l *RateLimiter) sourceIP(r *http.Request) net.IP {
+	peer, ok := parseIPWithOptionalPort(r.RemoteAddr)
+	if !ok {
+		return nil
+	}
+	if len(l.trustedProxyCIDRs) == 0 || !containsIP(l.trustedProxyCIDRs, peer) {
+		return peer
+	}
+
+	values := r.Header.Values("X-Forwarded-For")
+	if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
+		return nil
+	}
+	hopValues := strings.Split(values[0], ",")
+	hops := make([]net.IP, len(hopValues))
+	for i, value := range hopValues {
+		hop, valid := parseIPWithOptionalPort(value)
+		if !valid {
+			return nil
+		}
+		hops[i] = hop
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		if !containsIP(l.trustedProxyCIDRs, hops[i]) {
+			return hops[i]
+		}
+	}
+	return nil
 }
 
 func (l *RateLimiter) rateKey(sourceIP net.IP) string {
@@ -128,14 +165,22 @@ func containsIP(cidrs []*net.IPNet, ip net.IP) bool {
 	return false
 }
 
-func remoteIP(r *http.Request) net.IP {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
+func parseIPWithOptionalPort(value string) (net.IP, bool) {
+	value = strings.TrimSpace(value)
+	if addr, err := netip.ParseAddr(value); err == nil && addr.Zone() == "" {
+		return net.IP(addr.Unmap().AsSlice()), true
 	}
-	ip := net.ParseIP(host)
-	if ip == nil {
-		return net.IPv4zero
+
+	host, port, err := net.SplitHostPort(value)
+	if err != nil || host == "" || port == "" {
+		return nil, false
 	}
-	return ip
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return nil, false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || addr.Zone() != "" {
+		return nil, false
+	}
+	return net.IP(addr.Unmap().AsSlice()), true
 }

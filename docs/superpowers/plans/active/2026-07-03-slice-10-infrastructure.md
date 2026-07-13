@@ -62,13 +62,14 @@
 - Modify: `internal/app/app.go`, `internal/app/app_test.go`
 - Modify: `README.md`
 
-- [ ] Add required production `TRUSTED_PROXY_CIDRS` configuration, separate from `PORTAL_ALLOWED_CIDRS`. The trusted set must contain only the immediate ACA/Application Gateway proxy peers established by the approved topology, never the portal CIDRs or an unrestricted network. Retain an explicit direct-client local/test mode rather than silently trusting forwarded headers when the set is empty.
-- [ ] Replace the current unconditional `RemoteAddr` source selection with a source resolver that first parses the immediate peer. If the peer is not trusted, ignore all forwarded headers and use the peer address. If the peer is trusted, parse Application Gateway's `X-Forwarded-For` chain strictly, reject malformed/ambiguous input, walk from the nearest hop toward the client while hops remain trusted, and select the first untrusted address. Do not accept a client-controlled leftmost value without validating the complete trusted hop boundary.
-- [ ] Use the resolved client address for both `PORTAL_ALLOWED_CIDRS` enforcement and the per-client rate-limit key. Keep authentication fail-closed when a trusted proxy supplies a missing, malformed, or all-trusted chain; return a password-safe error without logging the full header.
-- [ ] Add tests for direct trusted/local callers, untrusted peers spoofing `X-Forwarded-For`, one and multiple trusted proxy hops, IPv4/IPv6 with ports, malformed/empty chains, all-trusted chains, portal allowlist rejection, and independent per-client rate limits behind the same proxy.
-- [ ] Document that WAF enforces portal CIDRs at the gateway and the application independently enforces the resolved client address. Record the exact observed staging header/peer shape in the private-network decision document before production rollout; if the observed chain cannot satisfy this algorithm, stop and revise the contract rather than weakening trust.
-- [ ] Run `go test ./internal/config ./internal/middleware ./internal/app`, `go test ./...`, and `go vet ./...`.
-- [ ] Commit: `feat(middleware): trust forwarded client IPs only from approved proxies`.
+- [x] Add required production `TRUSTED_PROXY_CIDRS` configuration, separate from `PORTAL_ALLOWED_CIDRS`. The trusted set must contain only the immediate ACA/Application Gateway proxy peers established by the approved topology, never the portal CIDRs or an unrestricted network. Retain an explicit direct-client local/test mode rather than silently trusting forwarded headers when the set is empty.
+- [x] Replace the current unconditional `RemoteAddr` source selection with a source resolver that first parses the immediate peer. If the peer is not trusted, ignore all forwarded headers and use the peer address. If the peer is trusted, parse Application Gateway's `X-Forwarded-For` chain strictly, reject malformed/ambiguous input, walk from the nearest hop toward the client while hops remain trusted, and select the first untrusted address. Do not accept a client-controlled leftmost value without validating the complete trusted hop boundary.
+- [x] Use the resolved client address for both `PORTAL_ALLOWED_CIDRS` enforcement and the per-client rate-limit key. Keep authentication fail-closed when a trusted proxy supplies a missing, malformed, or all-trusted chain; return a password-safe error without logging the full header.
+- [x] Add tests for direct trusted/local callers, untrusted peers spoofing `X-Forwarded-For`, one and multiple trusted proxy hops, IPv4/IPv6 with ports, malformed/empty chains, all-trusted chains, portal allowlist rejection, and independent per-client rate limits behind the same proxy.
+- [x] Document that WAF enforces portal CIDRs at the gateway and the application independently enforces the resolved client address.
+- [ ] Record the exact observed staging header/peer shape in the private-network decision document before production rollout; if the observed chain cannot satisfy this algorithm, stop and revise the contract rather than weakening trust.
+- [x] Run `go test ./internal/config ./internal/middleware ./internal/app`, `go test ./...`, and `go vet ./...`.
+- [x] Commit: `feat(middleware): trust forwarded client IPs only from approved proxies`.
 
 ### Task 1: Redis-Backed Shared Sync Status
 
