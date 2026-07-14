@@ -68,6 +68,8 @@ export SERVICEBUS_AUTH_MODE="connection_string"
 export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export PASSWORD_MESSAGE_TTL="5m"
+export SYNC_STATUS_STORE="memory"
 export PASSWORD_ENCRYPTION_KEY_B64="<base64-encoded-32-byte-key>"
 export PASSWORD_ENCRYPTION_KEY_ID="password-payload-key-v1"
 export GRAPH_TENANT_ID="<tenant-id>"
@@ -88,6 +90,13 @@ export SERVICEBUS_AUTH_MODE="managed_identity"
 export SERVICEBUS_NAMESPACE_FQDN="<namespace>.servicebus.windows.net"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export PASSWORD_MESSAGE_TTL="5m"
+export SYNC_STATUS_STORE="redis"
+export REDIS_HOST="<managed-redis-host>"
+export REDIS_PORT="<tls-port>"
+export REDIS_KEY_PREFIX="password-hook:sync-status:"
+export SYNC_STATUS_TERMINAL_TTL="2160h"
+export AZURE_CLIENT_ID="<runtime-uami-client-id>"
 export DIRECT_CLIENT_MODE="false"
 export TRUSTED_PROXY_CIDRS="<observed-immediate-proxy-cidr>"
 ```
@@ -115,6 +124,13 @@ docker run --rm -p 8080:8080 \
   -e SERVICEBUS_NAMESPACE_FQDN \
   -e SERVICEBUS_QUEUE_NAME \
   -e SERVICEBUS_DEADLETTER_QUEUE_NAME \
+  -e PASSWORD_MESSAGE_TTL \
+  -e SYNC_STATUS_STORE \
+  -e REDIS_HOST \
+  -e REDIS_PORT \
+  -e REDIS_KEY_PREFIX \
+  -e SYNC_STATUS_TERMINAL_TTL \
+  -e AZURE_CLIENT_ID \
   -e PASSWORD_ENCRYPTION_KEY_B64 \
   -e PASSWORD_ENCRYPTION_KEY_ID \
   -e GRAPH_TENANT_ID \
@@ -217,11 +233,15 @@ Structured logging masks password, password-derived, secret, and token fields by
 
 Every hook request must include an `eventType` field with one of three values:
 
-- `login_bootstrap` - sent after a user completes SSO login and the portal bootstraps their on-prem AD account. The service skips re-enqueueing this event if the UPN is already marked `synced`, or has a `sync_pending` record fresher than the internal pending-sync TTL (300s by default). This avoids redundant AD writes on every login.
+- `login_bootstrap` - sent after a user completes SSO login and the portal bootstraps their on-prem AD account. The service skips re-enqueueing this event if the UPN is already marked `synced`, or has a `sync_pending` record fresher than `PASSWORD_MESSAGE_TTL` (`5m` by default). This avoids redundant AD writes on every login.
 - `password_change` - sent when a user changes their password. Always enqueued, regardless of prior sync status.
 - `password_recovery` - sent when a user recovers or resets their password. Always enqueued, regardless of prior sync status.
 
-Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked per-UPN by `internal/syncstatus.MemoryStore`, an in-process, non-durable store: it resets on process restart and is not shared across replicas. This is a deliberate Slice 7A scope limit; Slice 10 (infrastructure) introduces durable, shared sync-status storage. See `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` section 1.2.1 Amendment for the full event model rationale.
+Production uses Azure Managed Redis with Entra authentication and TLS for shared sync status across replicas and revisions. Redis keys contain a SHA-256 digest of the normalized UPN, never the raw UPN; values contain only status, `UpdatedAt`, and `SourceEnqueuedAt`. Equal source timestamps use the monotonic precedence `sync_pending < sync_failed < synced`, and idempotent writes do not refresh timestamps or TTLs.
+
+Pending records expire with `PASSWORD_MESSAGE_TTL`. Terminal `synced` and `sync_failed` records expire after the owner-approved `SYNC_STATUS_TERMINAL_TTL` of `90d` (`2160h`); after expiration a later `login_bootstrap` can enqueue again. Redis is operational deduplication state, not a password store, audit record, or permanent history. A Redis read outage fails open and can cause a duplicate Graph sync; status writes remain best-effort. Passwords, queue payloads, HMAC material, tokens, Redis access keys, and raw UPNs must never be stored in this Redis data.
+
+Set `SYNC_STATUS_STORE=memory` only for explicit local/test use. `MemoryStore` is non-durable, resets on process restart, and is not shared across replicas.
 
 ## Observability
 
@@ -297,6 +317,13 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `SERVICEBUS_NAMESPACE_FQDN` | empty | Required when `SERVICEBUS_AUTH_MODE=managed_identity`; Service Bus namespace FQDN authenticated through managed identity and RBAC |
 | `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |
 | `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
+| `PASSWORD_MESSAGE_TTL` | `5m` | Queue message TTL and pending sync-status TTL; must be a positive Go duration |
+| `SYNC_STATUS_STORE` | empty | Required; `memory` for explicit local/test use or `redis` for production |
+| `REDIS_HOST` | empty | Required in Redis mode; Azure Managed Redis host name without scheme or port |
+| `REDIS_PORT` | empty | Required in Redis mode; Azure Managed Redis TLS port |
+| `REDIS_KEY_PREFIX` | `password-hook:sync-status:` | Non-secret, deployment-neutral prefix for hashed sync-status keys |
+| `SYNC_STATUS_TERMINAL_TTL` | `2160h` | Owner-approved `90d` retention for `synced` and `sync_failed` records |
+| `AZURE_CLIENT_ID` | empty | Required UUID in Redis mode; selects the runtime UAMI used for Entra authentication |
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
 | `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated allowlist applied to the resolved portal client address |

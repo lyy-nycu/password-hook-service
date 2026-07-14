@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -522,6 +523,7 @@ func TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker(t *testin
 
 	select {
 	case <-receiver.completed:
+		cancel()
 	case <-time.After(time.Second):
 		cancel()
 		t.Fatal("worker message was not completed")
@@ -540,6 +542,70 @@ func TestNewWithWorkerDependenciesSharesPasswordCodecWithHookAndWorker(t *testin
 	}
 	if len(processor.passwords) != 1 || string(processor.passwords[0]) != "worker-password" {
 		t.Fatalf("processor passwords = %q, want [worker-password]", processor.passwords)
+	}
+}
+
+func TestNewWithWorkerDependenciesSharesSyncStatusStoreWithHookAndWorker(t *testing.T) {
+	_, restore := captureDefaultLogger()
+	defer restore()
+
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	store := &captureSyncStatusStore{MemoryStore: syncstatus.NewMemoryStore()}
+	receiver := newSingleMessageReceiver(passwordSyncWorkerMessage(t))
+	processor := &captureProcessor{}
+	codec := &capturePasswordCodec{plaintext: []byte("worker-password")}
+	ctx, cancel := context.WithCancel(context.Background())
+	processor.onProcess = cancel
+	application, err := newWithWorkerDependenciesWithSyncStatusAndRecorder(
+		cfg,
+		&captureQueue{},
+		receiver,
+		processor,
+		&captureDeadLetterSink{},
+		codec,
+		store,
+		observability.NoopRecorder{},
+	)
+	if err != nil {
+		t.Fatalf("newWithWorkerDependenciesWithSyncStatusAndRecorder returned error: %v", err)
+	}
+
+	body := []byte(`{"cn":"311551001","password":"hook-password","displayName":"Student","mail":"student@nycu.edu.tw","eventType":"login_bootstrap"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hook/password", bytes.NewReader(body))
+	signRequest(req, cfg.HMACSecret, body)
+	req.RemoteAddr = allowedPortalRemoteAddr
+	rec := httptest.NewRecorder()
+	application.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if store.pendingCalls != 1 {
+		t.Fatalf("pending calls = %d, want 1", store.pendingCalls)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- application.worker.Run(ctx)
+	}()
+	select {
+	case <-receiver.completed:
+		cancel()
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("worker message was not completed")
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Run returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("worker did not return after processing message")
+	}
+	if store.syncedCalls != 1 {
+		t.Fatalf("synced calls = %d, want 1", store.syncedCalls)
 	}
 }
 
@@ -647,6 +713,7 @@ type captureCloser struct {
 	closeContexts     []context.Context
 	closeErrs         []error
 	closeHadDeadlines []bool
+	returnErr         error
 }
 
 func (c *captureCloser) Close(ctx context.Context) error {
@@ -655,7 +722,23 @@ func (c *captureCloser) Close(ctx context.Context) error {
 	c.closeErrs = append(c.closeErrs, ctx.Err())
 	_, hasDeadline := ctx.Deadline()
 	c.closeHadDeadlines = append(c.closeHadDeadlines, hasDeadline)
-	return nil
+	return c.returnErr
+}
+
+type captureSyncStatusStore struct {
+	*syncstatus.MemoryStore
+	pendingCalls int
+	syncedCalls  int
+}
+
+func (s *captureSyncStatusStore) MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	s.pendingCalls++
+	return s.MemoryStore.MarkPending(ctx, upn, sourceEnqueuedAt)
+}
+
+func (s *captureSyncStatusStore) MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	s.syncedCalls++
+	return s.MemoryStore.MarkSynced(ctx, upn, sourceEnqueuedAt)
 }
 
 type captureMetricFlusher struct {
@@ -823,6 +906,7 @@ func completeAppConfig() config.Config {
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",
 		PasswordMessageTTL:            300 * time.Second,
+		SyncStatusStore:               config.SyncStatusStoreMemory,
 		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef")),
 		PasswordEncryptionKeyID:       "password-payload-key-v1",
 		GraphTenantID:                 "tenant-id",
@@ -876,6 +960,115 @@ func replaceServiceBusRuntimeBuilder(fn func(config.Config) (serviceBusRuntime, 
 	buildServiceBusRuntime = fn
 	return func() {
 		buildServiceBusRuntime = original
+	}
+}
+
+func replaceSyncStatusRuntimeBuilder(fn func(context.Context, config.Config) (syncStatusRuntime, error)) func() {
+	original := buildSyncStatusRuntime
+	buildSyncStatusRuntime = fn
+	return func() {
+		buildSyncStatusRuntime = original
+	}
+}
+
+func setRedisSyncStatusConfig(cfg *config.Config) {
+	cfg.SyncStatusStore = config.SyncStatusStoreRedis
+	cfg.RedisHost = "cache.example.redis.azure.net"
+	cfg.RedisPort = 10000
+	cfg.RedisKeyPrefix = "password-hook:sync-status:"
+	cfg.SyncStatusTerminalTTL = 90 * 24 * time.Hour
+	cfg.AzureClientID = "00000000-0000-0000-0000-000000000003"
+}
+
+func TestNewSelectsConfiguredSyncStatusRuntimeAndClosesItOnShutdown(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	setRedisSyncStatusConfig(&cfg)
+	serviceBusBuilder := &captureServiceBusRuntimeBuilder{}
+	restoreServiceBus := replaceServiceBusRuntimeBuilder(serviceBusBuilder.build)
+	defer restoreServiceBus()
+
+	closer := &captureCloser{}
+	var selectedMode string
+	restoreSyncStatus := replaceSyncStatusRuntimeBuilder(func(_ context.Context, got config.Config) (syncStatusRuntime, error) {
+		selectedMode = got.SyncStatusStore
+		return syncStatusRuntime{store: syncstatus.NewMemoryStore(), closer: closer}, nil
+	})
+	defer restoreSyncStatus()
+
+	application, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	if selectedMode != config.SyncStatusStoreRedis {
+		t.Fatalf("selected sync status mode = %q, want %q", selectedMode, config.SyncStatusStoreRedis)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if closer.closeCalls != 1 {
+		t.Fatalf("sync status close calls = %d, want 1", closer.closeCalls)
+	}
+}
+
+func TestNewClosesSyncStatusRuntimeWhenLaterWiringFails(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.PasswordEncryptionKeyB64 = "not-base64"
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	setRedisSyncStatusConfig(&cfg)
+	serviceBusBuilder := &captureServiceBusRuntimeBuilder{}
+	restoreServiceBus := replaceServiceBusRuntimeBuilder(serviceBusBuilder.build)
+	defer restoreServiceBus()
+
+	closer := &captureCloser{}
+	restoreSyncStatus := replaceSyncStatusRuntimeBuilder(func(context.Context, config.Config) (syncStatusRuntime, error) {
+		return syncStatusRuntime{store: syncstatus.NewMemoryStore(), closer: closer}, nil
+	})
+	defer restoreSyncStatus()
+
+	application, err := New(cfg)
+	if err == nil {
+		t.Fatal("New returned nil error")
+	}
+	if application != nil {
+		t.Fatalf("New application = %#v, want nil", application)
+	}
+	if closer.closeCalls != 1 {
+		t.Fatalf("sync status close calls = %d, want 1", closer.closeCalls)
+	}
+}
+
+func TestRunReturnsSyncStatusCloseFailure(t *testing.T) {
+	cfg := completeAppConfig()
+	cfg.HTTPAddr = "127.0.0.1:0"
+	cfg.GraphTenantID = "00000000-0000-0000-0000-000000000001"
+	cfg.GraphClientID = "00000000-0000-0000-0000-000000000002"
+	setRedisSyncStatusConfig(&cfg)
+	serviceBusBuilder := &captureServiceBusRuntimeBuilder{}
+	restoreServiceBus := replaceServiceBusRuntimeBuilder(serviceBusBuilder.build)
+	defer restoreServiceBus()
+
+	closeErr := errors.New("close sync status runtime")
+	closer := &captureCloser{returnErr: closeErr}
+	restoreSyncStatus := replaceSyncStatusRuntimeBuilder(func(context.Context, config.Config) (syncStatusRuntime, error) {
+		return syncStatusRuntime{store: syncstatus.NewMemoryStore(), closer: closer}, nil
+	})
+	defer restoreSyncStatus()
+
+	application, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); !errors.Is(err, closeErr) {
+		t.Fatalf("Run error = %v, want close failure", err)
 	}
 }
 

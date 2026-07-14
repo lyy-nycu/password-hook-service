@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -21,6 +23,9 @@ const (
 const (
 	ObservabilityExporterNone         = "none"
 	ObservabilityExporterAzureMonitor = "azure_monitor"
+
+	SyncStatusStoreMemory = "memory"
+	SyncStatusStoreRedis  = "redis"
 )
 
 type KeyVaultSecretNames struct {
@@ -53,6 +58,12 @@ type Config struct {
 	ServiceBusQueueName           string
 	ServiceBusDeadLetterQueueName string
 	PasswordMessageTTL            time.Duration
+	SyncStatusStore               string
+	RedisHost                     string
+	RedisPort                     int
+	RedisKeyPrefix                string
+	SyncStatusTerminalTTL         time.Duration
+	AzureClientID                 string
 	PasswordEncryptionKeyB64      string
 	PasswordEncryptionKeyID       string
 	GraphTenantID                 string
@@ -64,10 +75,16 @@ type Config struct {
 	AzureMonitorMetricRegion      string
 	AzureMonitorMetricNamespace   string
 	directClientModeErr           error
+	redisPortErr                  error
+	passwordMessageTTLErr         error
+	syncStatusTerminalTTLErr      error
 }
 
 func Load() Config {
 	directClientMode, directClientModeErr := boolEnv("DIRECT_CLIENT_MODE")
+	redisPort, redisPortErr := strictIntEnv("REDIS_PORT")
+	passwordMessageTTL, passwordMessageTTLErr := strictDurationEnv("PASSWORD_MESSAGE_TTL", 5*time.Minute)
+	syncStatusTerminalTTL, syncStatusTerminalTTLErr := strictDurationEnv("SYNC_STATUS_TERMINAL_TTL", 90*24*time.Hour)
 	cfg := Config{
 		SecretsSource: strings.TrimSpace(os.Getenv("SECRETS_SOURCE")),
 		KeyVaultURL:   strings.TrimSpace(os.Getenv("KEY_VAULT_URL")),
@@ -95,7 +112,13 @@ func Load() Config {
 		ServiceBusConnectionString:    strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
 		ServiceBusQueueName:           env("SERVICEBUS_QUEUE_NAME", "password-sync"),
 		ServiceBusDeadLetterQueueName: env("SERVICEBUS_DEADLETTER_QUEUE_NAME", "password-sync-dlq"),
-		PasswordMessageTTL:            300 * time.Second,
+		PasswordMessageTTL:            passwordMessageTTL,
+		SyncStatusStore:               strings.TrimSpace(os.Getenv("SYNC_STATUS_STORE")),
+		RedisHost:                     strings.TrimSpace(os.Getenv("REDIS_HOST")),
+		RedisPort:                     redisPort,
+		RedisKeyPrefix:                env("REDIS_KEY_PREFIX", "password-hook:sync-status:"),
+		SyncStatusTerminalTTL:         syncStatusTerminalTTL,
+		AzureClientID:                 strings.TrimSpace(os.Getenv("AZURE_CLIENT_ID")),
 		PasswordEncryptionKeyB64:      strings.TrimSpace(os.Getenv("PASSWORD_ENCRYPTION_KEY_B64")),
 		PasswordEncryptionKeyID:       env("PASSWORD_ENCRYPTION_KEY_ID", "password-payload-key-v1"),
 		GraphTenantID:                 strings.TrimSpace(os.Getenv("GRAPH_TENANT_ID")),
@@ -108,6 +131,9 @@ func Load() Config {
 		AzureMonitorMetricNamespace:   env("AZURE_MONITOR_METRIC_NAMESPACE", "password-hook-service"),
 	}
 	cfg.directClientModeErr = directClientModeErr
+	cfg.redisPortErr = redisPortErr
+	cfg.passwordMessageTTLErr = passwordMessageTTLErr
+	cfg.syncStatusTerminalTTLErr = syncStatusTerminalTTLErr
 	return cfg
 }
 
@@ -119,6 +145,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.validateServiceBus(); err != nil {
+		return err
+	}
+	if err := c.validateSyncStatus(); err != nil {
 		return err
 	}
 	if err := c.validateObservability(); err != nil {
@@ -141,6 +170,9 @@ func (c Config) Validate() error {
 }
 
 func (c Config) validateServiceBus() error {
+	if c.passwordMessageTTLErr != nil {
+		return c.passwordMessageTTLErr
+	}
 	switch c.ServiceBusAuthMode {
 	case "", ServiceBusAuthConnectionString:
 		if strings.TrimSpace(c.ServiceBusConnectionString) == "" {
@@ -166,6 +198,42 @@ func (c Config) validateServiceBus() error {
 		return errors.New("PasswordMessageTTL must be positive")
 	default:
 		return nil
+	}
+}
+
+func (c Config) validateSyncStatus() error {
+	if c.redisPortErr != nil {
+		return c.redisPortErr
+	}
+	if c.syncStatusTerminalTTLErr != nil {
+		return c.syncStatusTerminalTTLErr
+	}
+	switch c.SyncStatusStore {
+	case SyncStatusStoreMemory:
+		return nil
+	case SyncStatusStoreRedis:
+		switch {
+		case strings.TrimSpace(c.RedisHost) == "":
+			return errors.New("REDIS_HOST is required when SYNC_STATUS_STORE=redis")
+		case strings.Contains(c.RedisHost, "://") || strings.ContainsAny(c.RedisHost, "/@:"):
+			return errors.New("REDIS_HOST must be a host name without a scheme, path, or port")
+		case c.RedisPort <= 0 || c.RedisPort > 65535:
+			return errors.New("REDIS_PORT must be between 1 and 65535 when SYNC_STATUS_STORE=redis")
+		case strings.TrimSpace(c.RedisKeyPrefix) == "":
+			return errors.New("REDIS_KEY_PREFIX is required when SYNC_STATUS_STORE=redis")
+		case c.PasswordMessageTTL < time.Millisecond:
+			return errors.New("PASSWORD_MESSAGE_TTL must be at least 1ms when SYNC_STATUS_STORE=redis")
+		case c.SyncStatusTerminalTTL < time.Millisecond:
+			return errors.New("SYNC_STATUS_TERMINAL_TTL must be at least 1ms when SYNC_STATUS_STORE=redis")
+		case strings.TrimSpace(c.AzureClientID) == "":
+			return errors.New("AZURE_CLIENT_ID is required when SYNC_STATUS_STORE=redis")
+		case uuid.Validate(c.AzureClientID) != nil:
+			return errors.New("AZURE_CLIENT_ID must be a valid UUID when SYNC_STATUS_STORE=redis")
+		default:
+			return nil
+		}
+	default:
+		return errors.New("SYNC_STATUS_STORE must be memory or redis")
 	}
 }
 
@@ -292,6 +360,30 @@ func boolEnv(key string) (bool, error) {
 	value, err := strconv.ParseBool(raw)
 	if err != nil {
 		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return value, nil
+}
+
+func strictIntEnv(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return value, nil
+}
+
+func strictDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid duration", key)
 	}
 	return value, nil
 }

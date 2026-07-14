@@ -1,15 +1,11 @@
-// Package syncstatus tracks the in-process sync state of each portal
-// identity's password sync, so that repeated login_bootstrap events don't
-// redundantly re-enqueue an already-synced account. See design spec
-// section 1.2.1 Amendment.
-//
-// MemoryStore is intentionally non-durable: it resets on process restart
-// and is not shared across replicas. Slice 10 (infrastructure) replaces
-// this with a durable, shared store.
+// Package syncstatus tracks each portal identity's password sync state so
+// repeated login_bootstrap events don't redundantly enqueue an already-synced
+// account. See design spec section 1.2.1 Amendment.
 package syncstatus
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -77,10 +73,13 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-func (s *MemoryStore) Get(_ context.Context, upn string) (Record, error) {
+func (s *MemoryStore) Get(ctx context.Context, upn string) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.records[upn], nil
+	return s.records[normalizeUPN(upn)], nil
 }
 
 func (s *MemoryStore) MarkPending(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
@@ -98,12 +97,38 @@ func (s *MemoryStore) MarkFailed(ctx context.Context, upn string, sourceEnqueued
 // set applies the ordering guard described on the Store interface: a write
 // whose sourceEnqueuedAt is older than the stored record's SourceEnqueuedAt
 // is silently dropped rather than applied or reported as an error.
-func (s *MemoryStore) set(_ context.Context, upn string, status Status, sourceEnqueuedAt time.Time) error {
+func (s *MemoryStore) set(ctx context.Context, upn string, status Status, sourceEnqueuedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, found := s.records[upn]; found && sourceEnqueuedAt.Before(existing.SourceEnqueuedAt) {
-		return nil
+	key := normalizeUPN(upn)
+	if existing, found := s.records[key]; found {
+		switch {
+		case sourceEnqueuedAt.Before(existing.SourceEnqueuedAt):
+			return nil
+		case sourceEnqueuedAt.Equal(existing.SourceEnqueuedAt) && statusPrecedence(status) <= statusPrecedence(existing.Status):
+			return nil
+		}
 	}
-	s.records[upn] = Record{Status: status, UpdatedAt: s.now(), SourceEnqueuedAt: sourceEnqueuedAt}
+	s.records[key] = Record{Status: status, UpdatedAt: s.now().UTC(), SourceEnqueuedAt: sourceEnqueuedAt.UTC()}
 	return nil
+}
+
+func normalizeUPN(upn string) string {
+	return strings.ToLower(strings.TrimSpace(upn))
+}
+
+func statusPrecedence(status Status) int {
+	switch status {
+	case StatusPending:
+		return 1
+	case StatusFailed:
+		return 2
+	case StatusSynced:
+		return 3
+	default:
+		return 0
+	}
 }
