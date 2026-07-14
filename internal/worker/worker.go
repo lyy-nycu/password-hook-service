@@ -266,9 +266,12 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	result := w.processPasswordSync(ctx, passwordSyncMessage)
 	if result.err == nil {
 		zeroMessageBody(msg)
-		_ = w.syncStatusRecorder.MarkSynced(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
+		// Use settleCtx (detached from ctx) so a shutdown signal arriving
+		// right after a successful sync can't silently drop the status
+		// write, the way it already can't drop message settlement below.
+		_ = w.syncStatusRecorder.MarkSynced(settleCtx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete worker message: %w", settleErr)
 		}
@@ -309,7 +312,9 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	}); settleErr != nil {
 		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr, passwordSyncMessage, result.attempts)
 	}
-	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
+	// Use settleCtx (detached from ctx), matching the successful-sync path
+	// above, so a shutdown signal can't drop this status write either.
+	_ = w.syncStatusRecorder.MarkFailed(settleCtx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}
