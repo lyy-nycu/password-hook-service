@@ -245,6 +245,31 @@ func TestValidateHTTPRejectsInvalidTrustedProxyCIDR(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRejectsUnrestrictedTrustedProxyCIDR(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cidr string
+		want string
+	}{
+		{name: "ipv4 unrestricted", cidr: "0.0.0.0/0", want: `TRUSTED_PROXY_CIDRS must not contain unrestricted CIDR "0.0.0.0/0"`},
+		{name: "ipv6 unrestricted", cidr: "::/0", want: `TRUSTED_PROXY_CIDRS must not contain unrestricted CIDR "::/0"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = false
+			cfg.TrustedProxyCIDRs = []string{tt.cidr}
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidDirectClientMode(t *testing.T) {
 	t.Setenv("DIRECT_CLIENT_MODE", "sometimes")
 	cfg := Load()

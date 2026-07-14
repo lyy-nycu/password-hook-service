@@ -296,7 +296,10 @@ func (c Config) ValidateHTTP() error {
 		if err := validateCIDRs("PORTAL_ALLOWED_CIDRS", c.PortalAllowedCIDRs); err != nil {
 			return err
 		}
-		return validateCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs)
+		if err := validateCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs); err != nil {
+			return err
+		}
+		return rejectUnrestrictedCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs)
 	}
 }
 
@@ -347,6 +350,27 @@ func validateCIDRs(envName string, values []string) error {
 		}
 		if _, _, err := net.ParseCIDR(value); err != nil {
 			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
+		}
+	}
+	return nil
+}
+
+// rejectUnrestrictedCIDRs rejects a trusted-proxy CIDR that matches every
+// address (e.g. 0.0.0.0/0 or ::/0), which would let any peer spoof
+// X-Forwarded-For and defeat the trust boundary.
+func rejectUnrestrictedCIDRs(envName string, values []string) error {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
+		}
+		ones, _ := network.Mask.Size()
+		if ones == 0 {
+			return fmt.Errorf("%s must not contain unrestricted CIDR %q", envName, value)
 		}
 	}
 	return nil
