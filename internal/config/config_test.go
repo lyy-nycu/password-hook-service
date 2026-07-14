@@ -270,6 +270,61 @@ func TestValidateHTTPRejectsUnrestrictedTrustedProxyCIDR(t *testing.T) {
 	}
 }
 
+func TestValidateHTTPRejectsTrustedProxyCIDROverlappingPortalCIDR(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		portal  []string
+		trusted []string
+		want    string
+	}{
+		{
+			name:    "identical CIDR",
+			portal:  []string{"192.0.2.0/24"},
+			trusted: []string{"192.0.2.0/24"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.0/24" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.0/24"`,
+		},
+		{
+			name:    "trusted is subset of portal",
+			portal:  []string{"192.0.2.0/24"},
+			trusted: []string{"192.0.2.128/25"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.128/25" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.0/24"`,
+		},
+		{
+			name:    "portal is subset of trusted",
+			portal:  []string{"192.0.2.128/25"},
+			trusted: []string{"192.0.2.0/24"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.0/24" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.128/25"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = false
+			cfg.PortalAllowedCIDRs = tt.portal
+			cfg.TrustedProxyCIDRs = tt.trusted
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPAcceptsNonOverlappingPortalAndTrustedProxyCIDRs(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.PortalAllowedCIDRs = []string{"192.0.2.0/24"}
+	cfg.TrustedProxyCIDRs = []string{"10.0.8.0/26"}
+	if err := cfg.ValidateHTTP(); err != nil {
+		t.Fatalf("ValidateHTTP returned error: %v", err)
+	}
+}
+
 func TestLoadRejectsInvalidDirectClientMode(t *testing.T) {
 	t.Setenv("DIRECT_CLIENT_MODE", "sometimes")
 	cfg := Load()

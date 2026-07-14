@@ -299,7 +299,10 @@ func (c Config) ValidateHTTP() error {
 		if err := validateCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs); err != nil {
 			return err
 		}
-		return rejectUnrestrictedCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs)
+		if err := rejectUnrestrictedCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs); err != nil {
+			return err
+		}
+		return rejectOverlappingCIDRs(c.TrustedProxyCIDRs, c.PortalAllowedCIDRs)
 	}
 }
 
@@ -350,6 +353,37 @@ func validateCIDRs(envName string, values []string) error {
 		}
 		if _, _, err := net.ParseCIDR(value); err != nil {
 			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
+		}
+	}
+	return nil
+}
+
+// rejectOverlappingCIDRs rejects any trusted-proxy CIDR that overlaps a
+// portal-allowed CIDR. The trusted-proxy set identifies immediate proxy
+// peers, never portal clients; an overlap would let a direct portal peer
+// be treated as a trusted proxy and forge X-Forwarded-For.
+func rejectOverlappingCIDRs(trusted, portal []string) error {
+	for _, t := range trusted {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		_, trustedNet, err := net.ParseCIDR(t)
+		if err != nil {
+			return fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", t)
+		}
+		for _, p := range portal {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			_, portalNet, err := net.ParseCIDR(p)
+			if err != nil {
+				return fmt.Errorf("PORTAL_ALLOWED_CIDRS contains invalid CIDR %q", p)
+			}
+			if trustedNet.Contains(portalNet.IP) || portalNet.Contains(trustedNet.IP) {
+				return fmt.Errorf("TRUSTED_PROXY_CIDRS %q must not overlap PORTAL_ALLOWED_CIDRS %q", t, p)
+			}
 		}
 	}
 	return nil
