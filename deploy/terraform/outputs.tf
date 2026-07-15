@@ -100,6 +100,11 @@ output "managed_redis_resource_id" {
   value       = module.redis.resource_id
 }
 
+output "managed_redis_access_policy_assignment_id" {
+  description = "Resource ID of the Managed Redis access-policy assignment for the runtime UAMI."
+  value       = module.redis.access_policy_assignment_id
+}
+
 output "container_app_id" {
   description = "Container App resource ID (null until deploy_container_app is true)."
   value       = module.aca.container_app_id

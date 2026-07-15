@@ -18,3 +18,8 @@ output "resource_id" {
   description = "Managed Redis resource ID."
   value       = azurerm_managed_redis.this.id
 }
+
+output "access_policy_assignment_id" {
+  description = "Resource ID of the Managed Redis access-policy assignment for the runtime UAMI."
+  value       = azurerm_managed_redis_access_policy_assignment.runtime.id
+}
