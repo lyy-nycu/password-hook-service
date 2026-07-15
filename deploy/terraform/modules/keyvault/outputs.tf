@@ -1,17 +1,15 @@
 ########################################
-# Placeholder outputs for the Key Vault module. Task 4 replaces the
-# `null` values with real vault attributes; the output names/types
-# must be preserved.
+# Key Vault module outputs
 ########################################
 
 output "vault_id" {
-  description = "Key Vault resource ID (populated by Task 4)."
-  value       = null
+  description = "Key Vault resource ID."
+  value       = azurerm_key_vault.this.id
 }
 
 output "vault_uri" {
-  description = "Key Vault URI (populated by Task 4)."
-  value       = null
+  description = "Key Vault URI."
+  value       = azurerm_key_vault.this.vault_uri
 }
 
 output "expected_secret_names" {

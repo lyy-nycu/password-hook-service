@@ -126,6 +126,15 @@ graph_client_id            = "00000000-0000-0000-0000-000000000000"
 password_encryption_key_id = "example-encryption-key-id"
 
 ########################################
+# Key Vault operator access
+#
+# Object IDs of named human operators who need secret injection/rotation rights
+# (Key Vault Secrets Officer). Leave empty for automated pipeline deployments.
+########################################
+
+key_vault_operator_object_ids = [] # e.g. ["00000000-0000-0000-0000-000000000001"]
+
+########################################
 # Application Gateway handoff (external owner pipeline manages the gateway)
 ########################################
 

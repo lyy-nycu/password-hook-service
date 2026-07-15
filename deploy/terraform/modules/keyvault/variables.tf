@@ -40,6 +40,12 @@ variable "private_dns_zone_ids" {
   type        = map(string)
 }
 
+variable "operator_object_ids" {
+  description = "Entra object IDs for named human operators who need Key Vault Secrets Officer rights (secret injection and rotation). Defaults to empty — no extra role assignments are created."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   description = "Common tags."
   type        = map(string)

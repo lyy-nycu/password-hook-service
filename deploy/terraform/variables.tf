@@ -599,3 +599,13 @@ variable "application_gateway_backend_probe_path" {
     error_message = "application_gateway_backend_probe_path must start with '/'."
   }
 }
+
+########################################
+# Key Vault operator access
+########################################
+
+variable "key_vault_operator_object_ids" {
+  description = "Entra object IDs for named human operators who need Key Vault secret injection and rotation rights (Key Vault Secrets Officer). Leave empty on automated pipelines."
+  type        = list(string)
+  default     = []
+}

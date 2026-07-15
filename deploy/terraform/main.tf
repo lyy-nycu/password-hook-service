@@ -273,6 +273,7 @@ module "keyvault" {
   runtime_identity_principal_id = azurerm_user_assigned_identity.runtime.principal_id
   private_endpoint_subnet_id    = module.network.private_endpoint_subnet_id
   private_dns_zone_ids          = module.network.private_dns_zone_ids
+  operator_object_ids           = var.key_vault_operator_object_ids
   tags                          = local.common_tags
 }
 
