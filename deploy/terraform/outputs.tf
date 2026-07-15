@@ -50,6 +50,11 @@ output "key_vault_id" {
   value       = module.keyvault.vault_id
 }
 
+output "key_vault_name" {
+  description = "Key Vault resource name (KEY_VAULT_NAME)."
+  value       = module.keyvault.vault_name
+}
+
 output "key_vault_uri" {
   description = "Key Vault URI (KEY_VAULT_URL)."
   value       = module.keyvault.vault_uri
