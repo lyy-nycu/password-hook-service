@@ -161,6 +161,9 @@ resource "terraform_data" "name_length_guards" {
     container_app_name             = local.container_app_name
     log_analytics_name             = local.log_analytics_name
     application_insights_name      = local.application_insights_name
+    app_image                      = var.app_image
+    app_image_tag                  = var.app_image_tag
+    existing_acr_login_server      = data.azurerm_container_registry.existing.login_server
   }
 
   lifecycle {
@@ -199,6 +202,19 @@ resource "terraform_data" "name_length_guards" {
     precondition {
       condition     = var.container_app_min_replicas <= var.container_app_max_replicas
       error_message = "container_app_min_replicas must be <= container_app_max_replicas."
+    }
+    precondition {
+      # Bind app_image to the approved existing ACR so an operator cannot deploy an
+      # image from a different registry than the one whose AcrPull role assignment
+      # this configuration creates.
+      condition     = split("/", var.app_image)[0] == data.azurerm_container_registry.existing.login_server
+      error_message = "app_image registry (${split("/", var.app_image)[0]}) must equal the approved existing ACR login server (${data.azurerm_container_registry.existing.login_server})."
+    }
+    precondition {
+      # Keep the embedded tag in app_image identical to app_image_tag so operators
+      # cannot pin/roll one without the other.
+      condition     = element(split(":", var.app_image), length(split(":", var.app_image)) - 1) == var.app_image_tag
+      error_message = "app_image tag (${element(split(":", var.app_image), length(split(":", var.app_image)) - 1)}) must equal app_image_tag (${var.app_image_tag})."
     }
   }
 }

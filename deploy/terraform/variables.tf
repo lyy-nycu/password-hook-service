@@ -485,12 +485,23 @@ variable "application_gateway_listener_certificate_reference" {
 }
 
 variable "application_gateway_private_frontend_ip" {
-  description = "Requested static private frontend IPv4 address in the existing Application Gateway subnet. Reserved by the external Application Gateway owner."
+  description = "Requested static private frontend IPv4 address in the existing Application Gateway subnet. Reserved by the external Application Gateway owner. Must be an RFC 1918 private address; the slice is explicitly internal-only."
   type        = string
 
   validation {
     condition     = can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", var.application_gateway_private_frontend_ip))
     error_message = "application_gateway_private_frontend_ip must be an IPv4 address."
+  }
+
+  validation {
+    # Reject non-RFC 1918 addresses. This slice is internal-only, so the private
+    # frontend IP must live in 10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16.
+    condition = (
+      can(regex("^10\\.", var.application_gateway_private_frontend_ip)) ||
+      can(regex("^172\\.(1[6-9]|2[0-9]|3[01])\\.", var.application_gateway_private_frontend_ip)) ||
+      can(regex("^192\\.168\\.", var.application_gateway_private_frontend_ip))
+    )
+    error_message = "application_gateway_private_frontend_ip must be an RFC 1918 private address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16)."
   }
 }
 
@@ -514,14 +525,67 @@ variable "application_gateway_rule_priority" {
   }
 }
 
-variable "application_gateway_waf_block_rule_priority" {
-  description = "Priority for the negated RemoteAddr IPMatch Block rule inside the listener-specific WAF policy (Task 0 recorded 10)."
-  type        = number
-  default     = 10
+variable "application_gateway_waf_policy" {
+  description = "Requested WAF policy configuration for the dedicated password-hook listener on the shared Application Gateway. Emitted through the handoff-contract output so the external owner pipeline can reproduce it exactly. Defaults match the owner-approved decision doc (Prevention mode, OWASP 3.2 + BotManager 0.1, custom RemoteAddr Block rule at priority 10)."
+  type = object({
+    mode = string
+    managed_rule_sets = list(object({
+      type    = string
+      version = string
+    }))
+    custom_block_rule = object({
+      name     = string
+      priority = number
+      action   = string
+    })
+  })
+  default = {
+    mode = "Prevention"
+    managed_rule_sets = [
+      { type = "OWASP", version = "3.2" },
+      { type = "Microsoft_BotManagerRuleSet", version = "0.1" },
+    ]
+    custom_block_rule = {
+      name     = "BlockNonPortalSources"
+      priority = 10
+      action   = "Block"
+    }
+  }
 
   validation {
-    condition     = var.application_gateway_waf_block_rule_priority >= 1 && var.application_gateway_waf_block_rule_priority <= 100
-    error_message = "application_gateway_waf_block_rule_priority must be between 1 and 100."
+    condition     = contains(["Detection", "Prevention"], var.application_gateway_waf_policy.mode)
+    error_message = "application_gateway_waf_policy.mode must be one of: Detection, Prevention."
+  }
+
+  validation {
+    condition     = length(var.application_gateway_waf_policy.managed_rule_sets) > 0
+    error_message = "application_gateway_waf_policy.managed_rule_sets must contain at least one entry."
+  }
+
+  validation {
+    condition = alltrue([
+      for r in var.application_gateway_waf_policy.managed_rule_sets :
+      length(r.type) > 0 && length(r.version) > 0
+    ])
+    error_message = "Every application_gateway_waf_policy.managed_rule_sets entry must have non-empty type and version."
+  }
+
+  validation {
+    condition = (
+      var.application_gateway_waf_policy.custom_block_rule.priority >= 1 &&
+      var.application_gateway_waf_policy.custom_block_rule.priority <= 100
+    )
+    error_message = "application_gateway_waf_policy.custom_block_rule.priority must be between 1 and 100."
+  }
+
+  validation {
+    condition     = contains(["Block", "Allow", "Log"], var.application_gateway_waf_policy.custom_block_rule.action)
+    error_message = "application_gateway_waf_policy.custom_block_rule.action must be one of: Block, Allow, Log."
+  }
+
+  validation {
+    condition     = length(var.application_gateway_waf_policy.custom_block_rule.name) >= 1 && length(var.application_gateway_waf_policy.custom_block_rule.name) <= 128
+    error_message = "application_gateway_waf_policy.custom_block_rule.name must be 1-128 chars."
   }
 }
 

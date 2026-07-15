@@ -147,21 +147,23 @@ output "private_dns_zone_ids" {
 output "application_gateway_handoff" {
   description = "Operator-safe handoff contract for the external Application Gateway owner pipeline. All values are requested inputs plus values this deployment can safely publish; none are secrets."
   value = {
-    application_gateway_resource_id   = var.application_gateway_resource_id
-    private_api_hostname              = var.private_api_hostname
-    requested_private_frontend_ip     = var.application_gateway_private_frontend_ip
-    requested_listener_priority       = var.application_gateway_listener_priority
-    requested_rule_priority           = var.application_gateway_rule_priority
-    requested_waf_block_rule_priority = var.application_gateway_waf_block_rule_priority
-    listener_certificate_reference    = var.application_gateway_listener_certificate_reference
-    backend_fqdn                      = module.aca.container_app_backend_fqdn
-    backend_sni                       = module.aca.container_app_backend_fqdn
-    backend_host_header               = module.aca.container_app_backend_fqdn
-    backend_probe_path                = var.application_gateway_backend_probe_path
-    approved_portal_source_cidrs      = var.portal_allowed_cidrs
-    waf_policy_mode                   = "Prevention"
-    waf_managed_rule_sets             = ["OWASP 3.2", "BotManager 0.1"]
-    note                              = "Listener/rule/frontend IDs are not published by this Terraform. The external owner pipeline must record them separately after apply."
+    application_gateway_resource_id = var.application_gateway_resource_id
+    private_api_hostname            = var.private_api_hostname
+    requested_private_frontend_ip   = var.application_gateway_private_frontend_ip
+    requested_listener_priority     = var.application_gateway_listener_priority
+    requested_rule_priority         = var.application_gateway_rule_priority
+    listener_certificate_reference  = var.application_gateway_listener_certificate_reference
+    backend_fqdn                    = module.aca.container_app_backend_fqdn
+    backend_sni                     = module.aca.container_app_backend_fqdn
+    backend_host_header             = module.aca.container_app_backend_fqdn
+    backend_probe_path              = var.application_gateway_backend_probe_path
+    approved_portal_source_cidrs    = var.portal_allowed_cidrs
+    waf_policy = {
+      mode              = var.application_gateway_waf_policy.mode
+      managed_rule_sets = var.application_gateway_waf_policy.managed_rule_sets
+      custom_block_rule = var.application_gateway_waf_policy.custom_block_rule
+    }
+    note = "Listener/rule/frontend IDs are not published by this Terraform. The external owner pipeline must record them separately after apply."
   }
 }
 

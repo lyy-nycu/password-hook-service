@@ -134,8 +134,24 @@ private_api_hostname = "api.example.test"
 application_gateway_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-spoke-paas-example/providers/Microsoft.Network/applicationGateways/agw-example-jpe-001"
 
 application_gateway_listener_certificate_reference = "example-listener-cert"
-application_gateway_private_frontend_ip            = "10.0.0.62" # documentation-only private IP
+application_gateway_private_frontend_ip            = "10.0.0.62" # documentation-only private IP (RFC 1918)
 application_gateway_listener_priority              = 200
 application_gateway_rule_priority                  = 120
-application_gateway_waf_block_rule_priority        = 10
 application_gateway_backend_probe_path             = "/healthz"
+
+# Requested WAF policy for the dedicated password-hook listener. Defaults match
+# the owner-approved decision doc; override only if that approved requirement
+# changes. The external Application Gateway owner pipeline consumes the
+# handoff-contract output that echoes these values.
+application_gateway_waf_policy = {
+  mode = "Prevention"
+  managed_rule_sets = [
+    { type = "OWASP", version = "3.2" },
+    { type = "Microsoft_BotManagerRuleSet", version = "0.1" },
+  ]
+  custom_block_rule = {
+    name     = "BlockNonPortalSources"
+    priority = 10
+    action   = "Block"
+  }
+}
