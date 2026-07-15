@@ -338,7 +338,8 @@ module "aca" {
   application_insights_name           = local.application_insights_name
 
   # Key Vault URI for KEY_VAULT_URL runtime env var.
-  key_vault_uri = module.keyvault.vault_uri
+  key_vault_uri          = module.keyvault.vault_uri
+  key_vault_secret_names = module.keyvault.expected_secret_names
 
   tags = local.common_tags
 

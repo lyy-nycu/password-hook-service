@@ -1,30 +1,28 @@
 ########################################
-# Placeholder outputs for the ACA / Container App module. Task 6 replaces
-# these `null` values with real Container App / Log Analytics /
-# Application Insights attributes; output names/types must be preserved.
+# ACA module outputs
 ########################################
 
 output "container_app_id" {
-  description = "Container App resource ID (populated by Task 6 when deploy_container_app is true)."
-  value       = null
+  description = "Container App resource ID; null when var.deploy_container_app is false."
+  value       = try(azurerm_container_app.this[0].id, null)
 }
 
 output "container_app_backend_fqdn" {
-  description = "Container App internal backend FQDN used by the Application Gateway backend pool (populated by Task 6)."
-  value       = null
+  description = "Internal ACA ingress FQDN used by the Application Gateway backend pool (SNI + host header); null when var.deploy_container_app is false."
+  value       = try(azurerm_container_app.this[0].ingress[0].fqdn, null)
 }
 
 output "log_analytics_id" {
-  description = "Log Analytics workspace resource ID (populated by Task 6)."
-  value       = null
+  description = "Log Analytics workspace resource ID."
+  value       = azurerm_log_analytics_workspace.this.id
 }
 
 output "application_insights_id" {
-  description = "Application Insights component resource ID (populated by Task 6)."
-  value       = null
+  description = "Application Insights component resource ID."
+  value       = azurerm_application_insights.this.id
 }
 
 output "azure_monitor_metrics_resource_id" {
-  description = "Custom-metrics resource ID for the Azure Monitor exporter (populated by Task 6)."
-  value       = null
+  description = "Custom-metrics resource ID (Container App) for the Azure Monitor exporter. Constructed from subscription/RG/app name so it is stable even before deploy_container_app is true."
+  value       = local.metrics_resource_id
 }

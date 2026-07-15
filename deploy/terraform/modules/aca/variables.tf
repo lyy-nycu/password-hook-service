@@ -174,6 +174,15 @@ variable "key_vault_uri" {
   type        = string
 }
 
+variable "key_vault_secret_names" {
+  description = "Non-secret Key Vault secret names for the runtime env vars (KEY_VAULT_HMAC_SECRET_NAME / KEY_VAULT_GRAPH_CLIENT_SECRET_NAME / KEY_VAULT_PASSWORD_ENCRYPTION_KEY_NAME). Values must match module.keyvault.expected_secret_names."
+  type = object({
+    hmac_secret                     = string
+    graph_client_secret             = string
+    password_payload_encryption_key = string
+  })
+}
+
 variable "tags" {
   description = "Common tags."
   type        = map(string)
