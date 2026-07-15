@@ -1,7 +1,5 @@
 ########################################
-# Placeholder inputs for the Azure Managed Redis module. Task 5 replaces
-# this stub with the real Balanced_B0 OSSCluster instance, Entra access
-# policy assignment, private endpoint, and DNS records.
+# Input variables for the Azure Managed Redis module.
 ########################################
 
 variable "managed_redis_name" {

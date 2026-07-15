@@ -1,21 +1,20 @@
 ########################################
-# Placeholder outputs for the Azure Managed Redis module. Task 5 replaces
-# the `null` values with real Managed Redis attributes. The output
-# names/types must be preserved so the root and ACA module wiring keep
-# compiling.
+# Outputs for the Azure Managed Redis module.
+# Names are fixed — the root module and ACA env wiring (Task 6) consume
+# hostname (→ REDIS_HOST) and tls_port (→ REDIS_PORT) by these exact names.
 ########################################
 
 output "hostname" {
-  description = "Managed Redis hostname (REDIS_HOST). Populated by Task 5."
-  value       = null
+  description = "Managed Redis hostname (REDIS_HOST)."
+  value       = azurerm_managed_redis.this.hostname
 }
 
 output "tls_port" {
-  description = "Managed Redis TLS port (REDIS_PORT). Populated by Task 5."
-  value       = null
+  description = "Managed Redis TLS port (REDIS_PORT)."
+  value       = azurerm_managed_redis.this.default_database[0].port
 }
 
 output "resource_id" {
-  description = "Managed Redis resource ID. Populated by Task 5."
-  value       = null
+  description = "Managed Redis resource ID."
+  value       = azurerm_managed_redis.this.id
 }
