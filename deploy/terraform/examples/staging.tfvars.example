@@ -1,0 +1,141 @@
+# Example staging tfvars for the password-hook service.
+#
+# COPY this file to `staging.tfvars`, replace every placeholder with a value
+# approved for your environment, and NEVER commit `staging.tfvars` to source
+# control. The example file itself contains only documentation-style
+# placeholders; it must never carry real tenant IDs, client IDs, on-premises
+# public IP addresses, VPN shared keys, or production resource names.
+
+########################################
+# Provider targeting
+########################################
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+########################################
+# Environment, region, naming
+########################################
+
+environment = "stg"
+location    = "japaneast"
+name_prefix = "pwdhook"
+
+########################################
+# Application resource group
+########################################
+
+create_resource_group = false
+resource_group_name   = "rg-password-hook-example-jpe-001"
+
+########################################
+# Runtime identity
+########################################
+
+runtime_identity_name = "id-password-hook-example"
+
+########################################
+# Existing consumed resources (replace with the approved resource IDs)
+########################################
+
+existing_acr_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-acr-example-jpe-001/providers/Microsoft.ContainerRegistry/registries/acrexample001"
+
+existing_container_app_environment_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-cae-example-jpe-001/providers/Microsoft.App/managedEnvironments/cae-example-jpe-001"
+
+########################################
+# Network mode and inputs (Task 0 approves only the private-endpoint mode)
+########################################
+
+network_mode = "private_endpoints_in_existing_vnet"
+
+existing_workload_vnet_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-vnet-example-jpe-001/providers/Microsoft.Network/virtualNetworks/vnet-example-jpe-001"
+
+private_endpoint_subnet_name         = "snet-pe-password-hook-example-jpe-001"
+private_endpoint_subnet_cidr         = "10.0.0.224/27" # documentation-only private CIDR
+private_dns_zone_resource_group_name = "rg-spoke-paas-example"
+
+# Redis zone name must be verified against the pinned AzureRM provider before apply.
+private_dns_zone_names = {
+  key_vault    = "privatelink.vaultcore.azure.net"
+  service_bus  = "privatelink.servicebus.windows.net"
+  managed_redis = "privatelink.redis.azure.net"
+}
+
+########################################
+# Application image and rollout gate
+########################################
+
+# First apply: keep deploy_container_app = false to bootstrap identity/RBAC/network.
+# Second apply (after the image is pushed and RBAC has propagated): set to true.
+deploy_container_app = false
+
+app_image     = "acrexample001.azurecr.io/password-hook-service:example-tag"
+app_image_tag = "example-tag"
+
+container_app_min_replicas = 1
+container_app_max_replicas = 3
+
+########################################
+# Service Bus / password message TTL
+########################################
+
+service_bus_queue_name                  = "password-sync"
+service_bus_safe_dead_letter_queue_name = "password-sync-safe-dlq"
+password_message_ttl_seconds            = 300
+
+########################################
+# Redis sync-status retention
+########################################
+
+sync_status_terminal_ttl_days = 90
+redis_key_prefix              = "password-hook:sync-status:"
+
+########################################
+# Observability
+########################################
+
+application_insights_retention_days = 90
+
+########################################
+# Portal source-address and rate limits
+#
+# Use documentation-only CIDRs here. Real approved portal CIDRs live in the
+# private-network decision document, not in a committed example file.
+########################################
+
+portal_allowed_cidrs = [
+  "192.0.2.10/32",   # RFC 5737 TEST-NET-1 placeholder
+  "198.51.100.10/32" # RFC 5737 TEST-NET-2 placeholder
+]
+
+trusted_proxy_cidrs = [
+  "10.0.0.0/24" # documentation-only ACA/Application Gateway proxy CIDR
+]
+
+rate_limit_per_ip = 10
+rate_limit_window = "1m"
+
+########################################
+# Graph identifiers and password encryption key
+########################################
+
+entra_primary_domain       = "example.test"
+entra_fallback_domain      = ""
+graph_tenant_id            = "00000000-0000-0000-0000-000000000000"
+graph_client_id            = "00000000-0000-0000-0000-000000000000"
+password_encryption_key_id = "example-encryption-key-id"
+
+########################################
+# Application Gateway handoff (external owner pipeline manages the gateway)
+########################################
+
+private_api_hostname = "api.example.test"
+
+application_gateway_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-spoke-paas-example/providers/Microsoft.Network/applicationGateways/agw-example-jpe-001"
+
+application_gateway_listener_certificate_reference = "example-listener-cert"
+application_gateway_private_frontend_ip            = "10.0.0.62" # documentation-only private IP
+application_gateway_listener_priority              = 200
+application_gateway_rule_priority                  = 120
+application_gateway_waf_block_rule_priority        = 10
+application_gateway_backend_probe_path             = "/healthz"
