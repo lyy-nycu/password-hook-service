@@ -70,14 +70,20 @@ type Config struct {
 	GraphClientID                 string
 	GraphClientSecret             string
 	ObservabilityExporter         string
-	OTLPExporterEndpoint          string
-	AzureMonitorMetricResourceID  string
-	AzureMonitorMetricRegion      string
-	AzureMonitorMetricNamespace   string
-	directClientModeErr           error
-	redisPortErr                  error
-	passwordMessageTTLErr         error
-	syncStatusTerminalTTLErr      error
+	// OTLPExporterEndpoint holds the OTEL_EXPORTER_OTLP_ENDPOINT value the
+	// ACA managed OpenTelemetry agent injects at runtime. It must never be
+	// set explicitly by Terraform or hand-authored deployment configuration
+	// (see deploy/terraform/modules/aca): the managed agent injects the
+	// endpoint automatically, and setting it explicitly would compete with
+	// or invalidate that injection.
+	OTLPExporterEndpoint         string
+	AzureMonitorMetricResourceID string
+	AzureMonitorMetricRegion     string
+	AzureMonitorMetricNamespace  string
+	directClientModeErr          error
+	redisPortErr                 error
+	passwordMessageTTLErr        error
+	syncStatusTerminalTTLErr     error
 }
 
 func Load() Config {

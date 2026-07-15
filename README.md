@@ -282,7 +282,8 @@ Set `OBSERVABILITY_EXPORTER=azure_monitor` to export production telemetry.
 Logs and traces:
 
 - Configure the Azure Container Apps managed OpenTelemetry agent to send logs and traces to Application Insights.
-- Set `OTEL_EXPORTER_OTLP_ENDPOINT` to the agent endpoint.
+- ACA injects `OTEL_EXPORTER_OTLP_ENDPOINT` into every container automatically once the managed agent is configured on the managed environment. Do NOT set this variable explicitly in Terraform or hand-authored deployment configuration — the service reads only the runtime-injected value. Setting it explicitly would compete with the injected value and can silently route traces to the wrong endpoint.
+- The exporter uses OTLP over gRPC to the local in-cluster sidecar the managed agent provides.
 
 Metrics:
 
@@ -333,7 +334,7 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `RATE_LIMIT_WINDOW` | `1s` | Optional; defaults to `1s`; must be a positive Go duration when set; anomaly rate-limit window |
 | `HOOK_MAX_BODY_BYTES` | `65536` | Optional; defaults to `65536`; must be a positive byte limit when set; signed hook request body limit |
 | `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure Container Apps managed OpenTelemetry agent endpoint for traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; injected automatically by the Azure Container Apps managed OpenTelemetry agent (OTLP gRPC). Never set explicitly in deployment configuration. |
 | `AZURE_MONITOR_METRIC_RESOURCE_ID` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure resource ID that owns custom metrics |
 | `AZURE_MONITOR_METRIC_REGION` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure region for the custom metrics endpoint |
 | `AZURE_MONITOR_METRIC_NAMESPACE` | `password-hook-service` | Custom metrics namespace when Azure Monitor export is enabled |
