@@ -7,6 +7,11 @@ output "namespace_id" {
   value       = azurerm_servicebus_namespace.this.id
 }
 
+output "namespace_name" {
+  description = "Service Bus namespace name."
+  value       = azurerm_servicebus_namespace.this.name
+}
+
 output "namespace_fqdn" {
   description = "Service Bus namespace FQDN (used by ACA as SERVICEBUS_NAMESPACE_FQDN)."
   value       = "${azurerm_servicebus_namespace.this.name}.servicebus.windows.net"
