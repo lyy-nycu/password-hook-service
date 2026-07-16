@@ -8,8 +8,11 @@ output "container_app_id" {
 }
 
 output "container_app_backend_fqdn" {
-  description = "Internal ACA ingress FQDN used by the Application Gateway backend pool (SNI + host header); null when var.deploy_container_app is false."
-  value       = try(azurerm_container_app.this[0].ingress[0].fqdn, null)
+  description = "Internal ACA ingress FQDN used by the Application Gateway backend pool (SNI + host header). Resolves to the actual ingress FQDN once the Container App exists (Pass 2), and to a deterministic prediction '<container-app-name>.internal.<managed-environment-default-domain>' beforehand so the application_gateway_handoff output has a real value on Pass 1. Both values are the same hostname Azure assigns to an internal (external_enabled=false) Container App."
+  value = try(
+    azurerm_container_app.this[0].ingress[0].fqdn,
+    "${var.container_app_name}.internal.${var.container_app_environment_default_domain}"
+  )
 }
 
 output "log_analytics_id" {

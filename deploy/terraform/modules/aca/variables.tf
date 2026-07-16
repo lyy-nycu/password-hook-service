@@ -24,6 +24,11 @@ variable "container_app_environment_id" {
   type        = string
 }
 
+variable "container_app_environment_default_domain" {
+  description = "default_domain attribute of the existing ACA managed environment (e.g. 'purplepond-efe764ce.japaneast.azurecontainerapps.io'). Used to precompute the deterministic internal ingress FQDN as '<container-app-name>.internal.<default_domain>' before the Container App exists, so the Application Gateway handoff output has a real value on Pass 1."
+  type        = string
+}
+
 variable "existing_acr_login_server" {
   description = "Existing ACR login server."
   type        = string

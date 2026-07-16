@@ -293,12 +293,13 @@ module "aca" {
   source = "./modules/aca"
 
   # Placement in existing shared ACA environment (never created here).
-  container_app_name           = local.container_app_name
-  location                     = local.resource_group_location
-  resource_group_name          = local.resource_group_name
-  container_app_environment_id = var.existing_container_app_environment_id
-  existing_acr_login_server    = data.azurerm_container_registry.existing.login_server
-  existing_acr_resource_id     = var.existing_acr_resource_id
+  container_app_name                       = local.container_app_name
+  location                                 = local.resource_group_location
+  resource_group_name                      = local.resource_group_name
+  container_app_environment_id             = var.existing_container_app_environment_id
+  container_app_environment_default_domain = data.azurerm_container_app_environment.existing.default_domain
+  existing_acr_login_server                = data.azurerm_container_registry.existing.login_server
+  existing_acr_resource_id                 = var.existing_acr_resource_id
 
   # Runtime identity.
   runtime_identity_id           = azurerm_user_assigned_identity.runtime.id
