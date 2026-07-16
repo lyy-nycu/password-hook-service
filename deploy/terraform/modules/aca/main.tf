@@ -284,6 +284,16 @@ resource "azurerm_container_app" "this" {
       # ---- Portal enforcement / trusted proxies / rate limits ----
       # internal/config/config.go parses PORTAL_ALLOWED_CIDRS and
       # TRUSTED_PROXY_CIDRS as comma-separated CIDR lists (csvEnv).
+      # DIRECT_CLIENT_MODE and TRUSTED_PROXY_CIDRS are mutually exclusive
+      # modes (config.go rejects TRUSTED_PROXY_CIDRS set together with
+      # DIRECT_CLIENT_MODE=true). Set DIRECT_CLIENT_MODE=false explicitly
+      # here rather than relying on its unset-defaults-to-false behavior,
+      # since production always runs behind the trusted Application
+      # Gateway/ACA proxy chain, never in direct-client mode.
+      env {
+        name  = "DIRECT_CLIENT_MODE"
+        value = "false"
+      }
       env {
         name  = "PORTAL_ALLOWED_CIDRS"
         value = join(",", var.portal_allowed_cidrs)
