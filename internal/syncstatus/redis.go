@@ -324,12 +324,14 @@ func (s *RedisStore) key(upn string) string {
 	// SHA-256 here hashes only the normalized UPN (an account identifier),
 	// never the password field, to build a one-way, non-reversible Redis
 	// key digest. CodeQL's go/weak-sensitive-data-hashing heuristic flags
-	// this call because the value originates from a struct/type whose
-	// name contains "password" (migration.PasswordSyncMessage), not
-	// because password material actually reaches this hash. A
-	// password-strength KDF (bcrypt/PBKDF2/etc.) is unnecessary and
-	// inappropriate for a deterministic cache-key digest.
-	// codeql[go/weak-sensitive-data-hashing]
+	// this call as insecure password hashing because the value originates
+	// from a struct/type whose name contains "password"
+	// (migration.PasswordSyncMessage), not because password material
+	// actually reaches this hash. A password-strength KDF (bcrypt/PBKDF2/
+	// etc.) is unnecessary and inappropriate for a deterministic cache-key
+	// digest. The resulting alert is dismissed as a false positive; see
+	// docs/ADR/2026-07-16-codeql-weak-sensitive-data-hashing-false-positive.md
+	// for the full analysis and alternatives considered.
 	digest := sha256.Sum256([]byte(normalizeUPN(upn)))
 	return s.keyPrefix + hex.EncodeToString(digest[:])
 }
