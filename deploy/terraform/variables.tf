@@ -579,8 +579,8 @@ variable "application_gateway_waf_policy" {
   }
 
   validation {
-    condition     = contains(["Block", "Allow", "Log"], var.application_gateway_waf_policy.custom_block_rule.action)
-    error_message = "application_gateway_waf_policy.custom_block_rule.action must be one of: Block, Allow, Log."
+    condition     = contains(["Block"], var.application_gateway_waf_policy.custom_block_rule.action)
+    error_message = "application_gateway_waf_policy.custom_block_rule.action must be \"Block\". application-gateway-handoff.md forbids an \"Allow\" action that would bypass the OWASP/BotManager managed rule sets for approved sources; the rule's role is exclusively to block unapproved sources before the managed rules run."
   }
 
   validation {
