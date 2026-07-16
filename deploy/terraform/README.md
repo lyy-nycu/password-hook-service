@@ -25,6 +25,11 @@ This pass creates:
 - All RBAC role assignments and the Managed Redis access-policy assignment for the runtime UAMI (see [Production Identity and RBAC](#production-identity-and-rbac)).
 - The Log Analytics workspace, Application Insights component, and managed OpenTelemetry agent patch on the shared ACA environment.
 
+> **⚠️ Shared ACA environment blast radius.** Pass 1 merges an `azapi_update_resource` PATCH onto the existing, externally owned ACA managed environment consumed via `var.existing_container_app_environment_id` (staging: `cae-stg-jpe-001`). The patch sets `properties.appInsightsConfiguration.connectionString` and `properties.openTelemetryConfiguration` (traces + logs → Application Insights) on that environment. The environment is **shared with every other workload placed in it**, not just this Container App: the ACA managed OpenTelemetry agent runs at the environment level, so this configuration change affects the telemetry destination and OTel wiring for **every** app in that environment. Operators must be aware of this blast radius before applying:
+> - Apply in staging first and confirm unrelated workloads in the same environment still emit their expected logs and traces (to their own destinations, if they configure a per-app override, or to this Application Insights component otherwise) before promoting to production.
+> - Any subsequent change or rollback to `appInsightsConfiguration` / `openTelemetryConfiguration` on this environment must be coordinated with the environment owner the same way other shared-environment changes are — never mutate it out of band from another workload's pipeline.
+> - The `appLogsConfiguration` (the environment owner's Log Analytics wiring) is intentionally **not** touched by this PATCH.
+
 Network and DNS dependencies are fully established before Pass 2. RBAC propagation in Azure can take a few minutes; confirm role assignments are active before continuing.
 
 ### Build and push the application image
