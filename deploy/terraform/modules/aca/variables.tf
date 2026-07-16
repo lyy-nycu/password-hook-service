@@ -84,6 +84,11 @@ variable "service_bus_queue_name" {
   type        = string
 }
 
+variable "safe_dead_letter_queue_name" {
+  description = "Safe dead-letter Service Bus queue name (SERVICEBUS_DEADLETTER_QUEUE_NAME)."
+  type        = string
+}
+
 variable "password_message_ttl" {
   description = "PASSWORD_MESSAGE_TTL as a Go duration."
   type        = string

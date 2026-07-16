@@ -313,13 +313,14 @@ module "aca" {
   max_replicas         = var.container_app_max_replicas
 
   # Non-secret runtime configuration (Redis, Service Bus, portal enforcement).
-  service_bus_namespace_fqdn = module.servicebus.namespace_fqdn
-  service_bus_queue_name     = module.servicebus.queue_name
-  password_message_ttl       = local.password_message_ttl_go_duration
-  redis_host                 = module.redis.hostname
-  redis_port                 = module.redis.tls_port
-  redis_key_prefix           = var.redis_key_prefix
-  sync_status_terminal_ttl   = local.sync_status_terminal_ttl_go_duration
+  service_bus_namespace_fqdn  = module.servicebus.namespace_fqdn
+  service_bus_queue_name      = module.servicebus.queue_name
+  safe_dead_letter_queue_name = module.servicebus.safe_dead_letter_queue_name
+  password_message_ttl        = local.password_message_ttl_go_duration
+  redis_host                  = module.redis.hostname
+  redis_port                  = module.redis.tls_port
+  redis_key_prefix            = var.redis_key_prefix
+  sync_status_terminal_ttl    = local.sync_status_terminal_ttl_go_duration
 
   portal_allowed_cidrs = var.portal_allowed_cidrs
   trusted_proxy_cidrs  = var.trusted_proxy_cidrs

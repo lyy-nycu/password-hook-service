@@ -137,6 +137,11 @@ resource "azurerm_role_assignment" "metrics_publisher" {
   scope                = local.metrics_resource_id
   role_definition_name = "Monitoring Metrics Publisher"
   principal_id         = var.runtime_identity_principal_id
+
+  # The scope above is a constructed ARM ID string rather than an
+  # attribute reference, so Terraform cannot infer the ordering.
+  # Force the role assignment to wait until the Container App exists.
+  depends_on = [azurerm_container_app.this]
 }
 
 ########################################
@@ -244,6 +249,10 @@ resource "azurerm_container_app" "this" {
         value = var.service_bus_queue_name
       }
       env {
+        name  = "SERVICEBUS_DEADLETTER_QUEUE_NAME"
+        value = var.safe_dead_letter_queue_name
+      }
+      env {
         name  = "PASSWORD_MESSAGE_TTL"
         value = var.password_message_ttl
       }
@@ -333,6 +342,10 @@ resource "azurerm_container_app" "this" {
       env {
         name  = "AZURE_MONITOR_METRIC_REGION"
         value = var.location
+      }
+      env {
+        name  = "AZURE_MONITOR_METRIC_NAMESPACE"
+        value = "password-hook-service"
       }
     }
 
