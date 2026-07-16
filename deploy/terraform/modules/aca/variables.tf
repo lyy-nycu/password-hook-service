@@ -84,6 +84,11 @@ variable "service_bus_namespace_fqdn" {
   type        = string
 }
 
+variable "service_bus_namespace_name" {
+  description = "Service Bus namespace name (bare, without '.servicebus.windows.net'). Consumed by the KEDA azure-servicebus scaler metadata, whose 'namespace' key expects the bare name."
+  type        = string
+}
+
 variable "service_bus_queue_name" {
   description = "Active Service Bus queue name."
   type        = string

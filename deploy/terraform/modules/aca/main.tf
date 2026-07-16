@@ -125,10 +125,6 @@ resource "azurerm_role_assignment" "acr_pull" {
 
 locals {
   metrics_resource_id = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/resourceGroups/${var.resource_group_name}/providers/Microsoft.App/containerApps/${var.container_app_name}"
-
-  # KEDA azure-servicebus scaler expects the bare namespace name
-  # (no ".servicebus.windows.net" suffix) in its metadata.
-  service_bus_namespace_name = replace(var.service_bus_namespace_fqdn, ".servicebus.windows.net", "")
 }
 
 resource "azurerm_role_assignment" "metrics_publisher" {
@@ -358,7 +354,7 @@ resource "azurerm_container_app" "this" {
       custom_rule_type = "azure-servicebus"
       metadata = {
         queueName    = var.service_bus_queue_name
-        namespace    = local.service_bus_namespace_name
+        namespace    = var.service_bus_namespace_name
         messageCount = "50"
       }
       identity_id = var.runtime_identity_id

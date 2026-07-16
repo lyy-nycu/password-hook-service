@@ -315,6 +315,7 @@ module "aca" {
 
   # Non-secret runtime configuration (Redis, Service Bus, portal enforcement).
   service_bus_namespace_fqdn  = module.servicebus.namespace_fqdn
+  service_bus_namespace_name  = module.servicebus.namespace_name
   service_bus_queue_name      = module.servicebus.queue_name
   safe_dead_letter_queue_name = module.servicebus.safe_dead_letter_queue_name
   password_message_ttl        = local.password_message_ttl_go_duration
