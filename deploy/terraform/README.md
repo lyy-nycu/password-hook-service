@@ -177,20 +177,19 @@ Record only sanitized and redacted outputs. Do not capture or store a real reque
 
 Source-address validation is a required gate that must pass from every staging portal web server before production is considered. If any check below fails, stop and investigate the topology; do not widen `TRUSTED_PROXY_CIDRS` or accept an unvalidated leftmost `X-Forwarded-For` value to work around the failure.
 
-From each portal web server, collect the following four data points from the application logs (`sanitized_peer`, `x_forwarded_for`, resolved client address) and the Application Gateway WAF access log (observed client address):
+From each portal web server, collect the following data points from the Application Gateway WAF access log and from the application HTTP response codes. **Note:** the application's current structured logs (`AccessLog` middleware: `traceId`, `method`, `path`, `status`, `durationMs`; middleware-outcome log: `action`, `traceId`, `middleware`, `status`, `outcome`, `reason`) do not include the resolved peer address, sanitized forwarded-chain, or resolved client address as discrete fields. The per-request evidence below therefore relies on network-layer logs and HTTP response codes rather than application log fields. If per-request visibility into the resolved client IP is needed, structured logging of the resolved address would need to be added to the rate-limit middleware before the table below can be verified literally from application logs.
 
 | Data point | Where to find it | What to verify |
 |---|---|---|
 | WAF-observed client address | Application Gateway access log | Should match the portal web server source address |
-| Application immediate peer | Application structured log `sanitized_peer` field | Must match a CIDR in `TRUSTED_PROXY_CIDRS` |
-| Sanitized forwarded-chain shape | Application structured log `x_forwarded_for` field (sanitized, never raw) | Must contain exactly one resolved address; must not be empty, ambiguous, or all-trusted |
-| Application-resolved client address | Application structured log `resolved_client` field | Must match a CIDR in `PORTAL_ALLOWED_CIDRS` |
+| Application accept/reject decision | HTTP response code (`200`/`202` vs `401`) | Requests from portal web servers (in `PORTAL_ALLOWED_CIDRS`) must be accepted; requests from outside must be rejected |
+| Middleware rejection reason | Application structured log `reason` field on `middleware.rejected` events | Rejections must cite `source_not_allowed`, never a forwarding-chain parse error for legitimate portal traffic |
 
 After confirming normal traffic:
 
-1. **Spoofing test:** send a request with a forged `X-Forwarded-For: <invented-address>` header from a portal web server. The application must ignore the forged header because the immediate peer is trusted, and must use the peer-derived address chain only. The resolved client must not equal the invented address.
+1. **Untrusted-peer spoofing test:** send a request with a forged `X-Forwarded-For: <invented-address>` header from a host whose IP is **not** in `TRUSTED_PROXY_CIDRS`. The application ignores `X-Forwarded-For` entirely for untrusted peers (`internal/middleware/ratelimit.go`: when the peer is not in `trustedProxyCIDRs`, `sourceIP()` returns the raw peer address without consulting the header). The resolved client is the raw peer IP; the request must be rejected by `PORTAL_ALLOWED_CIDRS` with a `401`, and the invented address must never appear as the resolved client.
 
-2. **Untrusted-peer test:** send a request through an untrusted path that does not match `TRUSTED_PROXY_CIDRS`. The application must use the raw peer address as the resolved client and must not consult `X-Forwarded-For`. The request must be rejected by `PORTAL_ALLOWED_CIDRS` (since the raw peer is not in the portal CIDR list) and must never cause a `500`.
+2. **Trusted-proxy forwarding test:** send a request through a portal web server whose IP **is** in `TRUSTED_PROXY_CIDRS`, with a well-formed `X-Forwarded-For` header naming the real client. The application consults the header and walks the chain rightward, stopping at the leftmost untrusted hop (`internal/middleware/ratelimit.go`: `sourceIP()` iterates from the rightmost hop and returns the first non-trusted entry). The resolved client must be the real client address, must fall in `PORTAL_ALLOWED_CIDRS`, and the request must be accepted. This is the legitimate proxy-forwarding path — not a spoofing scenario.
 
 3. **Rate-limit isolation test:** from two different portal web servers that share the same upstream proxy, confirm that each server gets an independent per-resolved-client rate-limit bucket. Two clients behind the same proxy must not share a bucket.
 
@@ -198,5 +197,5 @@ After confirming normal traffic:
 
 - If the immediate peer does not match `TRUSTED_PROXY_CIDRS`, stop and re-examine the approved topology before widening the range.
 - If the resolved client does not match `PORTAL_ALLOWED_CIDRS`, stop and investigate whether the forwarded chain is correct.
-- If a spoofed value leaks through as the resolved client, stop immediately — the trust-chain algorithm is not working correctly and production must not proceed.
+- If an untrusted-peer spoofing test results in a `200`/`202` (the forged address was accepted), stop immediately — the trust-chain algorithm is not working correctly and production must not proceed. The correct outcome is a `401` based on the raw peer address.
 - Never add `0.0.0.0/0` or `::/0` to `TRUSTED_PROXY_CIDRS` for any reason. Never allow `PORTAL_ALLOWED_CIDRS` and `TRUSTED_PROXY_CIDRS` to overlap (the root Terraform enforces this as a `precondition`).
