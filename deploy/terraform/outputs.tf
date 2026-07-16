@@ -176,4 +176,3 @@ output "application_gateway_handoff" {
     note = "Listener/rule/frontend IDs are not published by this Terraform. The external owner pipeline must record them separately after apply."
   }
 }
-
