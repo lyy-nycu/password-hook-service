@@ -93,6 +93,7 @@ Ownership findings and decision:
 - Staging has recent near-daily writes by the `id-ldap-service-cicd` managed identity plus human operators. Production also has recent human writes.
 - The gateways are actively shared and reconciled. This repository must not import them or declare a partial/full `azurerm_application_gateway` resource in a separate Terraform state.
 - The service owner confirmed they have permission to manage both gateways and identified `lyy-nycu/ldap-service` as the existing automation repository. The password-hook additions must be implemented through that repository's existing state/pipeline—especially staging—rather than through an independent competing configuration. Before any write, inspect its current source/state boundary and pull-request/change-window requirements. The pipeline must return the deployed resource IDs and redacted verification result.
+- **Confirmed 2026-07-16:** the password-hook service owner, the Application Gateway owner (`lyy-nycu/ldap-service`), and the operator executing the Terraform deployment are the same person (`lyy-nycu`). There is no separate external stakeholder to seek approval from for the project-owner and Application-Gateway-owner roles described throughout this document; those gates are self-approved by the same individual who still must perform the actual work (reserving the static private frontend IP, adding the listener/rule/WAF policy through the `lyy-nycu/ldap-service` pipeline, and running the walkthroughs below). This does not remove any listed prerequisite — it only means no separate human needs to sign off before that person proceeds.
 
 The owner-approved handoff must specify:
 
@@ -148,7 +149,7 @@ The following values remain owner inputs and must not be guessed from existing p
 - firewall owner for portal-to-private-frontend TCP 443;
 - staging synthetic-request owner and password-safe verification procedure.
 
-The owner identified the technical team as responsible for the on-premises split-horizon DNS record and its change/rollback. The exact named operator/change window must be recorded before the staging DNS update.
+The owner identified the technical team as responsible for the on-premises split-horizon DNS record and its change/rollback. The exact named operator/change window must be recorded before the staging DNS update. **Confirmed 2026-07-16:** unlike the project-owner and Application-Gateway-owner roles (see "Existing Application Gateway Contract" above, both held by `lyy-nycu`), this on-premises DNS team is a genuinely separate external stakeholder — coordination with them remains a real, unresolved dependency and is not satisfied merely because the other roles collapsed to one person.
 
 Verified existing hostname state:
 
