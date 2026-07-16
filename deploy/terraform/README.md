@@ -183,7 +183,7 @@ From each portal web server, collect the following data points from the Applicat
 |---|---|---|
 | WAF-observed client address | Application Gateway access log | Should match the portal web server source address |
 | Application accept/reject decision | HTTP response code (`200`/`202` vs `401`) | Requests from portal web servers (in `PORTAL_ALLOWED_CIDRS`) must be accepted; requests from outside must be rejected |
-| Middleware rejection reason | Application structured log `reason` field on `middleware.rejected` events | Rejections must cite `source_not_allowed`, never a forwarding-chain parse error for legitimate portal traffic |
+| Middleware rejection reason | Application structured log `reason` field on `middleware_request_rejected` events | Rejections must cite `source_ip_not_allowed`, never a forwarding-chain parse error for legitimate portal traffic |
 
 After confirming normal traffic:
 
