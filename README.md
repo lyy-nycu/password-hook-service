@@ -30,7 +30,37 @@ This service currently implements the HTTP hook, encrypted Service Bus queueing,
 - queue and safe-DLQ depth probe boundaries
 - Azure Monitor exporter mode for OTLP traces and custom metrics
 
-Terraform resources and CI/CD security gates are implemented in later slices.
+## Infrastructure
+
+The production deployment uses a private Application Gateway WAF_v2 as the sole ingress point. Portal web servers reach the service over the existing S2S VPN; no public ACA ingress is exposed.
+
+**Ingress topology:**
+- An Azure Application Gateway WAF_v2 listener is bound to a private frontend IP inside the gateway subnet. Portal web servers reach it over TCP 443 through the existing S2S VPN. Public authoritative DNS continues to serve the existing public LDAP frontend; on-premises split-horizon DNS resolves the private password-hook hostname to the Application Gateway private frontend IP only for approved portal callers.
+- The gateway-to-ACA hop is HTTPS only. The backend uses the internal ACA ingress FQDN as the host header, SNI, and probe host; TLS is never downgraded.
+- A listener-specific WAF policy runs in Prevention mode with OWASP 3.2 and BotManager 0.1 managed rule sets, plus a priority-10 custom Block rule that rejects any source not in `PORTAL_ALLOWED_CIDRS` before the managed rules run. The full WAF contract is in [`deploy/terraform/application-gateway-handoff.md`](deploy/terraform/application-gateway-handoff.md).
+- The Application Gateway is managed by the external owner pipeline in [`lyy-nycu/ldap-service`](https://github.com/lyy-nycu/ldap-service); this repository only emits the handoff contract values.
+
+**Prerequisites before the first deploy:**
+- A TLS certificate covering the private hostname must be pre-provisioned in the shared Application Gateway certificate store (the existing ACME renewal workflow in `lyy-nycu/ldap-service` owns this).
+- On-premises split-horizon DNS must be configured to return the private frontend IP for the password-hook hostname.
+- The S2S VPN and routes permitting TCP 443 to the private frontend IP must be in place.
+
+**Container App and ACR:**
+- The Container App runs in the existing shared ACA managed environment (`cae-stg-jpe-001` / `cae-prod-jpe-001`). This repository does not create the environment.
+- The Container App uses internal-only ingress (`external_enabled = false`); it is never directly reachable from outside the ACA environment.
+- Container images are pulled from the existing shared ACR `acrjpe001` (resource group `rg-acr-jpe-001`) via identity-based `AcrPull`. This repository does not create the ACR.
+
+**Service Bus (managed identity, no connection string in production):**
+- `SERVICEBUS_AUTH_MODE=managed_identity`. The runtime UAMI holds `Azure Service Bus Data Sender` on the active and safe-DLQ queues and `Azure Service Bus Data Receiver` on the active queue — all queue-scoped. No connection string or SAS is used in production.
+
+**Azure Managed Redis (Entra auth, no access key in production):**
+- `SYNC_STATUS_STORE=redis`. The runtime UAMI authenticates via Entra ID (`azurerm_managed_redis_access_policy_assignment`); access-key authentication is disabled on the instance. See the [Event Types and Sync Status](#event-types-and-sync-status) section for the data model.
+
+**Observability:**
+- `OBSERVABILITY_EXPORTER=azure_monitor`. The managed OpenTelemetry agent is configured on the shared ACA environment (merge-PATCH via `azapi_update_resource`); it injects `OTEL_EXPORTER_OTLP_ENDPOINT` automatically. Custom metrics go to Azure Monitor via the custom-metrics REST API, requiring `Monitoring Metrics Publisher` at the Container App ARM resource scope. See the [Azure Monitor Export](#azure-monitor-export) section for details.
+
+**Terraform:**
+- Terraform configuration is in `deploy/terraform/`. The deployment sequence, identity and RBAC model, Redis retention model, and the on-premises validation walkthrough are in [`deploy/terraform/README.md`](deploy/terraform/README.md). No secret values, connection strings, or access keys are stored in Terraform state, variable files, or outputs.
 
 ## Local Verification
 
@@ -218,8 +248,6 @@ For local or test traffic that reaches the process directly, set `DIRECT_CLIENT_
 When the immediate peer is untrusted, the application ignores `X-Forwarded-For` and uses the peer address. When it is trusted, the application strictly validates the complete forwarded chain from the nearest hop toward the client. Missing, malformed, ambiguous, or all-trusted chains fail closed. The resolved address is independently checked against `PORTAL_ALLOWED_CIDRS` and used as the per-client rate-limit key. WAF also enforces the portal CIDRs at Application Gateway; neither layer replaces the other. Before production rollout, record the sanitized staging peer/header shape and stop if it cannot satisfy this trust-boundary algorithm instead of widening the trusted range.
 
 Size `RATE_LIMIT_PER_IP` from observed peak successful-login hook rate per portal web server, with enough headroom that normal login bursts do not receive `429`. The default `500` is a guardrail, not a fixed production capacity decision. The portal must not fail user login on `429`, and it must not immediately retry in a tight loop.
-
-Infrastructure protections such as Azure Front Door, WAF rules, Azure DDoS Protection, private endpoints, VPN routing, and Terraform ingress policy are outside this application slice and are handled by later infrastructure slices.
 
 ## Worker Behavior
 
