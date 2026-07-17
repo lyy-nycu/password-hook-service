@@ -5,11 +5,12 @@
 #   - Log Analytics workspace and workspace-based Application Insights
 #     component owned by this deployment.
 #   - Managed OpenTelemetry agent configuration patched onto the
-#     externally-owned ACA managed environment via azapi_update_resource
-#     (traces + logs -> Application Insights). We never create or replace
-#     the environment; we only merge-PATCH the openTelemetryConfiguration
-#     property, so the environment's own appLogsConfiguration/Log Analytics
-#     wiring stays exactly as its owner set it.
+#     externally-owned ACA managed environment via an azapi_resource_action
+#     HTTP PATCH (traces + logs -> Application Insights). We never create
+#     or replace the environment; we only merge-patch the
+#     openTelemetryConfiguration property, so the environment's own
+#     appLogsConfiguration/Log Analytics wiring stays exactly as its
+#     owner set it.
 #   - AcrPull role assignment for the runtime UAMI at the approved
 #     existing ACR scope so identity-based image pulls work.
 #   - Internal Container App (gated by var.deploy_container_app) with the
@@ -70,7 +71,8 @@ resource "azurerm_application_insights" "this" {
 }
 
 ########################################
-# Managed OpenTelemetry agent — merge-PATCH the existing ACA environment
+# Managed OpenTelemetry agent — real HTTP PATCH on the existing ACA
+# environment
 #
 # API version 2025-07-01 is a stable GA version that still exposes the
 # openTelemetryConfiguration property; it is @removed in 2026-01-01, so
@@ -80,11 +82,31 @@ resource "azurerm_application_insights" "this" {
 # logs and traces via the managed agent. Custom metrics reach Azure
 # Monitor through the separate custom-metrics exporter this module also
 # wires (see the Monitoring Metrics Publisher role assignment below).
+#
+# This uses azapi_resource_action with method="PATCH" rather than
+# azapi_update_resource. azapi_update_resource always issues an HTTP PUT
+# (a hardcoded provider limitation: github.com/Azure/terraform-provider-
+# azapi issues #693, #125) built from a client-side GET-merge-PUT. Azure
+# redacts the environment owner's existing appLogsConfiguration.
+# logAnalyticsConfiguration.sharedKey as null on GET, so a PUT of that
+# merged (null-sharedKey) document is rejected by the API with
+# "LogAnalyticsConfiguration is invalid" — confirmed against the real
+# staging environment. A genuine HTTP PATCH (JSON merge-patch semantics,
+# confirmed working directly against the same API) updates only the
+# fields in `body` and leaves appLogsConfiguration completely untouched,
+# matching this module's actual requirement.
+#
+# Trade-off: azapi_resource_action does not track ongoing state/drift
+# the way azapi_update_resource does — it performs the PATCH once
+# whenever `body` changes, but will not detect or correct someone else
+# later reverting this configuration out of band. Acceptable here since
+# this module is the sole owner of these two properties.
 ########################################
 
-resource "azapi_update_resource" "otel_agent" {
+resource "azapi_resource_action" "otel_agent" {
   type        = "Microsoft.App/managedEnvironments@2025-07-01"
   resource_id = var.container_app_environment_id
+  method      = "PATCH"
 
   body = {
     properties = {
@@ -374,6 +396,6 @@ resource "azurerm_container_app" "this" {
   # Ensure AcrPull propagation happens before the app tries to pull.
   depends_on = [
     azurerm_role_assignment.acr_pull,
-    azapi_update_resource.otel_agent,
+    azapi_resource_action.otel_agent,
   ]
 }

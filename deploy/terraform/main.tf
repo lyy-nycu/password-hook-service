@@ -1,6 +1,18 @@
 terraform {
   required_version = ">= 1.8.0"
 
+  # Partial backend configuration: concrete storage_account_name,
+  # container_name, and key are supplied via `-backend-config` at
+  # `terraform init` time (see deploy/terraform/README.md), so the same
+  # code can target separate per-environment state files (e.g. one blob
+  # key for staging, another for production) without editing this file.
+  # State lives in a dedicated storage account (rg-tfstate-jpe-001 /
+  # sttfstatephsjpe001), never in this git worktree, so it survives
+  # independent of any single developer's machine or branch checkout.
+  backend "azurerm" {
+    use_azuread_auth = true
+  }
+
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"

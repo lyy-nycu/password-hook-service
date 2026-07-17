@@ -6,6 +6,33 @@ The shared Application Gateway is **not** managed here. The gateway additions (p
 
 ---
 
+## State Backend
+
+Terraform state is stored remotely in a dedicated Azure Storage Account, never as a local file in a developer's checkout or worktree:
+
+| Resource | Value |
+|---|---|
+| Resource group | `rg-tfstate-jpe-001` |
+| Storage account | `sttfstatephsjpe001` (Standard_LRS, TLS 1.2 minimum, public blob access disabled, blob versioning enabled) |
+| Container | `tfstate` |
+| State key (staging) | `password-hook-service/stg.tfstate` |
+
+`main.tf` declares only a partial `backend "azurerm" { use_azuread_auth = true }` block — the concrete storage account, container, and per-environment key are supplied at `terraform init` time via `-backend-config`, so the same code can target a separate state file per environment without editing this repository:
+
+```
+terraform -chdir=deploy/terraform init \
+  -backend-config="resource_group_name=rg-tfstate-jpe-001" \
+  -backend-config="storage_account_name=sttfstatephsjpe001" \
+  -backend-config="container_name=tfstate" \
+  -backend-config="key=password-hook-service/stg.tfstate"
+```
+
+Authentication uses `use_azuread_auth = true` (the operator's own Azure AD identity via `az login`, or a CI service principal with `Storage Blob Data Contributor` on the storage account) — never a storage account access key or SAS token. No key or connection string for this storage account is ever placed in Terraform configuration, variables, or CI secrets beyond the identity Terraform already authenticates with.
+
+Never delete or recreate this storage account/container without a deliberate state-migration plan: doing so orphans every resource Terraform previously created, with no clean way to manage or destroy them afterward.
+
+---
+
 ## Deployment Sequence
 
 The configuration uses a two-pass bootstrap to avoid circular dependencies between identity/RBAC creation and Container App deployment. Follow each step in order; do not skip or reorder.
