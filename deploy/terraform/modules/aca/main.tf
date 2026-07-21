@@ -13,10 +13,14 @@
 #     owner set it.
 #   - AcrPull role assignment for the runtime UAMI at the approved
 #     existing ACR scope so identity-based image pulls work.
-#   - Internal Container App (gated by var.deploy_container_app) with the
-#     runtime UAMI attached, identity-based registry auth, single-revision
-#     internal HTTPS ingress on target port 8080, and Service Bus
-#     queue-length KEDA scaling.
+#   - Container App (gated by var.deploy_container_app) with the runtime
+#     UAMI attached, identity-based registry auth, single-revision HTTP
+#     ingress on target port 8080 with external_enabled = true (required
+#     for the shared Application Gateway to reach it — see the ingress
+#     block below for why "internal" ingress does not work here), and
+#     Service Bus queue-length KEDA scaling. The app is still never
+#     reachable from the public internet: the shared ACA environment
+#     itself has no public inbound IP (internal-only VNet configuration).
 #   - Monitoring Metrics Publisher role assignment for the runtime UAMI
 #     at the Container App scope so the custom-metrics exporter can write
 #     to Azure Monitor.
@@ -187,11 +191,20 @@ resource "azurerm_container_app" "this" {
     identity = var.runtime_identity_id
   }
 
-  # Internal-only ingress. external_enabled MUST stay false: the
-  # environment itself is internal-only and portal callers reach this
-  # backend exclusively through the shared Application Gateway.
+  # external_enabled MUST stay true even though this Container App must
+  # never be reachable from the public internet. Per Microsoft's ingress
+  # model, "internal" ingress means "reachable only from other Container
+  # Apps in the same environment" -- it explicitly excludes external
+  # reverse proxies like Application Gateway, which is confirmed by
+  # empirical staging validation (AGW backend health stayed Unhealthy/404
+  # for this app while every other AGW-fronted app in the same shared
+  # environment, all of which use external_enabled = true, was Healthy).
+  # The actual security boundary is the shared ACA environment's own
+  # internal-only VNet configuration (no public inbound IP at the
+  # environment level), not this app-level ingress flag. See
+  # docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md.
   ingress {
-    external_enabled           = false
+    external_enabled           = true
     target_port                = 8080
     transport                  = "http"
     allow_insecure_connections = false

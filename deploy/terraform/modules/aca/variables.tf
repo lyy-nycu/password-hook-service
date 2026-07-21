@@ -25,7 +25,7 @@ variable "container_app_environment_id" {
 }
 
 variable "container_app_environment_default_domain" {
-  description = "default_domain attribute of the existing ACA managed environment (e.g. 'purplepond-efe764ce.japaneast.azurecontainerapps.io'). Used to precompute the deterministic internal ingress FQDN as '<container-app-name>.internal.<default_domain>' before the Container App exists, so the Application Gateway handoff output has a real value on Pass 1."
+  description = "default_domain attribute of the existing ACA managed environment (e.g. 'purplepond-efe764ce.japaneast.azurecontainerapps.io'). Used to precompute the deterministic ingress FQDN as '<container-app-name>.<default_domain>' before the Container App exists, so the Application Gateway handoff output has a real value on Pass 1. Note: this is the external_enabled=true FQDN pattern (no '.internal.' segment) -- see the ingress block in main.tf for why 'internal' ingress does not work with the Application Gateway backend."
   type        = string
 }
 

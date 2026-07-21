@@ -111,7 +111,7 @@ output "container_app_id" {
 }
 
 output "container_app_backend_fqdn" {
-  description = "Internal ACA backend FQDN for the Application Gateway backend pool."
+  description = "ACA backend FQDN for the Application Gateway backend pool (external_enabled=true ingress; the environment's own internal-only VNet configuration keeps it unreachable from the public internet)."
   value       = module.aca.container_app_backend_fqdn
 }
 

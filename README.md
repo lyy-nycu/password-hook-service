@@ -36,7 +36,7 @@ The production deployment uses a private Application Gateway WAF_v2 as the sole 
 
 **Ingress topology:**
 - An Azure Application Gateway WAF_v2 listener is bound to a private frontend IP inside the gateway subnet. Portal web servers reach it over TCP 443 through the existing S2S VPN. Public authoritative DNS continues to serve the existing public LDAP frontend; on-premises split-horizon DNS resolves the private password-hook hostname to the Application Gateway private frontend IP only for approved portal callers.
-- The gateway-to-ACA hop is HTTPS only. The backend uses the internal ACA ingress FQDN as the host header, SNI, and probe host; TLS is never downgraded.
+- The gateway-to-ACA hop is HTTPS only. The backend uses the ACA ingress FQDN as the host header, SNI, and probe host; TLS is never downgraded.
 - A listener-specific WAF policy runs in Prevention mode with OWASP 3.2 and BotManager 0.1 managed rule sets, plus a priority-10 custom Block rule that rejects any source not in `PORTAL_ALLOWED_CIDRS` before the managed rules run. The full WAF contract is in [`deploy/terraform/application-gateway-handoff.md`](deploy/terraform/application-gateway-handoff.md).
 - The Application Gateway is managed by the external owner pipeline in [`lyy-nycu/ldap-service`](https://github.com/lyy-nycu/ldap-service); this repository only emits the handoff contract values.
 
@@ -47,7 +47,7 @@ The production deployment uses a private Application Gateway WAF_v2 as the sole 
 
 **Container App and ACR:**
 - The Container App runs in the existing shared ACA managed environment (`cae-stg-jpe-001` / `cae-prod-jpe-001`). This repository does not create the environment.
-- The Container App uses internal-only ingress (`external_enabled = false`); it is never directly reachable from outside the ACA environment.
+- The Container App uses `external_enabled = true` ingress. Azure's "internal" ingress mode only allows calls from other Container Apps within the same environment and is not reachable by an external reverse proxy like the Application Gateway (confirmed by staging validation), so external ingress is required for the AGW backend pool to work. The app is still never reachable from the public internet: the shared ACA environment itself has no public inbound IP (internal-only VNet configuration), which is the actual security boundary.
 - Container images are pulled from the existing shared ACR `acrjpe001` (resource group `rg-acr-jpe-001`) via identity-based `AcrPull`. This repository does not create the ACR.
 
 **Service Bus (managed identity, no connection string in production):**

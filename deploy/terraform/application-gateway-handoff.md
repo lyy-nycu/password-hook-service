@@ -72,8 +72,18 @@ values that document does not already record.
 
 ### 3. Backend pool, HTTPS settings, and health probe (ACA)
 
-- Backend pool with exactly one member: the internal ACA ingress FQDN
-  exported as `module.aca.container_app_backend_fqdn`.
+- Backend pool with exactly one member: the ACA ingress FQDN exported as
+  `module.aca.container_app_backend_fqdn`. This is an
+  `external_enabled = true` Container App ingress FQDN (no `.internal.`
+  segment) — Azure's "internal" ingress mode is scoped to app-to-app calls
+  within the same ACA environment and is not reachable by an external
+  reverse proxy like this Application Gateway, even from within the same
+  VNet (confirmed by staging validation: AGW backend health stayed
+  Unhealthy/404 against an internal-ingress FQDN, and Healthy once the app
+  moved to external ingress). The app is still never reachable from the
+  public internet because the shared ACA environment itself has no public
+  inbound IP (internal-only VNet configuration) — that environment-level
+  setting is the actual security boundary, not this app-level ingress flag.
   - Backend host header, SNI, and probe host all equal that same FQDN.
 - Backend HTTPS settings:
   - Protocol: **HTTPS only**. Do not downgrade the gateway-to-ACA hop to
@@ -82,7 +92,7 @@ values that document does not already record.
   - Port: `443`.
   - Backend certificate chain validation: **required** against the
     system trust store presented by the ACA managed environment's default
-    internal ingress certificate.
+    ingress certificate.
   - Cookie-based affinity: disabled.
   - Request timeout: match the existing gateway defaults unless the
     owner records a different value.
