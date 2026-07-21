@@ -1,0 +1,54 @@
+# Handoff: Slice 10 Infrastructure &rarr; Slice 11 CI/CD
+
+**Written:** 2026-07-21
+**Purpose:** Give a fresh agent session enough context to start Slice 11 without re-deriving Slice 10's history.
+
+## Current status
+
+- **PR #15 merged to `main`** (merge commit `606000c`, branch `slice-10-infra-sync-status` deleted-ready). All Slice 10 engineering work — Terraform infrastructure, Redis-backed sync-status, trusted-proxy middleware, Application Gateway handoff automation — is in `main`.
+- **Real staging Azure resources are live** in the `LGTW-PoC` subscription (`rg-password-hook-stg-jpe-001` + shared resources). Container App `ca-pwdhook-stg-mvxfna` is deployed, healthy, and reachable through the shared Application Gateway (`agw-stg-jpe-001`), which reports the backend pool `Healthy`.
+- **Two Copilot review threads on PR #15 were both real bugs, both fixed and merged**: an OTel PATCH-vs-PUT fix and a Terraform CIDR-overlap detection gap (see commit `180a43c`).
+- **A real architecture bug was found and fixed during staging validation**: Azure Container Apps' "internal" ingress mode cannot be used as an Application Gateway backend (Microsoft's ingress model scopes it to app-to-app calls within the same ACA environment only). Fixed by switching to `external_enabled = true`; the real security boundary is unchanged (the shared ACA environment itself has no public inbound IP). Full writeup: `docs/ADR/2026-07-21-aca-ingress-mode-for-application-gateway-backend.md`. A companion issue was opened in `lyy-nycu/ldap-service` (`lyy-nycu/ldap-service#23`) so other teams sharing this gateway don't rediscover this from scratch.
+- **Partial end-to-end validation was performed** from a non-portal test host (temporary VNet peering, removed after use) — see "Staging Backend/Ingress Validation (2026-07-21)" in `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md` for full methodology and results. Confirmed: AGW backend health Healthy; WAF correctly returns `403` for an unapproved source at the private frontend; the application's own `PORTAL_ALLOWED_CIDRS` check independently returns `401` for the same unapproved source when calling the ACA backend directly (defense-in-depth confirmed).
+
+## Outstanding work (Slice 10 plan stays in `active/`, not `completed/`)
+
+`docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md` still has unchecked items — these require either a named human/owner sign-off or genuine on-premises network access, neither of which this session could produce:
+
+- **Task 0** (lines ~41, 51, 53, 54, 55): formal owner approval of the deployment boundary; AGW owner's formal static-IP reservation confirmation; writing the pre-deployment walkthrough as a checklist; recording which prerequisites are explicitly out of scope; one specific commit-message convention.
+- **Task 0A** (line ~70): record the *actual observed* on-prem staging header/peer shape (currently only design-reasoned + partially test-validated, not from genuine on-prem traffic).
+- **Task 8** (lines ~196, 198, 199): full on-premises end-to-end walkthrough (real `202 Accepted` from an approved portal-source IP, split-horizon DNS from a real portal web server, the S2S VPN path itself); formal before/after capture convention for every AGW change; formal verification writeup of ACR/Key Vault/Service Bus/Redis network paths (all working in practice since the app runs successfully, but not written up as this checklist wants).
+
+None of this blocks Slice 11. Per `docs/superpowers/plans/roadmap.md`, **Slice 11 depends only on "Infrastructure shape"** (already satisfied by the merged Terraform), not on Slice 10's live-validation/on-prem gates being closed. Slice 12 ("Integration and Production Readiness") is the one that needs Slices 1-11 fully done, including Slice 10's on-prem gates — do not start Slice 12 yet.
+
+## Starting Slice 11
+
+**`docs/superpowers/plans/roadmap.md` currently shows Slice 11 as "Not planned / Not created."** There is no detailed task-by-task plan yet. The next session must first create one (brainstorming/writing-plans skill flow), sourced from:
+- `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` (original design intent for CI/CD and security gates)
+- Roadmap's one-line goal: "Match the design's pull request and deployment controls" — done criteria: "CI runs tests, vet, gosec, govulncheck, trivy, and gitleaks; CD builds image and supports staging deployment."
+- The now-merged `deploy/terraform/` layout and `deploy/terraform/README.md`'s two-pass deployment sequence, since CD will need to drive `terraform plan`/`apply` against it.
+- The existing `.github/workflows/` in this repo (check what CI already exists vs. what Slice 11 needs to add).
+
+## Key file paths
+
+- `docs/superpowers/plans/roadmap.md` — slice sequence and dependency table.
+- `docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md` — Slice 10's task checklist; outstanding items listed above.
+- `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md` — all real staging CIDRs/IPs/hostnames/resource names, decision log, and the 2026-07-21 validation results.
+- `docs/ADR/2026-07-21-aca-ingress-mode-for-application-gateway-backend.md` — why the Container App uses external ingress.
+- `docs/ADR/2026-07-16-codeql-weak-sensitive-data-hashing-false-positive.md` — dismissed CodeQL alert rationale.
+- `deploy/terraform/` — root Terraform module; `deploy/terraform/README.md` documents the two-pass deploy sequence and state backend.
+- `deploy/terraform/local-verify.tfvars` (gitignored, **not committed**, only in this worktree at `/Users/lyy/dev/research/slice-10-infra-sync-status/deploy/terraform/`) — the real populated staging values used for every live apply so far. If a new session needs to run Terraform against staging again, this file (or an equivalent) will need to be recreated/located; it is not in git history by design (it contains real resource IDs, though no secrets).
+
+## Key real Azure resource identifiers (staging, `LGTW-PoC` subscription)
+
+- Resource group: `rg-password-hook-stg-jpe-001`
+- Container App: `ca-pwdhook-stg-mvxfna` (external ingress, FQDN `ca-pwdhook-stg-mvxfna.purplepond-efe764ce.japaneast.azurecontainerapps.io`)
+- Shared ACA environment: `cae-stg-jpe-001` (`rg-cae-stg-jpe-001`)
+- Shared Application Gateway: `agw-stg-jpe-001` (`rg-spoke-paas`), backend pool `pool-password-hook-stg`
+- ACR: `acrjpe001` (`rg-acr-jpe-001`), image `acrjpe001-byhkbaf5fxewe4ez.azurecr.io/password-hook-service:stg-3f76564`
+- Key Vault: `kvpwdhookstgmvxfna`; Service Bus: `sb-pwdhook-stg-mvxfna`; Managed Redis: `redispwdhookstgmvxfna`
+- Terraform state backend: `rg-tfstate-jpe-001` / `sttfstatephsjpe001` / `tfstate` container
+
+## Related external repo
+
+`lyy-nycu/ldap-service` owns the shared Application Gateway's Terraform-adjacent automation. Relevant merged PRs: #19 (AGW handoff workflow), #20 (WAF custom-rule match-condition fix), #22 (removed a temporary debug workflow). Open issue: #23 (internal-ingress-vs-AGW constraint, for other teams sharing this gateway).
