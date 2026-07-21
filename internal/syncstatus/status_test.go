@@ -96,6 +96,99 @@ func TestMemoryStoreIgnoresOutOfOrderCompletion(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreEqualTimestampPrecedenceAndIdempotency(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	upn := " User@Example.EDU "
+	source := time.Date(2026, 7, 14, 1, 2, 3, 0, time.UTC)
+	updated := time.Date(2026, 7, 14, 2, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return updated }
+
+	if err := store.MarkPending(ctx, upn, source); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return updated.Add(time.Minute) }
+	if err := store.MarkPending(ctx, upn, source); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := store.Get(ctx, "user@example.edu")
+	if !rec.UpdatedAt.Equal(updated) {
+		t.Fatalf("idempotent UpdatedAt = %v, want %v", rec.UpdatedAt, updated)
+	}
+
+	if err := store.MarkFailed(ctx, upn, source); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ = store.Get(ctx, upn); rec.Status != StatusFailed {
+		t.Fatalf("pending -> failed status = %q", rec.Status)
+	}
+	if err := store.MarkPending(ctx, upn, source); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ = store.Get(ctx, upn); rec.Status != StatusFailed {
+		t.Fatalf("failed -> pending status = %q, want failed", rec.Status)
+	}
+	if err := store.MarkSynced(ctx, upn, source); err != nil {
+		t.Fatal(err)
+	}
+	if rec, _ = store.Get(ctx, upn); rec.Status != StatusSynced {
+		t.Fatalf("failed -> synced status = %q", rec.Status)
+	}
+	for _, lower := range []Status{StatusPending, StatusFailed} {
+		if err := store.set(ctx, upn, lower, source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rec, _ = store.Get(ctx, upn); rec.Status != StatusSynced {
+		t.Fatalf("synced downgraded to %q", rec.Status)
+	}
+}
+
+func TestMemoryStoreAllEqualTimestampTransitions(t *testing.T) {
+	t.Parallel()
+
+	source := time.Date(2026, 7, 14, 1, 2, 3, 0, time.UTC)
+	statuses := []Status{StatusPending, StatusFailed, StatusSynced}
+	for _, first := range statuses {
+		for _, next := range statuses {
+			first, next := first, next
+			t.Run(string(first)+"_to_"+string(next), func(t *testing.T) {
+				t.Parallel()
+				store := NewMemoryStore()
+				if err := store.set(context.Background(), "user@example.edu", first, source); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.set(context.Background(), "user@example.edu", next, source); err != nil {
+					t.Fatal(err)
+				}
+				rec, err := store.Get(context.Background(), "user@example.edu")
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := first
+				if statusPrecedence(next) > statusPrecedence(first) {
+					want = next
+				}
+				if rec.Status != want {
+					t.Fatalf("status = %q, want %q", rec.Status, want)
+				}
+			})
+		}
+	}
+}
+
+func TestMemoryStorePropagatesCanceledContext(t *testing.T) {
+	store := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := store.Get(ctx, "user@example.edu"); err != context.Canceled {
+		t.Fatalf("Get error = %v, want context.Canceled", err)
+	}
+	if err := store.MarkPending(ctx, "user@example.edu", time.Now()); err != context.Canceled {
+		t.Fatalf("MarkPending error = %v, want context.Canceled", err)
+	}
+}
+
 func TestMemoryStoreIsSafeForConcurrentUse(t *testing.T) {
 	store := NewMemoryStore()
 	ctx := context.Background()

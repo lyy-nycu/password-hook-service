@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -21,6 +23,9 @@ const (
 const (
 	ObservabilityExporterNone         = "none"
 	ObservabilityExporterAzureMonitor = "azure_monitor"
+
+	SyncStatusStoreMemory = "memory"
+	SyncStatusStoreRedis  = "redis"
 )
 
 type KeyVaultSecretNames struct {
@@ -42,6 +47,8 @@ type Config struct {
 	HMACClockSkew                 time.Duration
 	NonceTTL                      time.Duration
 	PortalAllowedCIDRs            []string
+	TrustedProxyCIDRs             []string
+	DirectClientMode              bool
 	RateLimitPerIP                int
 	RateLimitWindow               time.Duration
 	HookMaxBodyBytes              int64
@@ -51,20 +58,40 @@ type Config struct {
 	ServiceBusQueueName           string
 	ServiceBusDeadLetterQueueName string
 	PasswordMessageTTL            time.Duration
+	SyncStatusStore               string
+	RedisHost                     string
+	RedisPort                     int
+	RedisKeyPrefix                string
+	SyncStatusTerminalTTL         time.Duration
+	AzureClientID                 string
 	PasswordEncryptionKeyB64      string
 	PasswordEncryptionKeyID       string
 	GraphTenantID                 string
 	GraphClientID                 string
 	GraphClientSecret             string
 	ObservabilityExporter         string
-	OTLPExporterEndpoint          string
-	AzureMonitorMetricResourceID  string
-	AzureMonitorMetricRegion      string
-	AzureMonitorMetricNamespace   string
+	// OTLPExporterEndpoint holds the OTEL_EXPORTER_OTLP_ENDPOINT value the
+	// ACA managed OpenTelemetry agent injects at runtime. It must never be
+	// set explicitly by Terraform or hand-authored deployment configuration
+	// (see deploy/terraform/modules/aca): the managed agent injects the
+	// endpoint automatically, and setting it explicitly would compete with
+	// or invalidate that injection.
+	OTLPExporterEndpoint         string
+	AzureMonitorMetricResourceID string
+	AzureMonitorMetricRegion     string
+	AzureMonitorMetricNamespace  string
+	directClientModeErr          error
+	redisPortErr                 error
+	passwordMessageTTLErr        error
+	syncStatusTerminalTTLErr     error
 }
 
 func Load() Config {
-	return Config{
+	directClientMode, directClientModeErr := boolEnv("DIRECT_CLIENT_MODE")
+	redisPort, redisPortErr := strictIntEnv("REDIS_PORT")
+	passwordMessageTTL, passwordMessageTTLErr := strictDurationEnv("PASSWORD_MESSAGE_TTL", 5*time.Minute)
+	syncStatusTerminalTTL, syncStatusTerminalTTLErr := strictDurationEnv("SYNC_STATUS_TERMINAL_TTL", 90*24*time.Hour)
+	cfg := Config{
 		SecretsSource: strings.TrimSpace(os.Getenv("SECRETS_SOURCE")),
 		KeyVaultURL:   strings.TrimSpace(os.Getenv("KEY_VAULT_URL")),
 		KeyVaultSecretNames: KeyVaultSecretNames{
@@ -81,6 +108,8 @@ func Load() Config {
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            csvEnv("PORTAL_ALLOWED_CIDRS"),
+		TrustedProxyCIDRs:             csvEnv("TRUSTED_PROXY_CIDRS"),
+		DirectClientMode:              directClientMode,
 		RateLimitPerIP:                intEnv("RATE_LIMIT_PER_IP", 500),
 		RateLimitWindow:               durationEnv("RATE_LIMIT_WINDOW", time.Second),
 		HookMaxBodyBytes:              int64Env("HOOK_MAX_BODY_BYTES", 64*1024),
@@ -89,7 +118,13 @@ func Load() Config {
 		ServiceBusConnectionString:    strings.TrimSpace(os.Getenv("SERVICEBUS_CONNECTION_STRING")),
 		ServiceBusQueueName:           env("SERVICEBUS_QUEUE_NAME", "password-sync"),
 		ServiceBusDeadLetterQueueName: env("SERVICEBUS_DEADLETTER_QUEUE_NAME", "password-sync-dlq"),
-		PasswordMessageTTL:            300 * time.Second,
+		PasswordMessageTTL:            passwordMessageTTL,
+		SyncStatusStore:               strings.TrimSpace(os.Getenv("SYNC_STATUS_STORE")),
+		RedisHost:                     strings.TrimSpace(os.Getenv("REDIS_HOST")),
+		RedisPort:                     redisPort,
+		RedisKeyPrefix:                env("REDIS_KEY_PREFIX", "password-hook:sync-status:"),
+		SyncStatusTerminalTTL:         syncStatusTerminalTTL,
+		AzureClientID:                 strings.TrimSpace(os.Getenv("AZURE_CLIENT_ID")),
 		PasswordEncryptionKeyB64:      strings.TrimSpace(os.Getenv("PASSWORD_ENCRYPTION_KEY_B64")),
 		PasswordEncryptionKeyID:       env("PASSWORD_ENCRYPTION_KEY_ID", "password-payload-key-v1"),
 		GraphTenantID:                 strings.TrimSpace(os.Getenv("GRAPH_TENANT_ID")),
@@ -101,6 +136,11 @@ func Load() Config {
 		AzureMonitorMetricRegion:      strings.TrimSpace(os.Getenv("AZURE_MONITOR_METRIC_REGION")),
 		AzureMonitorMetricNamespace:   env("AZURE_MONITOR_METRIC_NAMESPACE", "password-hook-service"),
 	}
+	cfg.directClientModeErr = directClientModeErr
+	cfg.redisPortErr = redisPortErr
+	cfg.passwordMessageTTLErr = passwordMessageTTLErr
+	cfg.syncStatusTerminalTTLErr = syncStatusTerminalTTLErr
+	return cfg
 }
 
 func (c Config) Validate() error {
@@ -111,6 +151,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := c.validateServiceBus(); err != nil {
+		return err
+	}
+	if err := c.validateSyncStatus(); err != nil {
 		return err
 	}
 	if err := c.validateObservability(); err != nil {
@@ -133,6 +176,9 @@ func (c Config) Validate() error {
 }
 
 func (c Config) validateServiceBus() error {
+	if c.passwordMessageTTLErr != nil {
+		return c.passwordMessageTTLErr
+	}
 	switch c.ServiceBusAuthMode {
 	case "", ServiceBusAuthConnectionString:
 		if strings.TrimSpace(c.ServiceBusConnectionString) == "" {
@@ -161,6 +207,42 @@ func (c Config) validateServiceBus() error {
 	}
 }
 
+func (c Config) validateSyncStatus() error {
+	if c.redisPortErr != nil {
+		return c.redisPortErr
+	}
+	if c.syncStatusTerminalTTLErr != nil {
+		return c.syncStatusTerminalTTLErr
+	}
+	switch c.SyncStatusStore {
+	case SyncStatusStoreMemory:
+		return nil
+	case SyncStatusStoreRedis:
+		switch {
+		case strings.TrimSpace(c.RedisHost) == "":
+			return errors.New("REDIS_HOST is required when SYNC_STATUS_STORE=redis")
+		case strings.Contains(c.RedisHost, "://") || strings.ContainsAny(c.RedisHost, "/@:"):
+			return errors.New("REDIS_HOST must be a host name without a scheme, path, or port")
+		case c.RedisPort <= 0 || c.RedisPort > 65535:
+			return errors.New("REDIS_PORT must be between 1 and 65535 when SYNC_STATUS_STORE=redis")
+		case strings.TrimSpace(c.RedisKeyPrefix) == "":
+			return errors.New("REDIS_KEY_PREFIX is required when SYNC_STATUS_STORE=redis")
+		case c.PasswordMessageTTL < time.Millisecond:
+			return errors.New("PASSWORD_MESSAGE_TTL must be at least 1ms when SYNC_STATUS_STORE=redis")
+		case c.SyncStatusTerminalTTL < time.Millisecond:
+			return errors.New("SYNC_STATUS_TERMINAL_TTL must be at least 1ms when SYNC_STATUS_STORE=redis")
+		case strings.TrimSpace(c.AzureClientID) == "":
+			return errors.New("AZURE_CLIENT_ID is required when SYNC_STATUS_STORE=redis")
+		case uuid.Validate(c.AzureClientID) != nil:
+			return errors.New("AZURE_CLIENT_ID must be a valid UUID when SYNC_STATUS_STORE=redis")
+		default:
+			return nil
+		}
+	default:
+		return errors.New("SYNC_STATUS_STORE must be memory or redis")
+	}
+}
+
 func (c Config) validateObservability() error {
 	switch c.ObservabilityExporter {
 	case "", ObservabilityExporterNone:
@@ -186,6 +268,8 @@ func (c Config) validateObservability() error {
 
 func (c Config) ValidateHTTP() error {
 	switch {
+	case c.directClientModeErr != nil:
+		return c.directClientModeErr
 	case strings.TrimSpace(c.HTTPAddr) == "":
 		return errors.New("HTTP_ADDR is required")
 	case strings.TrimSpace(c.HMACSecret) == "":
@@ -204,6 +288,10 @@ func (c Config) ValidateHTTP() error {
 		return errors.New("NonceTTL must be positive")
 	case !hasNonBlank(c.PortalAllowedCIDRs):
 		return errors.New("PORTAL_ALLOWED_CIDRS is required")
+	case c.DirectClientMode && hasNonBlank(c.TrustedProxyCIDRs):
+		return errors.New("TRUSTED_PROXY_CIDRS must be empty when DIRECT_CLIENT_MODE=true")
+	case !c.DirectClientMode && !hasNonBlank(c.TrustedProxyCIDRs):
+		return errors.New("TRUSTED_PROXY_CIDRS is required when DIRECT_CLIENT_MODE=false")
 	case c.RateLimitPerIP <= 0:
 		return errors.New("RateLimitPerIP must be positive")
 	case c.RateLimitWindow <= 0:
@@ -211,7 +299,16 @@ func (c Config) ValidateHTTP() error {
 	case c.HookMaxBodyBytes <= 0:
 		return errors.New("HookMaxBodyBytes must be positive")
 	default:
-		return validateCIDRs(c.PortalAllowedCIDRs)
+		if err := validateCIDRs("PORTAL_ALLOWED_CIDRS", c.PortalAllowedCIDRs); err != nil {
+			return err
+		}
+		if err := validateCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs); err != nil {
+			return err
+		}
+		if err := rejectUnrestrictedCIDRs("TRUSTED_PROXY_CIDRS", c.TrustedProxyCIDRs); err != nil {
+			return err
+		}
+		return rejectOverlappingCIDRs(c.TrustedProxyCIDRs, c.PortalAllowedCIDRs)
 	}
 }
 
@@ -254,17 +351,105 @@ func hasNonBlank(values []string) bool {
 	return false
 }
 
-func validateCIDRs(values []string) error {
+func validateCIDRs(envName string, values []string) error {
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
 			continue
 		}
 		if _, _, err := net.ParseCIDR(value); err != nil {
-			return fmt.Errorf("PORTAL_ALLOWED_CIDRS contains invalid CIDR %q", value)
+			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
 		}
 	}
 	return nil
+}
+
+// rejectOverlappingCIDRs rejects any trusted-proxy CIDR that overlaps a
+// portal-allowed CIDR. The trusted-proxy set identifies immediate proxy
+// peers, never portal clients; an overlap would let a direct portal peer
+// be treated as a trusted proxy and forge X-Forwarded-For.
+func rejectOverlappingCIDRs(trusted, portal []string) error {
+	for _, t := range trusted {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		_, trustedNet, err := net.ParseCIDR(t)
+		if err != nil {
+			return fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", t)
+		}
+		for _, p := range portal {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			_, portalNet, err := net.ParseCIDR(p)
+			if err != nil {
+				return fmt.Errorf("PORTAL_ALLOWED_CIDRS contains invalid CIDR %q", p)
+			}
+			if trustedNet.Contains(portalNet.IP) || portalNet.Contains(trustedNet.IP) {
+				return fmt.Errorf("TRUSTED_PROXY_CIDRS %q must not overlap PORTAL_ALLOWED_CIDRS %q", t, p)
+			}
+		}
+	}
+	return nil
+}
+
+// rejectUnrestrictedCIDRs rejects a trusted-proxy CIDR that matches every
+// address (e.g. 0.0.0.0/0 or ::/0), which would let any peer spoof
+// X-Forwarded-For and defeat the trust boundary.
+func rejectUnrestrictedCIDRs(envName string, values []string) error {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			return fmt.Errorf("%s contains invalid CIDR %q", envName, value)
+		}
+		ones, _ := network.Mask.Size()
+		if ones == 0 {
+			return fmt.Errorf("%s must not contain unrestricted CIDR %q", envName, value)
+		}
+	}
+	return nil
+}
+
+func boolEnv(key string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	return value, nil
+}
+
+func strictIntEnv(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer", key)
+	}
+	return value, nil
+}
+
+func strictDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid duration", key)
+	}
+	return value, nil
 }
 
 func env(key string, fallback string) string {

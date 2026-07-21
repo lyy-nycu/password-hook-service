@@ -454,6 +454,66 @@ func TestWorkerMarksSyncedOnSuccess(t *testing.T) {
 	}
 }
 
+func TestWorkerMarksSyncedWithDetachedContextAfterShutdownSignal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	// Simulate a shutdown signal arriving right after the password sync
+	// succeeds but before the sync-status write: Run's outer ctx must not be
+	// the context used for MarkSynced, or the status update is silently lost.
+	processor := &fakeProcessor{afterCall: cancel}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("cleartext-password")},
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(recorder.synced) != 1 || recorder.synced[0].upn != want.UPN {
+		t.Fatalf("recorder.synced = %v, want [{upn: %q}] (status write must survive shutdown ctx cancellation)", recorder.synced, want.UPN)
+	}
+}
+
+func TestWorkerMarksFailedWithDetachedContextAfterShutdownSignal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	want := validPasswordSyncMessage()
+	receiver := &fakeReceiver{messages: []*Message{workerMessage(t, want)}}
+	processor := &fakeProcessor{
+		err:       &PermanentError{Reason: PermanentReasonProcessorError, Err: errors.New("graph 403")},
+		afterCall: cancel,
+	}
+	recorder := &fakeSyncStatusRecorder{}
+	worker, err := New(receiver, processor, Options{
+		MaxMessages:        10,
+		DeadLetterSink:     &fakeDeadLetterSink{},
+		PasswordDecrypter:  &fakePasswordDecrypter{plaintext: []byte("secret")},
+		SyncStatusRecorder: recorder,
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+
+	if err := worker.Run(ctx); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	if len(recorder.failed) != 1 || recorder.failed[0].upn != want.UPN {
+		t.Fatalf("recorder.failed = %v, want [{upn: %q}] (status write must survive shutdown ctx cancellation)", recorder.failed, want.UPN)
+	}
+}
+
 func TestWorkerMarksFailedOnPermanentProcessorError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1242,12 +1302,21 @@ type syncStatusCall struct {
 	sourceEnqueuedAt time.Time
 }
 
-func (f *fakeSyncStatusRecorder) MarkSynced(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+// MarkSynced mimics real Store implementations (MemoryStore, RedisStore),
+// which fail without recording anything once ctx is already canceled/expired.
+func (f *fakeSyncStatusRecorder) MarkSynced(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.synced = append(f.synced, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
 	return f.err
 }
 
-func (f *fakeSyncStatusRecorder) MarkFailed(_ context.Context, upn string, sourceEnqueuedAt time.Time) error {
+// MarkFailed mimics real Store implementations, see MarkSynced.
+func (f *fakeSyncStatusRecorder) MarkFailed(ctx context.Context, upn string, sourceEnqueuedAt time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	f.failed = append(f.failed, syncStatusCall{upn: upn, sourceEnqueuedAt: sourceEnqueuedAt})
 	return f.err
 }

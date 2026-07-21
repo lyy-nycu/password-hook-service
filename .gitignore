@@ -11,6 +11,9 @@
 .terraform/
 *.tfstate
 *.tfstate.*
-.terraform.lock.hcl
+*.tfplan
+# .terraform.lock.hcl IS committed so provider versions are reproducible.
+*.tfvars
+!*.tfvars.example
 
 .DS_Store

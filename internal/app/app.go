@@ -29,6 +29,7 @@ import (
 
 const (
 	queueCloseTimeout               = 5 * time.Second
+	redisPingTimeout                = 5 * time.Second
 	azureMonitorMetricFlushInterval = time.Minute
 	azureMonitorMetricFlushTimeout  = 5 * time.Second
 )
@@ -120,7 +121,13 @@ type serviceBusRuntime struct {
 	closers  []appCloser
 }
 
+type syncStatusRuntime struct {
+	store  syncstatus.Store
+	closer appCloser
+}
+
 var buildServiceBusRuntime = newServiceBusRuntime
+var buildSyncStatusRuntime = newSyncStatusRuntime
 
 type App struct {
 	server  *httpserver.Server
@@ -145,6 +152,17 @@ func New(cfg config.Config) (*App, error) {
 	}
 	closers = append(closers, serviceBus.closers...)
 
+	syncStatus, err := buildSyncStatusRuntime(context.Background(), cfg)
+	if err != nil {
+		return nil, closeAfterWiringError(err, closers)
+	}
+	if syncStatus.closer != nil {
+		closers = append(closers, syncStatus.closer)
+	}
+	if syncStatus.store == nil {
+		return nil, closeAfterWiringError(errors.New("sync status store is required"), closers)
+	}
+
 	credential, err := azidentity.NewClientSecretCredential(cfg.GraphTenantID, cfg.GraphClientID, cfg.GraphClientSecret, nil)
 	if err != nil {
 		return nil, closeAfterWiringError(err, closers)
@@ -166,7 +184,30 @@ func New(cfg config.Config) (*App, error) {
 		return nil, closeAfterWiringError(err, closers)
 	}
 
-	return newWithWorkerDependenciesWithRecorder(cfg, serviceBus.queue, serviceBus.receiver, processor, serviceBus.dlq, passwordCodec, observabilityRuntime.recorder, closers...)
+	return newWithWorkerDependenciesWithSyncStatusAndRecorder(cfg, serviceBus.queue, serviceBus.receiver, processor, serviceBus.dlq, passwordCodec, syncStatus.store, observabilityRuntime.recorder, closers...)
+}
+
+func newSyncStatusRuntime(ctx context.Context, cfg config.Config) (syncStatusRuntime, error) {
+	switch cfg.SyncStatusStore {
+	case config.SyncStatusStoreMemory:
+		return syncStatusRuntime{store: syncstatus.NewMemoryStore()}, nil
+	case config.SyncStatusStoreRedis:
+		store, err := syncstatus.NewManagedIdentityRedisStore(ctx, syncstatus.RedisOptions{
+			Host:                    cfg.RedisHost,
+			Port:                    cfg.RedisPort,
+			KeyPrefix:               cfg.RedisKeyPrefix,
+			PendingTTL:              cfg.PasswordMessageTTL,
+			TerminalTTL:             cfg.SyncStatusTerminalTTL,
+			ManagedIdentityClientID: cfg.AzureClientID,
+			PingTimeout:             redisPingTimeout,
+		})
+		if err != nil {
+			return syncStatusRuntime{}, err
+		}
+		return syncStatusRuntime{store: store, closer: store}, nil
+	default:
+		return syncStatusRuntime{}, fmt.Errorf("unsupported sync status store %q", cfg.SyncStatusStore)
+	}
 }
 
 func newObservabilityRuntime(ctx context.Context, cfg config.Config) (observabilityRuntime, error) {
@@ -296,13 +337,29 @@ func newWithWorkerDependenciesWithRecorder(
 	recorder observability.Recorder,
 	closers ...appCloser,
 ) (*App, error) {
+	return newWithWorkerDependenciesWithSyncStatusAndRecorder(cfg, queue, receiver, processor, deadLetterSink, passwordCodec, syncstatus.NewMemoryStore(), recorder, closers...)
+}
+
+func newWithWorkerDependenciesWithSyncStatusAndRecorder(
+	cfg config.Config,
+	queue migration.Queue,
+	receiver worker.Receiver,
+	processor worker.Processor,
+	deadLetterSink worker.DeadLetterSink,
+	passwordCodec passwordCodec,
+	syncStatusStore syncstatus.Store,
+	recorder observability.Recorder,
+	closers ...appCloser,
+) (*App, error) {
 	if passwordCodec == nil {
 		return nil, errors.Join(errors.New("password codec is required"), closeAppResources(context.Background(), closers))
+	}
+	if syncStatusStore == nil {
+		return nil, errors.Join(errors.New("sync status store is required"), closeAppResources(context.Background(), closers))
 	}
 	if recorder == nil {
 		recorder = observability.NoopRecorder{}
 	}
-	syncStatusStore := syncstatus.NewMemoryStore()
 	application, err := newWithQueueWithRecorder(cfg, queue, passwordCodec, syncStatusStore, recorder, closers...)
 	if err != nil {
 		return nil, err
@@ -359,12 +416,13 @@ func newWithQueueWithRecorder(
 		return nil, errors.Join(err, closeAppResources(context.Background(), closers))
 	}
 	rateLimiter := middleware.NewRateLimiter(middleware.RateLimitConfig{
-		AllowedCIDRs: cfg.PortalAllowedCIDRs,
-		LimitPerIP:   cfg.RateLimitPerIP,
-		Window:       cfg.RateLimitWindow,
-		ProblemBase:  cfg.ProblemBaseURL,
-		Logger:       slog.Default(),
-		Recorder:     recorder,
+		AllowedCIDRs:      cfg.PortalAllowedCIDRs,
+		TrustedProxyCIDRs: cfg.TrustedProxyCIDRs,
+		LimitPerIP:        cfg.RateLimitPerIP,
+		Window:            cfg.RateLimitWindow,
+		ProblemBase:       cfg.ProblemBaseURL,
+		Logger:            slog.Default(),
+		Recorder:          recorder,
 	})
 
 	hookHandler := hmacMiddleware.Wrap(hook)

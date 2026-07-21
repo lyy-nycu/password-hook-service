@@ -47,6 +47,44 @@ func TestLoadServiceBusDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadSyncStatusDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := Load()
+
+	if cfg.RedisKeyPrefix != "password-hook:sync-status:" {
+		t.Fatalf("RedisKeyPrefix = %q", cfg.RedisKeyPrefix)
+	}
+	if cfg.SyncStatusTerminalTTL != 90*24*time.Hour {
+		t.Fatalf("SyncStatusTerminalTTL = %s, want 90d", cfg.SyncStatusTerminalTTL)
+	}
+	if cfg.PasswordMessageTTL != 5*time.Minute {
+		t.Fatalf("PasswordMessageTTL = %s, want 5m", cfg.PasswordMessageTTL)
+	}
+}
+
+func TestLoadRedisSyncStatusConfig(t *testing.T) {
+	t.Setenv("SYNC_STATUS_STORE", " redis ")
+	t.Setenv("REDIS_HOST", " cache.example.redis.azure.net ")
+	t.Setenv("REDIS_PORT", "10000")
+	t.Setenv("REDIS_KEY_PREFIX", "deployment:status:")
+	t.Setenv("SYNC_STATUS_TERMINAL_TTL", "2160h")
+	t.Setenv("PASSWORD_MESSAGE_TTL", "4m")
+	t.Setenv("AZURE_CLIENT_ID", " 00000000-0000-0000-0000-000000000003 ")
+
+	cfg := Load()
+
+	if cfg.SyncStatusStore != SyncStatusStoreRedis || cfg.RedisHost != "cache.example.redis.azure.net" || cfg.RedisPort != 10000 {
+		t.Fatalf("Redis config = %#v", cfg)
+	}
+	if cfg.RedisKeyPrefix != "deployment:status:" || cfg.SyncStatusTerminalTTL != 90*24*time.Hour {
+		t.Fatalf("Redis retention config = %#v", cfg)
+	}
+	if cfg.PasswordMessageTTL != 4*time.Minute || cfg.AzureClientID != "00000000-0000-0000-0000-000000000003" {
+		t.Fatalf("Redis identity/message TTL config = %#v", cfg)
+	}
+}
+
 func TestLoadAzureMonitorExporterConfig(t *testing.T) {
 	t.Setenv("OBSERVABILITY_EXPORTER", " azure_monitor ")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
@@ -134,6 +172,8 @@ func TestValidateHTTPRequiresNonBlankPortalAllowedCIDRs(t *testing.T) {
 
 func TestLoadAPIProtectionSettings(t *testing.T) {
 	t.Setenv("PORTAL_ALLOWED_CIDRS", " 192.0.2.0/24, 2001:db8::/32 ")
+	t.Setenv("TRUSTED_PROXY_CIDRS", " 10.0.0.0/24, 2001:db8:1::/64 ")
+	t.Setenv("DIRECT_CLIENT_MODE", "false")
 	t.Setenv("RATE_LIMIT_PER_IP", "750")
 	t.Setenv("RATE_LIMIT_WINDOW", "2s")
 	t.Setenv("HOOK_MAX_BODY_BYTES", "32768")
@@ -143,6 +183,9 @@ func TestLoadAPIProtectionSettings(t *testing.T) {
 	if got, want := cfg.PortalAllowedCIDRs, []string{"192.0.2.0/24", "2001:db8::/32"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("PortalAllowedCIDRs = %#v, want %#v", got, want)
 	}
+	if got, want := cfg.TrustedProxyCIDRs, []string{"10.0.0.0/24", "2001:db8:1::/64"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("TrustedProxyCIDRs = %#v, want %#v", got, want)
+	}
 	if cfg.RateLimitPerIP != 750 {
 		t.Fatalf("RateLimitPerIP = %d, want 750", cfg.RateLimitPerIP)
 	}
@@ -151,6 +194,142 @@ func TestLoadAPIProtectionSettings(t *testing.T) {
 	}
 	if cfg.HookMaxBodyBytes != 32768 {
 		t.Fatalf("HookMaxBodyBytes = %d, want 32768", cfg.HookMaxBodyBytes)
+	}
+}
+
+func TestValidateHTTPRequiresExplicitClientAddressMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		direct       bool
+		trustedCIDRs []string
+		want         string
+	}{
+		{name: "neither mode", want: "TRUSTED_PROXY_CIDRS is required when DIRECT_CLIENT_MODE=false"},
+		{name: "both modes", direct: true, trustedCIDRs: []string{"10.0.0.0/24"}, want: "TRUSTED_PROXY_CIDRS must be empty when DIRECT_CLIENT_MODE=true"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = tt.direct
+			cfg.TrustedProxyCIDRs = tt.trustedCIDRs
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPAcceptsTrustedProxyMode(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"10.0.0.0/24", "2001:db8:1::/64"}
+	if err := cfg.ValidateHTTP(); err != nil {
+		t.Fatalf("ValidateHTTP returned error: %v", err)
+	}
+}
+
+func TestValidateHTTPRejectsInvalidTrustedProxyCIDR(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.TrustedProxyCIDRs = []string{"not-a-cidr"}
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != `TRUSTED_PROXY_CIDRS contains invalid CIDR "not-a-cidr"` {
+		t.Fatalf("ValidateHTTP error = %v", err)
+	}
+}
+
+func TestValidateHTTPRejectsUnrestrictedTrustedProxyCIDR(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cidr string
+		want string
+	}{
+		{name: "ipv4 unrestricted", cidr: "0.0.0.0/0", want: `TRUSTED_PROXY_CIDRS must not contain unrestricted CIDR "0.0.0.0/0"`},
+		{name: "ipv6 unrestricted", cidr: "::/0", want: `TRUSTED_PROXY_CIDRS must not contain unrestricted CIDR "::/0"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = false
+			cfg.TrustedProxyCIDRs = []string{tt.cidr}
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPRejectsTrustedProxyCIDROverlappingPortalCIDR(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		portal  []string
+		trusted []string
+		want    string
+	}{
+		{
+			name:    "identical CIDR",
+			portal:  []string{"192.0.2.0/24"},
+			trusted: []string{"192.0.2.0/24"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.0/24" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.0/24"`,
+		},
+		{
+			name:    "trusted is subset of portal",
+			portal:  []string{"192.0.2.0/24"},
+			trusted: []string{"192.0.2.128/25"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.128/25" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.0/24"`,
+		},
+		{
+			name:    "portal is subset of trusted",
+			portal:  []string{"192.0.2.128/25"},
+			trusted: []string{"192.0.2.0/24"},
+			want:    `TRUSTED_PROXY_CIDRS "192.0.2.0/24" must not overlap PORTAL_ALLOWED_CIDRS "192.0.2.128/25"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			cfg.DirectClientMode = false
+			cfg.PortalAllowedCIDRs = tt.portal
+			cfg.TrustedProxyCIDRs = tt.trusted
+			if err := cfg.ValidateHTTP(); err == nil || err.Error() != tt.want {
+				t.Fatalf("ValidateHTTP error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateHTTPAcceptsNonOverlappingPortalAndTrustedProxyCIDRs(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.DirectClientMode = false
+	cfg.PortalAllowedCIDRs = []string{"192.0.2.0/24"}
+	cfg.TrustedProxyCIDRs = []string{"10.0.8.0/26"}
+	if err := cfg.ValidateHTTP(); err != nil {
+		t.Fatalf("ValidateHTTP returned error: %v", err)
+	}
+}
+
+func TestLoadRejectsInvalidDirectClientMode(t *testing.T) {
+	t.Setenv("DIRECT_CLIENT_MODE", "sometimes")
+	cfg := Load()
+	if err := cfg.ValidateHTTP(); err == nil || err.Error() != "DIRECT_CLIENT_MODE must be a boolean" {
+		t.Fatalf("ValidateHTTP error = %v", err)
 	}
 }
 
@@ -262,6 +441,89 @@ func TestValidateRequiresPositivePasswordMessageTTL(t *testing.T) {
 				t.Fatalf("Validate error = %v, want %q", err, "PasswordMessageTTL must be positive")
 			}
 		})
+	}
+}
+
+func TestLoadRejectsMalformedSyncStatusNumbers(t *testing.T) {
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		validate func(Config) error
+		want     string
+	}{
+		{name: "redis port", key: "REDIS_PORT", value: "tls", validate: Config.validateSyncStatus, want: "REDIS_PORT must be an integer"},
+		{name: "terminal TTL", key: "SYNC_STATUS_TERMINAL_TTL", value: "ninety-days", validate: Config.validateSyncStatus, want: "SYNC_STATUS_TERMINAL_TTL must be a valid duration"},
+		{name: "message TTL", key: "PASSWORD_MESSAGE_TTL", value: "five-minutes", validate: Config.validateServiceBus, want: "PASSWORD_MESSAGE_TTL must be a valid duration"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.key, tt.value)
+			cfg := Load()
+			if err := tt.validate(cfg); err == nil || err.Error() != tt.want {
+				t.Fatalf("validation error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSyncStatusStoreModes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "missing mode", edit: func(cfg *Config) { cfg.SyncStatusStore = "" }, want: "SYNC_STATUS_STORE must be memory or redis"},
+		{name: "unknown mode", edit: func(cfg *Config) { cfg.SyncStatusStore = "disk" }, want: "SYNC_STATUS_STORE must be memory or redis"},
+		{name: "missing host", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.RedisHost = "" }, want: "REDIS_HOST is required when SYNC_STATUS_STORE=redis"},
+		{name: "missing port", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.RedisPort = 0 }, want: "REDIS_PORT must be between 1 and 65535 when SYNC_STATUS_STORE=redis"},
+		{name: "invalid port", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.RedisPort = 65536 }, want: "REDIS_PORT must be between 1 and 65535 when SYNC_STATUS_STORE=redis"},
+		{name: "missing prefix", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.RedisKeyPrefix = "" }, want: "REDIS_KEY_PREFIX is required when SYNC_STATUS_STORE=redis"},
+		{name: "host includes port", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.RedisHost = "cache.example:10000" }, want: "REDIS_HOST must be a host name without a scheme, path, or port"},
+		{name: "sub-millisecond message TTL", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.PasswordMessageTTL = time.Nanosecond }, want: "PASSWORD_MESSAGE_TTL must be at least 1ms when SYNC_STATUS_STORE=redis"},
+		{name: "invalid terminal TTL", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.SyncStatusTerminalTTL = 0 }, want: "SYNC_STATUS_TERMINAL_TTL must be at least 1ms when SYNC_STATUS_STORE=redis"},
+		{name: "missing UAMI", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.AzureClientID = "" }, want: "AZURE_CLIENT_ID is required when SYNC_STATUS_STORE=redis"},
+		{name: "invalid UAMI", edit: func(cfg *Config) { setCompleteRedisConfig(cfg); cfg.AzureClientID = "not-a-uuid" }, want: "AZURE_CLIENT_ID must be a valid UUID when SYNC_STATUS_STORE=redis"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := completeConfig()
+			tt.edit(&cfg)
+			if err := cfg.validateSyncStatus(); err == nil || err.Error() != tt.want {
+				t.Fatalf("validateSyncStatus error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateSyncStatusStoreAcceptsMemoryWithoutRedisConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	cfg.RedisHost = ""
+	cfg.RedisPort = 0
+	cfg.RedisKeyPrefix = ""
+	cfg.SyncStatusTerminalTTL = 0
+	cfg.AzureClientID = ""
+
+	if err := cfg.validateSyncStatus(); err != nil {
+		t.Fatalf("validateSyncStatus returned error: %v", err)
+	}
+}
+
+func TestValidateSyncStatusStoreAcceptsRedis(t *testing.T) {
+	t.Parallel()
+
+	cfg := completeConfig()
+	setCompleteRedisConfig(&cfg)
+
+	if err := cfg.validateSyncStatus(); err != nil {
+		t.Fatalf("validateSyncStatus returned error: %v", err)
 	}
 }
 
@@ -509,6 +771,7 @@ func completeConfig() Config {
 		HMACClockSkew:                 30 * time.Second,
 		NonceTTL:                      60 * time.Second,
 		PortalAllowedCIDRs:            []string{"192.0.2.0/24"},
+		DirectClientMode:              true,
 		RateLimitPerIP:                500,
 		RateLimitWindow:               time.Second,
 		HookMaxBodyBytes:              64 * 1024,
@@ -518,10 +781,20 @@ func completeConfig() Config {
 		ServiceBusQueueName:           "password-sync",
 		ServiceBusDeadLetterQueueName: "password-sync-dlq",
 		PasswordMessageTTL:            300 * time.Second,
+		SyncStatusStore:               SyncStatusStoreMemory,
 		PasswordEncryptionKeyB64:      base64.StdEncoding.EncodeToString(make([]byte, 32)),
 		PasswordEncryptionKeyID:       "password-payload-key-v1",
 		GraphTenantID:                 "tenant-id",
 		GraphClientID:                 "client-id",
 		GraphClientSecret:             "graph-client-secret",
 	}
+}
+
+func setCompleteRedisConfig(cfg *Config) {
+	cfg.SyncStatusStore = SyncStatusStoreRedis
+	cfg.RedisHost = "cache.example.redis.azure.net"
+	cfg.RedisPort = 10000
+	cfg.RedisKeyPrefix = "password-hook:sync-status:"
+	cfg.SyncStatusTerminalTTL = 90 * 24 * time.Hour
+	cfg.AzureClientID = "00000000-0000-0000-0000-000000000003"
 }

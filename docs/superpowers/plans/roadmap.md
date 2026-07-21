@@ -33,7 +33,7 @@
 
 ## Active Detailed Plan
 
-No detailed plan is currently active. Slice 10A Service Bus Managed Identity is complete: `completed/2026-07-03-slice-10a-servicebus-managed-identity.md`. The owner executed it before Slice 10 Infrastructure so Infrastructure can grant RBAC instead of managing a Service Bus connection string secret.
+Slice 10 Infrastructure and Durable Sync Status is active: `active/2026-07-03-slice-10-infrastructure.md`. Slice 10A Service Bus Managed Identity is complete: `completed/2026-07-03-slice-10a-servicebus-managed-identity.md`; Slice 10 consumes its managed-identity path and provisions its RBAC.
 
 ---
 
@@ -72,7 +72,7 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 8. Observability | Done | `completed/2026-07-08-slice-08-observability.md` | Backend-neutral recorder boundary, trace propagation, structured outcome logs, counters/durations, queue-depth probes, middleware/worker/Graph instrumentation, and README observability docs landed in PR #10. |
 | 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
 | 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
-| 10. Infrastructure | Not planned | Not created |  |
+| 10. Infrastructure | Active | `active/2026-07-03-slice-10-infrastructure.md` | Includes deployable Azure resources and Azure Managed Redis-backed shared sync-status storage. |
 | 10A. Service Bus Managed Identity | Done | `completed/2026-07-03-slice-10a-servicebus-managed-identity.md` | Application-side managed identity auth is complete: config/auth-mode validation, conditional Key Vault loading, producer/receiver/safe-DLQ namespace constructors, app wiring, docs, unit tests, `go vet`, and leak scans. Terraform, RBAC provisioning, and live Azure validation remain future work. |
 | 11. CI/CD and Security Gates | Not planned | Not created |  |
 | 12. Integration and Production Readiness | Not planned | Not created |  |

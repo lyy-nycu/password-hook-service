@@ -246,7 +246,7 @@ func (w *Worker) waitAfterEmptyReceive(ctx context.Context) error {
 }
 
 func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
-	passwordSyncMessage, err := decodePasswordSyncMessage(msg)
+	syncMessage, err := decodePasswordSyncMessage(msg)
 	if err != nil {
 		entry := invalidMessageDeadLetterEntry(msg, w.now())
 		zeroMessageBody(msg)
@@ -263,16 +263,19 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		return nil
 	}
 
-	result := w.processPasswordSync(ctx, passwordSyncMessage)
+	result := w.processPasswordSync(ctx, syncMessage)
 	if result.err == nil {
 		zeroMessageBody(msg)
-		_ = w.syncStatusRecorder.MarkSynced(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
 		settleCtx, cancel := w.settlementContext()
 		defer cancel()
+		// Use settleCtx (detached from ctx) so a shutdown signal arriving
+		// right after a successful sync can't silently drop the status
+		// write, the way it already can't drop message settlement below.
+		_ = w.syncStatusRecorder.MarkSynced(settleCtx, syncMessage.UPN, syncMessage.EnqueuedAt)
 		if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("complete worker message: %w", settleErr)
 		}
-		w.recordOutcome(ctx, observability.ActionWorkerCompleted, passwordSyncMessage, "synced", "", result.attempts)
+		w.recordOutcome(ctx, observability.ActionWorkerCompleted, syncMessage, "synced", "", result.attempts)
 		return nil
 	}
 
@@ -283,7 +286,7 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 		if settleErr := w.receiver.AbandonMessage(settleCtx, msg); settleErr != nil {
 			return fmt.Errorf("abandon worker message: %w", settleErr)
 		}
-		w.recordOutcome(ctx, observability.ActionWorkerAbandoned, passwordSyncMessage, "abandoned", "", result.attempts)
+		w.recordOutcome(ctx, observability.ActionWorkerAbandoned, syncMessage, "abandoned", "", result.attempts)
 		return nil
 	}
 
@@ -299,21 +302,23 @@ func (w *Worker) processMessage(ctx context.Context, msg *Message) error {
 	defer cancel()
 	if settleErr := w.recordPasswordSyncFailure(settleCtx, DeadLetterEntry{
 		Kind:        passwordSyncKind,
-		CN:          passwordSyncMessage.CN,
-		UPN:         passwordSyncMessage.UPN,
+		CN:          syncMessage.CN,
+		UPN:         syncMessage.UPN,
 		Reason:      reason,
 		Description: description,
 		Attempts:    result.attempts,
-		EnqueuedAt:  passwordSyncMessage.EnqueuedAt,
+		EnqueuedAt:  syncMessage.EnqueuedAt,
 		FailedAt:    w.now(),
 	}); settleErr != nil {
-		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr, passwordSyncMessage, result.attempts)
+		return w.abandonAfterDeadLetterFailure(settleCtx, msg, "record worker message dead-letter", settleErr, syncMessage, result.attempts)
 	}
-	_ = w.syncStatusRecorder.MarkFailed(ctx, passwordSyncMessage.UPN, passwordSyncMessage.EnqueuedAt)
+	// Use settleCtx (detached from ctx), matching the successful-sync path
+	// above, so a shutdown signal can't drop this status write either.
+	_ = w.syncStatusRecorder.MarkFailed(settleCtx, syncMessage.UPN, syncMessage.EnqueuedAt)
 	if settleErr := w.receiver.CompleteMessage(settleCtx, msg); settleErr != nil {
 		return fmt.Errorf("complete failed worker message: %w", settleErr)
 	}
-	w.recordOutcome(ctx, observability.ActionWorkerFailed, passwordSyncMessage, "sync_failed", reason, result.attempts)
+	w.recordOutcome(ctx, observability.ActionWorkerFailed, syncMessage, "sync_failed", reason, result.attempts)
 	return nil
 }
 

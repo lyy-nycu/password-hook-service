@@ -30,7 +30,37 @@ This service currently implements the HTTP hook, encrypted Service Bus queueing,
 - queue and safe-DLQ depth probe boundaries
 - Azure Monitor exporter mode for OTLP traces and custom metrics
 
-Terraform resources and CI/CD security gates are implemented in later slices.
+## Infrastructure
+
+The production deployment uses a private Application Gateway WAF_v2 as the sole ingress point. Portal web servers reach the service over the existing S2S VPN; no public ACA ingress is exposed.
+
+**Ingress topology:**
+- An Azure Application Gateway WAF_v2 listener is bound to a private frontend IP inside the gateway subnet. Portal web servers reach it over TCP 443 through the existing S2S VPN. Public authoritative DNS continues to serve the existing public LDAP frontend; on-premises split-horizon DNS resolves the private password-hook hostname to the Application Gateway private frontend IP only for approved portal callers.
+- The gateway-to-ACA hop is HTTPS only. The backend uses the ACA ingress FQDN as the host header, SNI, and probe host; TLS is never downgraded.
+- A listener-specific WAF policy runs in Prevention mode with OWASP 3.2 and BotManager 0.1 managed rule sets, plus a priority-10 custom Block rule that rejects any source not in `PORTAL_ALLOWED_CIDRS` before the managed rules run. The full WAF contract is in [`deploy/terraform/application-gateway-handoff.md`](deploy/terraform/application-gateway-handoff.md).
+- The Application Gateway is managed by the external owner pipeline in [`lyy-nycu/ldap-service`](https://github.com/lyy-nycu/ldap-service); this repository only emits the handoff contract values.
+
+**Prerequisites before the first deploy:**
+- A TLS certificate covering the private hostname must be pre-provisioned in the shared Application Gateway certificate store (the existing ACME renewal workflow in `lyy-nycu/ldap-service` owns this).
+- On-premises split-horizon DNS must be configured to return the private frontend IP for the password-hook hostname.
+- The S2S VPN and routes permitting TCP 443 to the private frontend IP must be in place.
+
+**Container App and ACR:**
+- The Container App runs in the existing shared ACA managed environment (`cae-stg-jpe-001` / `cae-prod-jpe-001`). This repository does not create the environment.
+- The Container App uses `external_enabled = true` ingress. Azure's "internal" ingress mode only allows calls from other Container Apps within the same environment and is not reachable by an external reverse proxy like the Application Gateway (confirmed by staging validation), so external ingress is required for the AGW backend pool to work. The app is still never reachable from the public internet: the shared ACA environment itself has no public inbound IP (internal-only VNet configuration), which is the actual security boundary.
+- Container images are pulled from the existing shared ACR `acrjpe001` (resource group `rg-acr-jpe-001`) via identity-based `AcrPull`. This repository does not create the ACR.
+
+**Service Bus (managed identity, no connection string in production):**
+- `SERVICEBUS_AUTH_MODE=managed_identity`. The runtime UAMI holds `Azure Service Bus Data Sender` on the active and safe-DLQ queues and `Azure Service Bus Data Receiver` on the active queue — all queue-scoped. No connection string or SAS is used in production.
+
+**Azure Managed Redis (Entra auth, no access key in production):**
+- `SYNC_STATUS_STORE=redis`. The runtime UAMI authenticates via Entra ID (`azurerm_managed_redis_access_policy_assignment`); access-key authentication is disabled on the instance. See the [Event Types and Sync Status](#event-types-and-sync-status) section for the data model.
+
+**Observability:**
+- `OBSERVABILITY_EXPORTER=azure_monitor`. The managed OpenTelemetry agent is configured on the shared ACA environment (merge-PATCH via `azapi_update_resource`); it injects `OTEL_EXPORTER_OTLP_ENDPOINT` automatically. Custom metrics go to Azure Monitor via the custom-metrics REST API, requiring `Monitoring Metrics Publisher` at the Container App ARM resource scope. See the [Azure Monitor Export](#azure-monitor-export) section for details.
+
+**Terraform:**
+- Terraform configuration is in `deploy/terraform/`. The deployment sequence, identity and RBAC model, Redis retention model, and the on-premises validation walkthrough are in [`deploy/terraform/README.md`](deploy/terraform/README.md). No secret values, connection strings, or access keys are stored in Terraform state, variable files, or outputs.
 
 ## Local Verification
 
@@ -68,12 +98,15 @@ export SERVICEBUS_AUTH_MODE="connection_string"
 export SERVICEBUS_CONNECTION_STRING="<redacted-send-only-service-bus-connection-string>"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export PASSWORD_MESSAGE_TTL="5m"
+export SYNC_STATUS_STORE="memory"
 export PASSWORD_ENCRYPTION_KEY_B64="<base64-encoded-32-byte-key>"
 export PASSWORD_ENCRYPTION_KEY_ID="password-payload-key-v1"
 export GRAPH_TENANT_ID="<tenant-id>"
 export GRAPH_CLIENT_ID="<app-client-id>"
 export GRAPH_CLIENT_SECRET="<app-client-secret>"
 export PORTAL_ALLOWED_CIDRS="127.0.0.1/32,::1/128"
+export DIRECT_CLIENT_MODE="true"
 export RATE_LIMIT_PER_IP="500"
 export RATE_LIMIT_WINDOW="1s"
 export HOOK_MAX_BODY_BYTES="65536"
@@ -87,6 +120,15 @@ export SERVICEBUS_AUTH_MODE="managed_identity"
 export SERVICEBUS_NAMESPACE_FQDN="<namespace>.servicebus.windows.net"
 export SERVICEBUS_QUEUE_NAME="password-sync"
 export SERVICEBUS_DEADLETTER_QUEUE_NAME="password-sync-dlq"
+export PASSWORD_MESSAGE_TTL="5m"
+export SYNC_STATUS_STORE="redis"
+export REDIS_HOST="<managed-redis-host>"
+export REDIS_PORT="<tls-port>"
+export REDIS_KEY_PREFIX="password-hook:sync-status:"
+export SYNC_STATUS_TERMINAL_TTL="2160h"
+export AZURE_CLIENT_ID="<runtime-uami-client-id>"
+export DIRECT_CLIENT_MODE="false"
+export TRUSTED_PROXY_CIDRS="<observed-immediate-proxy-cidr>"
 ```
 
 Production `app.New` requires `GRAPH_TENANT_ID`, `GRAPH_CLIENT_ID`, and `GRAPH_CLIENT_SECRET`. The Graph app registration needs the approved application permission `User.ReadWrite.All`.
@@ -112,12 +154,21 @@ docker run --rm -p 8080:8080 \
   -e SERVICEBUS_NAMESPACE_FQDN \
   -e SERVICEBUS_QUEUE_NAME \
   -e SERVICEBUS_DEADLETTER_QUEUE_NAME \
+  -e PASSWORD_MESSAGE_TTL \
+  -e SYNC_STATUS_STORE \
+  -e REDIS_HOST \
+  -e REDIS_PORT \
+  -e REDIS_KEY_PREFIX \
+  -e SYNC_STATUS_TERMINAL_TTL \
+  -e AZURE_CLIENT_ID \
   -e PASSWORD_ENCRYPTION_KEY_B64 \
   -e PASSWORD_ENCRYPTION_KEY_ID \
   -e GRAPH_TENANT_ID \
   -e GRAPH_CLIENT_ID \
   -e GRAPH_CLIENT_SECRET \
   -e PORTAL_ALLOWED_CIDRS \
+  -e TRUSTED_PROXY_CIDRS \
+  -e DIRECT_CLIENT_MODE \
   -e RATE_LIMIT_PER_IP \
   -e RATE_LIMIT_WINDOW \
   -e HOOK_MAX_BODY_BYTES \
@@ -192,13 +243,11 @@ The portal and password hook service share the HMAC secret for this API. The por
 
 Each hook request represents one successful-login password event for one LDAP identity. The service can process a single end-user event, but Slice 9 does not add per-user rate limiting. Any future per-user limiter must run after HMAC succeeds because only then can the service trust signed body fields such as `cn`.
 
-For the current portal topology, configure `PORTAL_ALLOWED_CIDRS` to the full `/32` CIDRs for the two portal web-server egress addresses (`<portal-egress-ip-1>` and `<portal-egress-ip-2>` as currently described). `RATE_LIMIT_PER_IP` is enforced per immediate portal web-server source IP. With two portal web servers, the expected aggregate cap is approximately `2 * RATE_LIMIT_PER_IP` when traffic is evenly balanced.
+For local or test traffic that reaches the process directly, set `DIRECT_CLIENT_MODE=true` and leave `TRUSTED_PROXY_CIDRS` empty. Production must set `DIRECT_CLIENT_MODE=false` and configure `TRUSTED_PROXY_CIDRS` only with the immediate ACA/Application Gateway proxy peers observed and approved during staging. The two modes are mutually exclusive. `TRUSTED_PROXY_CIDRS` must not contain an unrestricted network such as `0.0.0.0/0` or `::/0`, and must not overlap `PORTAL_ALLOWED_CIDRS`; the service rejects startup with a config error rather than let a direct portal peer be treated as a trusted proxy and forge `X-Forwarded-For`.
 
-The application intentionally does not use `X-Forwarded-For` as the anomaly rate-limit key in this slice. The goal is to catch abnormal hook output from either portal web server, including retry loops, bugs, or uneven load balancer distribution.
+When the immediate peer is untrusted, the application ignores `X-Forwarded-For` and uses the peer address. When it is trusted, the application strictly validates the complete forwarded chain from the nearest hop toward the client. Missing, malformed, ambiguous, or all-trusted chains fail closed. The resolved address is independently checked against `PORTAL_ALLOWED_CIDRS` and used as the per-client rate-limit key. WAF also enforces the portal CIDRs at Application Gateway; neither layer replaces the other. Before production rollout, record the sanitized staging peer/header shape and stop if it cannot satisfy this trust-boundary algorithm instead of widening the trusted range.
 
 Size `RATE_LIMIT_PER_IP` from observed peak successful-login hook rate per portal web server, with enough headroom that normal login bursts do not receive `429`. The default `500` is a guardrail, not a fixed production capacity decision. The portal must not fail user login on `429`, and it must not immediately retry in a tight loop.
-
-Infrastructure protections such as Azure Front Door, WAF rules, Azure DDoS Protection, private endpoints, VPN routing, and Terraform ingress policy are outside this application slice and are handled by later infrastructure slices.
 
 ## Worker Behavior
 
@@ -212,11 +261,15 @@ Structured logging masks password, password-derived, secret, and token fields by
 
 Every hook request must include an `eventType` field with one of three values:
 
-- `login_bootstrap` - sent after a user completes SSO login and the portal bootstraps their on-prem AD account. The service skips re-enqueueing this event if the UPN is already marked `synced`, or has a `sync_pending` record fresher than the internal pending-sync TTL (300s by default). This avoids redundant AD writes on every login.
+- `login_bootstrap` - sent after a user completes SSO login and the portal bootstraps their on-prem AD account. The service skips re-enqueueing this event if the UPN is already marked `synced`, or has a `sync_pending` record fresher than `PASSWORD_MESSAGE_TTL` (`5m` by default). This avoids redundant AD writes on every login.
 - `password_change` - sent when a user changes their password. Always enqueued, regardless of prior sync status.
 - `password_recovery` - sent when a user recovers or resets their password. Always enqueued, regardless of prior sync status.
 
-Sync status (`unsynced` / `sync_pending` / `synced` / `sync_failed`) is tracked per-UPN by `internal/syncstatus.MemoryStore`, an in-process, non-durable store: it resets on process restart and is not shared across replicas. This is a deliberate Slice 7A scope limit; Slice 10 (infrastructure) introduces durable, shared sync-status storage. See `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` section 1.2.1 Amendment for the full event model rationale.
+Production uses Azure Managed Redis with Entra authentication and TLS for shared sync status across replicas and revisions. Redis keys contain a SHA-256 digest of the normalized UPN, never the raw UPN; values contain only status, `UpdatedAt`, and `SourceEnqueuedAt`. Equal source timestamps use the monotonic precedence `sync_pending < sync_failed < synced`, and idempotent writes do not refresh timestamps or TTLs.
+
+Pending records expire with `PASSWORD_MESSAGE_TTL`. Terminal `synced` and `sync_failed` records expire after the owner-approved `SYNC_STATUS_TERMINAL_TTL` of `90d` (`2160h`); after expiration a later `login_bootstrap` can enqueue again. Redis is operational deduplication state, not a password store, audit record, or permanent history. A Redis read outage fails open and can cause a duplicate Graph sync; status writes remain best-effort. Passwords, queue payloads, HMAC material, tokens, Redis access keys, and raw UPNs must never be stored in this Redis data.
+
+Set `SYNC_STATUS_STORE=memory` only for explicit local/test use. `MemoryStore` is non-durable, resets on process restart, and is not shared across replicas.
 
 ## Observability
 
@@ -257,7 +310,8 @@ Set `OBSERVABILITY_EXPORTER=azure_monitor` to export production telemetry.
 Logs and traces:
 
 - Configure the Azure Container Apps managed OpenTelemetry agent to send logs and traces to Application Insights.
-- Set `OTEL_EXPORTER_OTLP_ENDPOINT` to the agent endpoint.
+- ACA injects `OTEL_EXPORTER_OTLP_ENDPOINT` into every container automatically once the managed agent is configured on the managed environment. Do NOT set this variable explicitly in Terraform or hand-authored deployment configuration — the service reads only the runtime-injected value. Setting it explicitly would compete with the injected value and can silently route traces to the wrong endpoint.
+- The exporter uses OTLP over gRPC to the local in-cluster sidecar the managed agent provides.
 
 Metrics:
 
@@ -292,14 +346,23 @@ Example verification queries depend on the deployed workspace, but the expected 
 | `SERVICEBUS_NAMESPACE_FQDN` | empty | Required when `SERVICEBUS_AUTH_MODE=managed_identity`; Service Bus namespace FQDN authenticated through managed identity and RBAC |
 | `SERVICEBUS_QUEUE_NAME` | `password-sync` | Queue name for password sync jobs |
 | `SERVICEBUS_DEADLETTER_QUEUE_NAME` | `password-sync-dlq` | Safe DLQ queue name for terminal password sync failures |
+| `PASSWORD_MESSAGE_TTL` | `5m` | Queue message TTL and pending sync-status TTL; must be a positive Go duration |
+| `SYNC_STATUS_STORE` | empty | Required; `memory` for explicit local/test use or `redis` for production |
+| `REDIS_HOST` | empty | Required in Redis mode; Azure Managed Redis host name without scheme or port |
+| `REDIS_PORT` | empty | Required in Redis mode; Azure Managed Redis TLS port |
+| `REDIS_KEY_PREFIX` | `password-hook:sync-status:` | Non-secret, deployment-neutral prefix for hashed sync-status keys |
+| `SYNC_STATUS_TERMINAL_TTL` | `2160h` | Owner-approved `90d` retention for `synced` and `sync_failed` records |
+| `AZURE_CLIENT_ID` | empty | Required UUID in Redis mode; selects the runtime UAMI used for Entra authentication |
 | `PASSWORD_ENCRYPTION_KEY_B64` | empty | Required; base64-encoded 32-byte AES-GCM key for queued password payloads |
 | `PASSWORD_ENCRYPTION_KEY_ID` | `password-payload-key-v1` | Required; key identifier embedded in encrypted queue messages |
-| `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated source CIDR allowlist for portal web-server egress IPs |
-| `RATE_LIMIT_PER_IP` | `500` | Optional; defaults to `500`; must be positive when set; per-source-IP request threshold during `RATE_LIMIT_WINDOW`; with two portal web servers, aggregate capacity is approximately `2 * RATE_LIMIT_PER_IP` |
+| `PORTAL_ALLOWED_CIDRS` | empty | Required; comma-separated allowlist applied to the resolved portal client address |
+| `TRUSTED_PROXY_CIDRS` | empty | Required in proxy mode; comma-separated immediate trusted proxy CIDRs established from the approved topology; never portal CIDRs or unrestricted networks |
+| `DIRECT_CLIENT_MODE` | `false` | Explicit local/test mode; when `true`, `TRUSTED_PROXY_CIDRS` must be empty; production uses `false` |
+| `RATE_LIMIT_PER_IP` | `500` | Optional; defaults to `500`; must be positive when set; per-resolved-client-IP threshold during `RATE_LIMIT_WINDOW` |
 | `RATE_LIMIT_WINDOW` | `1s` | Optional; defaults to `1s`; must be a positive Go duration when set; anomaly rate-limit window |
 | `HOOK_MAX_BODY_BYTES` | `65536` | Optional; defaults to `65536`; must be a positive byte limit when set; signed hook request body limit |
 | `OBSERVABILITY_EXPORTER` | `none` | Optional; set to `azure_monitor` to enable Azure Monitor telemetry export |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure Container Apps managed OpenTelemetry agent endpoint for traces |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; injected automatically by the Azure Container Apps managed OpenTelemetry agent (OTLP gRPC). Never set explicitly in deployment configuration. |
 | `AZURE_MONITOR_METRIC_RESOURCE_ID` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure resource ID that owns custom metrics |
 | `AZURE_MONITOR_METRIC_REGION` | empty | Required when `OBSERVABILITY_EXPORTER=azure_monitor`; Azure region for the custom metrics endpoint |
 | `AZURE_MONITOR_METRIC_NAMESPACE` | `password-hook-service` | Custom metrics namespace when Azure Monitor export is enabled |
