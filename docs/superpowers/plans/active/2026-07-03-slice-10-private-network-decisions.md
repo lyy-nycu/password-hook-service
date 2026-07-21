@@ -274,6 +274,42 @@ Model allocation, when the client supports it:
 
 Owner decision discussion is complete. Unchecked boxes are staging preflight/live-validation gates, not invitations to redesign the approved topology. Terraform validation or the presence of existing resource IDs does not constitute deployment approval.
 
+## Staging Backend/Ingress Validation (2026-07-21)
+
+Performed after the AGW backend health fix (see `docs/ADR/2026-07-21-aca-ingress-mode-for-application-gateway-backend.md`), to validate as much of Task 8's live-verification checklist as possible without an actual on-premises portal web server. All changes made purely to enable this testing were removed immediately afterward; nothing below altered any approved staging configuration.
+
+### Methodology
+
+No test host exists in either the AGW VNet (`vnet-ag-stg-jpe-001`) or the workload VNet (`vnet-stg-jpe-001`), and no test host has an approved portal-source IP (`140.113.7.17/32`) or S2S VPN access. To exercise the network path at all from this session:
+
+1. Temporarily added 4 bidirectional VNet peerings: `vnet-spoke-paas` (where the existing `vm-client` diagnostic VM lives) &harr; `vnet-stg-jpe-001`, and `vnet-spoke-paas` &harr; `vnet-ag-stg-jpe-001`. All 4 peerings were deleted immediately after testing; final state confirmed to match the pre-test peering topology exactly (`hub-to-spoke-pass`, `proxy-agent-vnet-to-vnet-spoke-paas` on `vnet-spoke-paas`; `cae-to-agw`, `stg-jpe-to-hub`, `stg-jpe-to-proxy-agent` on `vnet-stg-jpe-001`; `agw-to-cae` on `vnet-ag-stg-jpe-001`).
+2. Ran commands on `vm-client` via `az vm run-command invoke` (no interactive Bastion session needed).
+3. Temporarily enabled Key Vault (`kvpwdhookstgmvxfna`) public network access plus a single-IP firewall rule for the operator's own IP, read `hook-hmac-secret` once, then immediately restored `publicNetworkAccess = Disabled` and removed the IP rule. The secret value was never displayed in any tool output or committed anywhere; the local temp copy was `shred -u`'d after use.
+4. Built one HMAC-signed test request per `docs/examples/sign-hook-request.php`'s scheme (`X-Hook-Timestamp`, `X-Hook-Nonce`, `X-Hook-Signature: sha256=...`), using a synthetic, obviously-fake `cn` (`999999999`) and an `.invalid` email domain so no real Entra identity is touched. `internal/migration/service.go`'s `Submit` only classifies `cn` by format (all-digits / letters-and-hyphens) before enqueueing; it does not call Graph to confirm the account exists (that happens later, asynchronously, in the worker), so a synthetic `cn` is sufficient to exercise the full HTTP-handler-to-Service-Bus path without needing a real test account.
+5. Sent that request twice from `vm-client`: once through the AGW private frontend (`api.test.nycu.edu.tw` resolved to `10.0.8.62`), once directly to the ACA backend FQDN (bypassing the gateway entirely), to separately test the WAF layer and the application's own defense-in-depth source-IP check.
+
+### Results
+
+| Test | Path | Result | Interpretation |
+|---|---|---|---|
+| AGW backend health | N/A (control check) | `Healthy` — "Success. Received 200 status code" | Confirms the `external_enabled = true` ingress fix is effective and stable |
+| Signed request, unapproved source | `vm-client` &rarr; AGW private frontend (`10.0.8.62`) | `403 Forbidden` (Application Gateway WAF page) | The priority-10 negated `RemoteAddr IPMatch` Block rule correctly rejects a source outside `PORTAL_ALLOWED_CIDRS`/the WAF-approved list, exactly as designed |
+| Signed request, unapproved source | `vm-client` &rarr; ACA backend FQDN directly (bypassing AGW) | `401 Unauthorized`, RFC 9457 problem body, `detail: "source ip is not allowed"` | The application's own `PORTAL_ALLOWED_CIDRS` check independently rejects the same unapproved source even when the gateway is bypassed entirely — confirms the defense-in-depth design (gateway WAF block is not the only thing standing between an unapproved source and the app) is real and working, not merely assumed |
+
+No response body, payload, HMAC secret, signature, nonce, or password value was logged or displayed at any point; only HTTP status codes and RFC 9457 `detail` strings (which never include request content) were captured above.
+
+### Still outstanding — on-premises only
+
+The following items from Task 8's live-verification checklist cannot be exercised from this session under any circumstance, because they require a source that is physically on-premises and/or already has S2S VPN connectivity and an approved portal-source IP:
+
+- An actual `202 Accepted` response from an **approved** portal-source IP (`140.113.7.17/32` staging; the production CIDRs are separate). Everything tested above deliberately used an *unapproved* source to prove the block rules work — the approved-source path (which should pass the WAF and reach the application, then return `202`) has not been exercised at all.
+- Split-horizon/on-premises DNS actually resolving the private hostname (`api.test.nycu.edu.tw`) to the Application Gateway private frontend IP from a real portal web server's own resolver.
+- The site-to-site VPN path itself (TCP 443 reachability, route correctness) from an on-premises portal web server.
+- The trusted-proxy resolver (`TRUSTED_PROXY_CIDRS = 10.0.8.0/26`) producing an address in the approved portal allowlist when traffic genuinely originates on-premises and is forwarded by the real Application Gateway — this has only been validated by documentation/design reasoning (see the "Container App ingress mode" and "Trusted proxy CIDRs" rows in the Decision Gate table above), never by an actual end-to-end request through the live path.
+- Confirming a spoofed/forged `X-Forwarded-For` header from a non-AGW source is rejected, using a real on-premises vantage point.
+
+This work must be picked up by whoever owns the on-premises portal web servers and the S2S VPN, following the existing checklist wording in Task 8 of `2026-07-03-slice-10-infrastructure.md`. Nothing above should be treated as satisfying those checklist items; it only narrows what's left by eliminating everything that could be tested Azure-side.
+
 ## Read-Only Evidence Collected
 
 Discovery used safe-field projections from `az account show`, resource-group/resource lists, VNet/subnet/peering queries, VPN Gateway/Local Network Gateway/VPN connection queries, route-table and Private DNS/Resolver queries, Application Gateway/WAF policy and activity-log queries, ACR metadata/RBAC queries, Container Apps environment queries, Log Analytics queries, and private-endpoint lists.
