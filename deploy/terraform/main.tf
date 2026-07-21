@@ -155,6 +155,40 @@ locals {
   # blocks; keeping the checks in a resource makes them fail at plan time
   # before any provider write.
 
+  # True network-range overlap detection for portal_allowed_cidrs vs
+  # trusted_proxy_cidrs, mirroring internal/config/config.go's
+  # rejectOverlappingCIDRs containment check (not merely exact-string
+  # duplicates -- e.g. 192.0.2.0/24 and 192.0.2.128/25 must both be caught
+  # even though neither string equals the other). Both variables are
+  # already validated elsewhere as IPv4-only CIDRs, so plain 32-bit
+  # integer arithmetic is sufficient here.
+  cidr_ip_to_int = {
+    for cidr in setunion(var.portal_allowed_cidrs, var.trusted_proxy_cidrs) :
+    cidr => (
+      tonumber(split(".", cidrhost(cidr, 0))[0]) * 16777216 +
+      tonumber(split(".", cidrhost(cidr, 0))[1]) * 65536 +
+      tonumber(split(".", cidrhost(cidr, 0))[2]) * 256 +
+      tonumber(split(".", cidrhost(cidr, 0))[3])
+    )
+  }
+  cidr_range_end = {
+    for cidr in setunion(var.portal_allowed_cidrs, var.trusted_proxy_cidrs) :
+    cidr => local.cidr_ip_to_int[cidr] + pow(2, 32 - tonumber(split("/", cidr)[1])) - 1
+  }
+  cidr_overlap_pairs = flatten([
+    for t in var.trusted_proxy_cidrs : [
+      for p in var.portal_allowed_cidrs : {
+        trusted = t
+        portal  = p
+        overlap = (
+          local.cidr_ip_to_int[t] <= local.cidr_range_end[p] &&
+          local.cidr_ip_to_int[p] <= local.cidr_range_end[t]
+        )
+      }
+    ]
+  ])
+  has_cidr_overlap = anytrue([for pair in local.cidr_overlap_pairs : pair.overlap])
+
   common_tags = {
     "application" = "password-hook-service"
     "environment" = var.environment
@@ -208,8 +242,8 @@ resource "terraform_data" "name_length_guards" {
       error_message = "Derived application_insights_name must be 1-260 chars."
     }
     precondition {
-      condition     = length(setintersection(toset(var.portal_allowed_cidrs), toset(var.trusted_proxy_cidrs))) == 0
-      error_message = "portal_allowed_cidrs and trusted_proxy_cidrs must not share any CIDR (matches internal/config/config.go enforcement)."
+      condition     = !local.has_cidr_overlap
+      error_message = "portal_allowed_cidrs and trusted_proxy_cidrs must not overlap as IP networks (matches internal/config/config.go's rejectOverlappingCIDRs containment check -- this compares actual address ranges, not just exact-string duplicates, so e.g. 192.0.2.0/24 and 192.0.2.128/25 are correctly rejected even though neither string equals the other)."
     }
     precondition {
       condition     = var.container_app_min_replicas <= var.container_app_max_replicas
