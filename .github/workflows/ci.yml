@@ -114,3 +114,35 @@ jobs:
       - name: Fail if gitleaks found a secret
         if: steps.gitleaks.outcome == 'failure'
         run: exit 1
+  terraform-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect Terraform changes
+        id: filter
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            terraform:
+              - 'deploy/terraform/**'
+      - name: Setup Terraform
+        if: steps.filter.outputs.terraform == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform fmt -check -recursive
+      - name: terraform init (no backend)
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform init -backend=false
+      - name: terraform validate
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform validate
+      - name: No Terraform changes
+        if: steps.filter.outputs.terraform != 'true'
+        run: echo "deploy/terraform/** unchanged; skipping Terraform checks."
