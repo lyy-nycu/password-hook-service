@@ -21,9 +21,10 @@ This directory separates executable plans from historical references so agents d
 | `superseded/` | Plans replaced by newer decisions or plans | Do not execute; read only to understand history |
 | `roadmap.md` | Slice status and active-plan pointer | Read before choosing any detailed plan |
 
-## Current Active Plan
+## Current Active Plans
 
-Slice 10 Infrastructure and Durable Sync Status is active: `active/2026-07-03-slice-10-infrastructure.md`.
+- Slice 10 Infrastructure and Durable Sync Status: `active/2026-07-03-slice-10-infrastructure.md` (on-premises/production validation gates remain open; see the Slice 10→11 handoff).
+- Slice 11 CI/CD and Security Gates: `active/2026-07-21-slice-11-ci-cd.md` (does not depend on Slice 10's remaining live-validation gates).
 
 ## Status Labels
 
