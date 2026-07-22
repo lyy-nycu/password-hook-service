@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/nycu/password-hook-service/internal/buildinfo"
 )
@@ -20,8 +21,9 @@ type Server struct {
 func New(addr string, routes Routes, info buildinfo.Info) *Server {
 	return &Server{
 		server: &http.Server{
-			Addr:    addr,
-			Handler: NewMux(routes, info),
+			Addr:              addr,
+			Handler:           NewMux(routes, info),
+			ReadHeaderTimeout: 10 * time.Second,
 		},
 	}
 }
