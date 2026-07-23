@@ -22,6 +22,11 @@ jobs:
   deploy-staging:
     runs-on: ubuntu-latest
     environment: staging
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v5
 
@@ -68,3 +73,48 @@ jobs:
 
       - name: Push image
         run: docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ steps.image.outputs.tag }}"
+
+      - name: Terraform init
+        working-directory: deploy/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-tfstate-jpe-001" \
+            -backend-config="storage_account_name=sttfstatephsjpe001" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=password-hook-service/stg.tfstate"
+
+      - name: Terraform plan
+        working-directory: deploy/terraform
+        run: |
+          terraform plan \
+            -var-file=environments/staging.tfvars \
+            -var "app_image=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}" \
+            -var "app_image_tag=${{ steps.image.outputs.tag }}" \
+            -out=tfplan
+
+      - name: Terraform apply
+        if: vars.TF_APPLY_MODE == 'apply'
+        working-directory: deploy/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Verify Container App revision health
+        if: vars.TF_APPLY_MODE == 'apply'
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 10); do
+            state=$(az containerapp revision list \
+              --name ca-pwdhook-stg-mvxfna \
+              --resource-group rg-password-hook-stg-jpe-001 \
+              --query "[?properties.active] | [0].{provisioningState:properties.provisioningState, runningState:properties.runningState}" \
+              -o json)
+            echo "$state"
+            provisioning=$(echo "$state" | python3 -c "import json,sys; print(json.load(sys.stdin).get('provisioningState',''))")
+            running=$(echo "$state" | python3 -c "import json,sys; print(json.load(sys.stdin).get('runningState',''))")
+            if [ "$provisioning" = "Provisioned" ] && [ "$running" = "Running" ]; then
+              echo "Container App revision healthy."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Container App revision did not reach Provisioned/Running within timeout."
+          exit 1
