@@ -22,6 +22,7 @@ jobs:
   deploy-staging:
     runs-on: ubuntu-latest
     environment: staging
+    timeout-minutes: 30
     env:
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -56,6 +57,7 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-image-results.sarif
+          category: trivy-image
 
       - name: Fail if the image has CRITICAL/HIGH/MEDIUM vulnerabilities
         if: steps.trivy-image.outcome == 'failure'
@@ -99,12 +101,21 @@ jobs:
 
       - name: Verify Container App revision health
         if: vars.TF_APPLY_MODE == 'apply'
+        working-directory: deploy/terraform
         run: |
           set -euo pipefail
-          for i in $(seq 1 10); do
+          # Derive the real Container App name/resource-group from Terraform's
+          # own container_app_id output (a full ARM resource ID) instead of a
+          # hardcoded name, so this step keeps working if the app is ever
+          # recreated under a different generated name.
+          app_id=$(terraform output -raw container_app_id)
+          app_name=$(basename "$app_id")
+          app_rg=$(echo "$app_id" | sed -n 's#.*/resourceGroups/\([^/]*\)/.*#\1#p')
+          echo "Checking Container App '$app_name' in resource group '$app_rg'"
+          for i in $(seq 1 20); do
             state=$(az containerapp revision list \
-              --name ca-pwdhook-stg-mvxfna \
-              --resource-group rg-password-hook-stg-jpe-001 \
+              --name "$app_name" \
+              --resource-group "$app_rg" \
               --query "[?properties.active] | [0].{provisioningState:properties.provisioningState, runningState:properties.runningState}" \
               -o json)
             echo "${state:-null}"
