@@ -72,7 +72,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Log in to ACR
-        run: az acr login --name acrjpe001
+        run: az acr login --name acrjpe001 --resource-group rg-acr-jpe-001
 
       - name: Push image
         run: docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ steps.image.outputs.tag }}"
