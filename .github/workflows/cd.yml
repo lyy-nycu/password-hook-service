@@ -13,6 +13,7 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  security-events: write
 
 env:
   ACR_LOGIN_SERVER: acrjpe001-byhkbaf5fxewe4ez.azurecr.io
@@ -75,6 +76,12 @@ jobs:
 
       - name: Push image
         run: docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ steps.image.outputs.tag }}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
 
       - name: Terraform init
         working-directory: deploy/terraform

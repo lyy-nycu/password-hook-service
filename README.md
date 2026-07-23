@@ -88,10 +88,11 @@ docker run --rm --user "$(id -u):$(id -g)" \
 
 Every pull request and push to `main` runs six required GitHub Actions
 checks: `test` (unit tests, vet, and a report-only coverage summary),
-`gosec`, `govulncheck`, `trivy-fs`, `gitleaks` (all four upload SARIF
-results to the repository's Security → Code scanning alerts tab), and a
-conditional `terraform-check`. `main` has branch protection requiring all
-six to pass before merge.
+`gosec`, `govulncheck`, `trivy-fs`, `gitleaks` (`gosec`, `trivy-fs`, and
+`gitleaks` upload SARIF results to the repository's Security → Code
+scanning alerts tab; `govulncheck` has no official SARIF output format and
+reports only through its own job log), and a conditional `terraform-check`.
+`main` has branch protection requiring all six to pass before merge.
 
 On push to `main`, `.github/workflows/cd.yml` builds, scans, and pushes a
 container image to the existing ACR, then runs Terraform against real

@@ -81,11 +81,10 @@ func TestUnknownRouteReturnsNotFound(t *testing.T) {
 func TestNewSetsReadHeaderTimeout(t *testing.T) {
 	srv := New(":0", Routes{}, buildinfo.Info{})
 
-	// server field is unexported; assert through the documented behavior
-	// instead of reaching into the struct: New must return a *Server whose
-	// underlying http.Server has a non-zero ReadHeaderTimeout, which gosec's
-	// G112 check requires. Reflect on the unexported field via the package's
-	// own test (same package, so the field is visible).
+	// server field is unexported, but this test lives in the same package
+	// (httpserver), so srv.server is visible here without exporting
+	// anything new. New must return a *Server whose underlying http.Server
+	// has a non-zero ReadHeaderTimeout, which gosec's G112 check requires.
 	if srv.server.ReadHeaderTimeout == 0 {
 		t.Fatal("expected ReadHeaderTimeout to be set to a non-zero duration, got 0 (Slowloris risk, gosec G112)")
 	}
