@@ -84,6 +84,23 @@ docker run --rm --user "$(id -u):$(id -g)" \
   sh -c "gofmt -w . && go test ./... && go vet ./..."
 ```
 
+## CI/CD
+
+Every pull request and push to `main` runs six required GitHub Actions
+checks: `test` (unit tests, vet, and a report-only coverage summary),
+`gosec`, `govulncheck`, `trivy-fs`, `gitleaks` (all four upload SARIF
+results to the repository's Security → Code scanning alerts tab), and a
+conditional `terraform-check`. `main` has branch protection requiring all
+six to pass before merge.
+
+On push to `main`, `.github/workflows/cd.yml` builds, scans, and pushes a
+container image to the existing ACR, then runs Terraform against real
+staging via Azure OIDC. See
+[`deploy/terraform/README.md`](deploy/terraform/README.md#continuous-deployment-cd-to-staging)
+for the full pipeline description, the `TF_APPLY_MODE` plan/apply safety
+valve, and the dedicated CD identity's RBAC. Production deployment remains a
+manual `terraform apply`, out of scope for this automated pipeline.
+
 ## Local Run
 
 For local development with connection string (fallback):
