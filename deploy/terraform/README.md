@@ -101,6 +101,73 @@ Production uses an identical Terraform configuration with production-environment
 
 ---
 
+## Continuous Deployment (CD) to Staging
+
+`.github/workflows/cd.yml` automates Pass 1 + Pass 2 above for staging only
+(production remains a manual `terraform apply` — see "Production promotion").
+On every push to `main`, it builds the container image, scans it with Trivy,
+authenticates to Azure via OIDC (no stored client secret — see "CD Identity"
+below), pushes the image to the existing ACR, and runs
+`terraform plan`/`apply` against the real staging environment using
+`deploy/terraform/environments/staging.tfvars` (a committed, non-secret file
+— see the `.gitignore` exception for exactly this one path) plus
+`-var app_image=...` / `-var app_image_tag=...` supplied at run time from the
+commit SHA.
+
+### The `TF_APPLY_MODE` safety valve
+
+A repository variable, `TF_APPLY_MODE`, gates whether the workflow's
+`terraform apply` step actually runs:
+
+- `plan` (the default): the workflow computes and logs a `terraform plan`
+  every run but changes nothing in real Azure. Safe to leave enabled
+  indefinitely.
+- `apply`: the workflow additionally runs `terraform apply -auto-approve` on
+  the plan it just computed, then verifies the resulting Container App
+  revision is healthy via `az containerapp revision list`.
+
+To check the current mode:
+
+```bash
+gh variable get TF_APPLY_MODE
+```
+
+To switch from `plan` to `apply` (do this only after reviewing at least one
+clean `plan` run in the Actions log — expect "No changes." since staging's
+live state already matches `staging.tfvars`):
+
+```bash
+gh variable set TF_APPLY_MODE --body "apply"
+```
+
+To fall back to plan-only (e.g., after discovering a problem with the
+pipeline itself):
+
+```bash
+gh variable set TF_APPLY_MODE --body "plan"
+```
+
+### CD Identity
+
+CD authenticates as its own dedicated Azure AD App Registration
+(`sp-password-hook-cd-stg`) via a Federated Credential scoped to this
+repository's `staging` GitHub Environment — **not** the runtime UAMI
+described below, and with no client secret or certificate. Its RBAC is
+deliberately narrower than an interactive operator's: `Contributor` on the
+staging resource group, `AcrPush` on the existing ACR,
+`Storage Blob Data Contributor` on the tfstate storage account, and
+`Role Based Access Control Administrator` (resource-group-scoped only) so
+Terraform can create the runtime UAMI's own role assignments. See
+`docs/superpowers/plans/active/2026-07-22-slice-11-cd-identity-decisions.md`
+for the exact commands used to create it and the full RBAC table.
+
+CD never reads, writes, or otherwise touches the three runtime secrets
+(`hook-hmac-secret`, `graph-client-secret`,
+`password-payload-encryption-key`) — those remain the manual Key Vault
+injection process described above under "Inject secrets into Key Vault".
+
+---
+
 ## Production Identity and RBAC
 
 A single UAMI (created as `azurerm_user_assigned_identity.runtime` in the root module) carries all runtime permissions. There are no per-service identity splits and no shared managed identities with other services.

@@ -15,5 +15,6 @@
 # .terraform.lock.hcl IS committed so provider versions are reproducible.
 *.tfvars
 !*.tfvars.example
+!deploy/terraform/environments/staging.tfvars
 
 .DS_Store

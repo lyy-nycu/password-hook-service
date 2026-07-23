@@ -77,3 +77,15 @@ func TestUnknownRouteReturnsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
+
+func TestNewSetsReadHeaderTimeout(t *testing.T) {
+	srv := New(":0", Routes{}, buildinfo.Info{})
+
+	// server field is unexported, but this test lives in the same package
+	// (httpserver), so srv.server is visible here without exporting
+	// anything new. New must return a *Server whose underlying http.Server
+	// has a non-zero ReadHeaderTimeout, which gosec's G112 check requires.
+	if srv.server.ReadHeaderTimeout == 0 {
+		t.Fatal("expected ReadHeaderTimeout to be set to a non-zero duration, got 0 (Slowloris risk, gosec G112)")
+	}
+}

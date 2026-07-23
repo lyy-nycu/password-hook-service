@@ -9,10 +9,150 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
-      - run: go test ./...
+          go-version: "1.26.5"
+      - run: go test ./... -coverprofile=coverage.out
       - run: go vet ./...
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ -f coverage.out ]; then
+            {
+              echo '## Test coverage'
+              echo '```'
+              go tool cover -func=coverage.out
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+  gosec:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.28.0
+      - name: Run gosec
+        id: gosec
+        continue-on-error: true
+        run: gosec -severity medium -fmt sarif -out gosec-results.sarif ./...
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@c3d42c5d08633d8b33635fbd94b000a0e2585b3c # v3.31.4
+        if: always()
+        with:
+          sarif_file: gosec-results.sarif
+          category: gosec
+      - name: Fail if gosec found Medium/High issues
+        if: steps.gosec.outcome == 'failure'
+        run: exit 1
+  govulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - name: Run govulncheck
+        run: govulncheck ./...
+  trivy-fs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run Trivy filesystem scan
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          limit-severities-for-sarif: true
+          exit-code: "1"
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@c3d42c5d08633d8b33635fbd94b000a0e2585b3c # v3.31.4
+        if: always()
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-fs
+      - name: Fail if Trivy found CRITICAL/HIGH/MEDIUM issues
+        if: steps.trivy.outcome == 'failure'
+        run: exit 1
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.5"
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+      - name: Run gitleaks
+        id: gitleaks
+        continue-on-error: true
+        run: gitleaks detect --source . --report-format sarif --report-path gitleaks-results.sarif --exit-code 1
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@c3d42c5d08633d8b33635fbd94b000a0e2585b3c # v3.31.4
+        if: always()
+        with:
+          sarif_file: gitleaks-results.sarif
+          category: gitleaks
+      - name: Fail if gitleaks found a secret
+        if: steps.gitleaks.outcome == 'failure'
+        run: exit 1
+  terraform-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Detect Terraform changes
+        id: filter
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            terraform:
+              - 'deploy/terraform/**'
+      - name: Setup Terraform
+        if: steps.filter.outputs.terraform == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform fmt -check -recursive
+      - name: terraform init (no backend)
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform init -backend=false
+      - name: terraform validate
+        if: steps.filter.outputs.terraform == 'true'
+        working-directory: deploy/terraform
+        run: terraform validate
+      - name: No Terraform changes
+        if: steps.filter.outputs.terraform != 'true'
+        run: echo "deploy/terraform/** unchanged; skipping Terraform checks."

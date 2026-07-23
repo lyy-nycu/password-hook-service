@@ -1,12 +1,138 @@
 name: cd
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+env:
+  ACR_LOGIN_SERVER: acrjpe001-byhkbaf5fxewe4ez.azurecr.io
+  IMAGE_NAME: password-hook-service
+
 jobs:
-  build:
+  deploy-staging:
     runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    env:
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      ARM_USE_OIDC: "true"
     steps:
       - uses: actions/checkout@v5
+
+      - name: Compute image tag
+        id: image
+        run: echo "tag=stg-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
       - name: Build container image
-        run: docker build -f deploy/Dockerfile .
+        run: |
+          docker build -f deploy/Dockerfile \
+            -t "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ steps.image.outputs.tag }}" .
+
+      - name: Run Trivy image scan
+        id: trivy-image
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: "${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}"
+          format: sarif
+          output: trivy-image-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          limit-severities-for-sarif: true
+          exit-code: "1"
+
+      - name: Upload image scan SARIF
+        uses: github/codeql-action/upload-sarif@c3d42c5d08633d8b33635fbd94b000a0e2585b3c # v3.31.4
+        if: always()
+        with:
+          sarif_file: trivy-image-results.sarif
+          category: trivy-image
+
+      - name: Fail if the image has CRITICAL/HIGH/MEDIUM vulnerabilities
+        if: steps.trivy-image.outcome == 'failure'
+        run: exit 1
+
+      - name: Azure login (OIDC)
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        run: az acr login --name acrjpe001
+
+      - name: Push image
+        run: docker push "$ACR_LOGIN_SERVER/$IMAGE_NAME:${{ steps.image.outputs.tag }}"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: deploy/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=rg-tfstate-jpe-001" \
+            -backend-config="storage_account_name=sttfstatephsjpe001" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=password-hook-service/stg.tfstate"
+
+      - name: Terraform plan
+        working-directory: deploy/terraform
+        run: |
+          terraform plan \
+            -var-file=environments/staging.tfvars \
+            -var "app_image=${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.image.outputs.tag }}" \
+            -var "app_image_tag=${{ steps.image.outputs.tag }}" \
+            -out=tfplan
+
+      - name: Terraform apply
+        if: vars.TF_APPLY_MODE == 'apply'
+        working-directory: deploy/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Verify Container App revision health
+        if: vars.TF_APPLY_MODE == 'apply'
+        working-directory: deploy/terraform
+        run: |
+          set -euo pipefail
+          # Derive the real Container App name/resource-group from Terraform's
+          # own container_app_id output (a full ARM resource ID) instead of a
+          # hardcoded name, so this step keeps working if the app is ever
+          # recreated under a different generated name.
+          app_id=$(terraform output -raw container_app_id)
+          app_name=$(basename "$app_id")
+          app_rg=$(echo "$app_id" | sed -n 's#.*/resourceGroups/\([^/]*\)/.*#\1#p')
+          echo "Checking Container App '$app_name' in resource group '$app_rg'"
+          for i in $(seq 1 20); do
+            state=$(az containerapp revision list \
+              --name "$app_name" \
+              --resource-group "$app_rg" \
+              --query "[?properties.active] | [0].{provisioningState:properties.provisioningState, runningState:properties.runningState}" \
+              -o json)
+            echo "${state:-null}"
+            provisioning=$(echo "${state:-null}" | python3 -c "import json,sys; d=json.load(sys.stdin) or {}; print(d.get('provisioningState',''))")
+            running=$(echo "${state:-null}" | python3 -c "import json,sys; d=json.load(sys.stdin) or {}; print(d.get('runningState',''))")
+            if [ "$provisioning" = "Provisioned" ] && [ "$running" = "Running" ]; then
+              echo "Container App revision healthy."
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Container App revision did not reach Provisioned/Running within timeout."
+          exit 1
