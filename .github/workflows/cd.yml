@@ -107,9 +107,9 @@ jobs:
               --resource-group rg-password-hook-stg-jpe-001 \
               --query "[?properties.active] | [0].{provisioningState:properties.provisioningState, runningState:properties.runningState}" \
               -o json)
-            echo "$state"
-            provisioning=$(echo "$state" | python3 -c "import json,sys; print(json.load(sys.stdin).get('provisioningState',''))")
-            running=$(echo "$state" | python3 -c "import json,sys; print(json.load(sys.stdin).get('runningState',''))")
+            echo "${state:-null}"
+            provisioning=$(echo "${state:-null}" | python3 -c "import json,sys; d=json.load(sys.stdin) or {}; print(d.get('provisioningState',''))")
+            running=$(echo "${state:-null}" | python3 -c "import json,sys; d=json.load(sys.stdin) or {}; print(d.get('runningState',''))")
             if [ "$provisioning" = "Provisioned" ] && [ "$running" = "Running" ]; then
               echo "Container App revision healthy."
               exit 0
