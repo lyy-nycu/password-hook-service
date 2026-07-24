@@ -15,8 +15,17 @@ terraform {
 
   required_providers {
     azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 4.0"
+      source = "hashicorp/azurerm"
+      # Pinned to the patch stream of the version actually locked in
+      # .terraform.lock.hcl and verified against real Azure state
+      # (4.81.0). azurerm makes frequent minor releases that occasionally
+      # change resource defaults/schema (e.g. Container App
+      # workload_profile_name, role assignment recompute behavior); a
+      # tighter ~> 4.81 constraint still allows patch-level bug fixes but
+      # blocks an accidental jump to a new minor version -- provider
+      # upgrades to a new minor version should be their own deliberate,
+      # tested change.
+      version = "~> 4.81"
     }
     azapi = {
       source  = "Azure/azapi"
