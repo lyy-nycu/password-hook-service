@@ -17,7 +17,7 @@ name_prefix = "pwdhook"
 # Application resource group
 ########################################
 
-create_resource_group = false
+create_resource_group = true
 resource_group_name   = "rg-password-hook-stg-jpe-001"
 
 ########################################
@@ -43,7 +43,7 @@ network_mode = "private_endpoints_in_existing_vnet"
 existing_workload_vnet_id = "/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-spoke-paas/providers/Microsoft.Network/virtualNetworks/vnet-stg-jpe-001"
 
 private_endpoint_subnet_name         = "snet-pe-password-hook-stg-jpe-001"
-private_endpoint_subnet_cidr         = "10.0.4.224/27"
+private_endpoint_subnet_cidr         = "10.0.4.96/27"
 private_dns_zone_resource_group_name = "rg-spoke-paas"
 
 # private_dns_zone_names left unset: the module default already matches
@@ -107,11 +107,15 @@ password_encryption_key_id = "password-payload-key-v1"
 ########################################
 # Key Vault operator access
 #
-# Left empty: this file is consumed by the automated CD pipeline (Task 12),
-# not an interactive operator apply.
+# The real staging Key Vault already grants Key Vault Secrets Officer to
+# the human operator (lyy15@nycumis.onmicrosoft.com, object ID below) for
+# manual secret injection/rotation (see deploy/terraform/README.md's
+# "Inject secrets into Key Vault" step). This must be included here so
+# CD's terraform plan/apply matches real state -- an empty list would
+# destroy that operator's real, currently-granted access.
 ########################################
 
-key_vault_operator_object_ids = []
+key_vault_operator_object_ids = ["7d37cec4-ad58-480c-aa10-a89d9190e412"]
 
 ########################################
 # Application Gateway handoff (external owner pipeline manages the gateway)
