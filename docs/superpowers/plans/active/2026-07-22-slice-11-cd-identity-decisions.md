@@ -25,7 +25,7 @@ same person; see
 
 ## RBAC granted (least privilege, resource-group/resource scoped)
 
-Verified via `az role assignment list --assignee 6e8f4155-f0a6-4556-a6db-542f9c6ae09b --all` — exactly these five rows, no sixth/unexpected assignment:
+Verified via `az role assignment list --assignee 6e8f4155-f0a6-4556-a6db-542f9c6ae09b --all` — exactly these ten rows, no eleventh/unexpected assignment:
 
 | Role | Scope |
 |---|---|
@@ -34,6 +34,11 @@ Verified via `az role assignment list --assignee 6e8f4155-f0a6-4556-a6db-542f9c6
 | Reader | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-acr-jpe-001/providers/Microsoft.ContainerRegistry/registries/acrjpe001` |
 | Storage Blob Data Contributor | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-tfstate-jpe-001/providers/Microsoft.Storage/storageAccounts/sttfstatephsjpe001` |
 | Role Based Access Control Administrator | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-password-hook-stg-jpe-001` |
+| Reader | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-cae-stg-jpe-001/providers/Microsoft.App/managedEnvironments/cae-stg-jpe-001` |
+| Network Contributor | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-spoke-paas/providers/Microsoft.Network/virtualNetworks/vnet-stg-jpe-001/subnets/snet-pe-password-hook-stg-jpe-001` |
+| Network Contributor | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-spoke-paas/providers/Microsoft.Network/privateDnsZones/privatelink.redis.azure.net` |
+| Network Contributor | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-spoke-paas/providers/Microsoft.Network/privateDnsZones/privatelink.servicebus.windows.net` |
+| Network Contributor | `/subscriptions/56b72537-d985-4530-88f3-b6ed07e71c67/resourceGroups/rg-spoke-paas/providers/Microsoft.Network/privateDnsZones/privatelink.vaultcore.azure.net` |
 
 No subscription-wide role was granted. The `Role Based Access Control
 Administrator` role is scoped only to the staging application resource
@@ -43,6 +48,53 @@ Based Access Control Administrator` itself — it can only assign the specific
 roles Terraform's existing modules already assign to the runtime UAMI (Key
 Vault Secrets User, Service Bus Data Sender/Receiver, Monitoring Metrics
 Publisher, AcrPull), not escalate its own privilege.
+
+### Post-merge addition: cross-resource-group RBAC for `rg-cae-stg-jpe-001` and `rg-spoke-paas` (2026-07-26)
+
+After the `staging.tfvars`/provider-constraint fixes above, CD's real
+`terraform plan` (using the actual CD Federated Credential identity, not
+the operator's own account used for the earlier read-only investigations)
+failed with five `AuthorizationFailed` errors, none of which had appeared
+in any of the operator's own prior `terraform plan` runs — the operator's
+personal Azure AD account already has broad access to these shared
+resource groups, which had silently masked this gap in every earlier
+verification pass:
+
+- `Microsoft.App/managedEnvironments/read` on `rg-cae-stg-jpe-001`'s
+  `cae-stg-jpe-001` (the shared ACA environment) — referenced only as a
+  read-only `data` source (`data.azurerm_container_app_environment.existing`),
+  never created/modified/deleted by this configuration.
+- `Microsoft.Network/virtualNetworks/subnets/read` on
+  `rg-spoke-paas`'s `vnet-stg-jpe-001/snet-pe-password-hook-stg-jpe-001` —
+  an actual managed `resource` (`azurerm_subnet.private_endpoints`) this
+  configuration creates/updates.
+- `Microsoft.Network/privateDnsZones/read` on three private DNS zones in
+  `rg-spoke-paas` (`privatelink.redis.azure.net`,
+  `privatelink.servicebus.windows.net`, `privatelink.vaultcore.azure.net`)
+  — each an actual managed `resource` (`azurerm_private_dns_zone.this[each.key]`).
+
+Fixed with five additional role assignments, each scoped to the exact
+individual resource (never the resource group or subscription, and never
+touching any other resource in the shared `rg-spoke-paas`/`rg-cae-stg-jpe-001`
+resource groups used by other teams):
+
+- `Reader` on the ACA environment resource (read-only data source; no
+  write capability needed or granted).
+- `Network Contributor` on the exact subnet resource ID and each of the
+  three exact private DNS zone resource IDs (this configuration creates,
+  updates, and would delete only these specific resources; `Network
+  Contributor` is Azure's standard built-in role for managing subnets and
+  private DNS zones).
+
+Verified: a subsequent real CD run (`workflow_dispatch`, run
+`30207952430`) completed `Terraform plan` successfully for the first time
+using the CD identity, showing exactly `Plan: 1 to add, 3 to change, 1 to
+destroy` — matching the "Accepted, expected remaining plan diff" already
+documented above (the `metrics_publisher` role replacement, the image tag
+update, and the Service Bus queue TTL representation difference) with no
+new or unexpected diff. `TF_APPLY_MODE` remained `plan` throughout; this
+was a successful dry-run only, no real Azure resource was created,
+modified, or deleted by this verification.
 
 ### Post-merge addition: `Reader` on the ACR (2026-07-23)
 
