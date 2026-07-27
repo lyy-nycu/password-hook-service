@@ -134,7 +134,10 @@ can read them, matching the Federated Credential's subject restriction.
   '.environments[].name'` → `copilot`, `staging` (both present after
   creation).
 - `az role assignment list --assignee 6e8f4155-f0a6-4556-a6db-542f9c6ae09b
-  --all -o table` → exactly the four rows listed above.
+  --all -o table` → exactly the ten rows listed above (four from the
+  initial Task 10 grant, plus the `Reader` on ACR, `Reader` on the ACA
+  environment, and four `Network Contributor` grants added in the two
+  post-merge sections below).
 - `gh variable list --env staging` → exactly the three variables listed
   above, with the expected values.
 
