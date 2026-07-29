@@ -23,8 +23,15 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plans
 
-- Slice 10 Infrastructure and Durable Sync Status: `active/2026-07-03-slice-10-infrastructure.md` (on-premises/production validation gates remain open; see the Slice 10→11 handoff).
-- Slice 11 CI/CD and Security Gates: `active/2026-07-21-slice-11-ci-cd.md` (does not depend on Slice 10's remaining live-validation gates).
+- Slice 10 Infrastructure and Durable Sync Status:
+  `active/2026-07-03-slice-10-infrastructure.md`. Engineering and Azure-side
+  staging validation are substantially complete; network-owner,
+  on-premises, and controlled-apply gates remain open. Use
+  `docs/handoffs/2026-07-28-staging-network-and-deployment.md` for the current
+  operational handoff.
+
+Slice 11 CI/CD and Security Gates is completed:
+`completed/2026-07-21-slice-11-ci-cd.md`.
 
 ## Status Labels
 

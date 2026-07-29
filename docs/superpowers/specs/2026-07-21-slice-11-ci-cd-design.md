@@ -1,8 +1,11 @@
 # Slice 11 CI/CD Design
 
-> **Status:** Approved via brainstorming session; not yet implemented.
+> **Status:** Implemented in PR #16 with follow-up corrections in PRs #18-#20.
 >
-> **Source:** `docs/2026-07-21-slice-10-to-slice-11-handoff.md`, `docs/superpowers/plans/roadmap.md` (Slice 11 row), `docs/superpowers/specs/2026-06-24-password-hook-service-design.md` (§10 CI/CD Pipeline).
+> **Source:** `docs/handoffs/2026-07-21-slice-10-to-slice-11.md`,
+> `docs/superpowers/plans/roadmap.md` (Slice 11 row), and
+> `docs/superpowers/specs/2026-06-24-password-hook-service-design.md`
+> (§10 CI/CD Pipeline).
 
 ## 1. Goal
 
