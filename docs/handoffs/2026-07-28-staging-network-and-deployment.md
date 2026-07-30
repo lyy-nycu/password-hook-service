@@ -1,8 +1,9 @@
 # Staging Network and Deployment Handoff
 
 **Date:** 2026-07-28  
-**Status:** Current. Azure network preparation is blocked on authoritative
-state-owner identification; staging apply has not been executed.
+**Status:** Current. The network ownership model is approved, but its
+authoritative repository/state and external-team change details are not yet
+established; staging apply has not been executed.
 
 Execute the remaining work through the focused
 [Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
@@ -45,6 +46,24 @@ This handoff records current evidence; it does not authorize an Azure write.
 No Azure resource or repository variable was changed during this preflight.
 Until the authoritative owner and pipeline for both peering sides are
 recorded, do not create peerings out of band and keep `TF_APPLY_MODE=plan`.
+
+## Network Ownership Decision (2026-07-30)
+
+- One dedicated shared-network IaC repository and state will own both the
+  hub-to-staging-AGW and staging-AGW-to-hub peering resources.
+- `lyy-nycu` is the initial change/rollback operator and has confirmed Azure
+  network read/write access.
+- `lyy-nycu/ldap-service` continues to manage its existing isolated
+  Application Gateway listener/WAF/backend workflow, but will not manage VNet
+  peerings. Peering ownership must not depend on the lifecycle of the LDAP
+  query service.
+- `password-hook-service` consumes the resulting path and does not import the
+  shared VNets or peerings into its application Terraform state.
+
+This decision resolves the ownership seam, but it does not complete Task 0.
+The exact repository, remote-state key, pipeline identity, environment
+approval, technical-team owner, change window, and rollback procedure must be
+recorded before any network write.
 
 ## Verified Network Topology
 

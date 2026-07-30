@@ -59,6 +59,20 @@ and direct portal access to ACA are out of scope.
   no repository definition for either required peering. Azure activity logs
   show human peering writes but do not establish the long-term state owner.
 
+### Ownership Decision (2026-07-30)
+
+- The owner approved one dedicated shared-network IaC repository and state as
+  the authoritative owner of both staging hub-to-AGW peering resources.
+- `lyy-nycu` is the initial change operator and has confirmed Azure network
+  read/write access. Permission to write is execution authority, not a
+  substitute for the reviewed repository, state, pipeline, and rollback path.
+- `lyy-nycu/ldap-service` remains responsible for its existing isolated
+  Application Gateway listener/WAF/backend workflow. It will not own the hub
+  or AGW VNet peering state: network transport is shared infrastructure, not
+  part of the LDAP query service's responsibility.
+- `password-hook-service` will consume the resulting network path but will not
+  import either shared VNet or peering into its application Terraform state.
+
 ### Task 0: Resolve the Network State Owner and Change Authority
 
 **Files:**
@@ -67,13 +81,16 @@ and direct portal access to ACA are out of scope.
 
 - [x] Capture the read-only Azure and GitHub evidence above without making an
   Azure write.
-- [ ] Identify the authoritative state owner for
-  `vnet-hub-jp-001` in `rg-vpngw-jp-001` and
-  `vnet-ag-stg-jpe-001` in `rg-spoke-paas`. A recent human caller or broad
-  Azure permission is not sufficient evidence of state ownership.
-- [ ] Record the exact repository/pipeline that will create and later remove
-  both peering resources. If the two VNet sides have different owners, record
-  both and their execution order.
+- [x] Approve one dedicated shared-network IaC repository/state as the owner
+  of both peering sides; exclude the application and LDAP query service states
+  from that responsibility.
+- [x] Record `lyy-nycu` as the initial change and rollback operator with
+  confirmed Azure network read/write access.
+- [ ] Create and record the exact shared-network repository, remote state
+  backend/key, protected default branch, plan/apply pipeline, and environment
+  approval that will create and later remove both peering resources.
+- [ ] Give the pipeline identity only the network permissions required at the
+  two VNet scopes, and prove a plan can read both VNets before enabling apply.
 - [ ] Record the named technical-team/Juniper owner for route,
   traffic-selector, firewall/no-SNAT, and split-horizon DNS changes.
 - [ ] Record one approved staging change window and the operator who can
