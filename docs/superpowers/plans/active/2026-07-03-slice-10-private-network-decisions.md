@@ -213,7 +213,7 @@ The following values are the implementation baseline. Changing one requires upda
 | Gateway change owner | `lyy-nycu/ldap-service`, dedicated manually approved staging workflow |
 | Listener routing | Private frontend/listener routes only to password-hook; existing public LDAP listeners/path map and public ACME challenge remain unchanged |
 | WAF | Listener-specific Prevention policy; OWASP 3.2 plus BotManager 0.1; priority-10 negated `RemoteAddr IPMatch` Block rule for every source except `140.113.7.17/32`; do not use an Allow rule that bypasses managed inspection |
-| Private Endpoint subnet | `snet-pe-password-hook-stg-jpe-001`, `10.0.4.224/27`, no delegation/service endpoint, no reuse of the shared AGW/ACA NSG |
+| Private Endpoint subnet | `snet-pe-password-hook-stg-jpe-001`, `10.0.4.96/27`, no delegation/service endpoint, no reuse of the shared AGW/ACA NSG |
 | Private DNS ownership | Central network/DNS owner state in `rg-spoke-paas`; link staging VNet now and production only during production rollout |
 | Private DNS zones | `privatelink.vaultcore.azure.net`, `privatelink.servicebus.windows.net`, `privatelink.redis.azure.net` |
 | ACR | Reuse Standard `acrjpe001` with UAMI `AcrPull`; staging-only public endpoint exception until production readiness or 2026-10-11, whichever occurs first |
@@ -225,6 +225,15 @@ The following values are the implementation baseline. Changing one requires upda
 | Secret administration | Portal never connects to Azure Key Vault. Prefer a protected Azure-connected self-hosted runner for Key Vault injection/rotation after its private DNS/TCP 443 path is verified; otherwise use an explicitly approved private management path |
 | Initial Terraform identity | Current authenticated user for the first reviewed staging plan/apply |
 | Long-term Terraform identity | Dedicated federated pipeline workload identity/service principal with least privilege and approval gates |
+
+### Deployed Subnet Correction (2026-07-23)
+
+The original planning value for the private-endpoint subnet was
+`10.0.4.224/27`. The subnet actually deployed in Azure is `10.0.4.96/27`.
+The committed `deploy/terraform/environments/staging.tfvars`, a direct Azure
+state check, and the successful CD Terraform plan all use `10.0.4.96/27`.
+The original value is retained here only as historical evidence and is
+superseded; it must not be used for a future plan or apply.
 
 Recommended Gateway object names:
 
@@ -263,8 +272,8 @@ Model allocation, when the client supports it:
 - [ ] `lyy-nycu/ldap-service` dedicated manual workflow reviewed: re-check private IP `10.0.8.62`, priority `120`, isolated objects/WAF, certificate binding, before/after public LDAP checks, and rollback.
 - [x] Existing ACA model selected: reuse staging then production, reference the shared environments, and keep environment-level OTel/Log Analytics changes in their existing owner pipeline.
 - [x] ACR `acrjpe001` approved for staging with a public endpoint exception owned by the password-hook service owner; review at production readiness or 2026-10-11, whichever occurs first.
-- [x] Private Endpoint subnet `10.0.4.224/27`, central Private DNS zone ownership, Key Vault private, Service Bus Premium private, Managed Redis private, and monitoring modes approved.
-- [ ] Re-check Service Bus Premium/Managed Redis Japan East capacity during staging preflight; stop rather than introduce a public or legacy-SKU fallback if allocation fails.
+- [x] Private Endpoint subnet `10.0.4.96/27`, central Private DNS zone ownership, Key Vault private, Service Bus Premium private, Managed Redis private, and monitoring modes approved. The original planned `10.0.4.224/27` value is superseded by the deployed-state correction above.
+- [x] Re-check Service Bus Premium/Managed Redis Japan East capacity during staging preflight; stop rather than introduce a public or legacy-SKU fallback if allocation fails. Both dedicated staging resources were successfully provisioned in Japan East; no fallback SKU or public endpoint was introduced.
 - [x] Managed Redis `Balanced_B0`, HA enabled, GA `OSSCluster`, Entra/TLS, and application ClusterClient implication approved.
 - [ ] Staging hostname approved as split-horizon `api.test.nycu.edu.tw`; SAN, served chain, renewal source, and recent runs are verified. Actual portal-server trust plus workflow preservation/verification of both listener bindings remain outstanding.
 - [ ] Verify the protected self-hosted runner resolves and reaches the Key Vault private endpoint before selecting it as the secret injection/rotation path; portal servers never receive Key Vault connectivity.

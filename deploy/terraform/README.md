@@ -158,7 +158,7 @@ staging resource group, `AcrPush` on the existing ACR,
 `Storage Blob Data Contributor` on the tfstate storage account, and
 `Role Based Access Control Administrator` (resource-group-scoped only) so
 Terraform can create the runtime UAMI's own role assignments. See
-`docs/superpowers/plans/active/2026-07-22-slice-11-cd-identity-decisions.md`
+`docs/superpowers/plans/completed/2026-07-22-slice-11-cd-identity-decisions.md`
 for the exact commands used to create it and the full RBAC table.
 
 CD never reads, writes, or otherwise touches the three runtime secrets

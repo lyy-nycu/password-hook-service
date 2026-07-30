@@ -1,5 +1,7 @@
 # Slice 11 CD Identity Decision
 
+> **Status:** Completed decision and implementation record for Slice 11.
+
 **Date:** 2026-07-23
 **Executed by:** `lyy15@nycumis.onmicrosoft.com` (the same individual as
 Slice 10's "Deployment Identity Decision" — the password-hook service owner,
@@ -242,4 +244,3 @@ documented pattern in this project (see `deploy/terraform/README.md`'s
 equivalent note for Service Bus). Given this is staging, a brief
 (minutes-scale) custom-metrics gap during a real `apply` is an accepted,
 self-recovering trade-off, not a defect requiring a code or config change.
-

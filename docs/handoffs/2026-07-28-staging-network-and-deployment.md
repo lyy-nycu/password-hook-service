@@ -1,7 +1,8 @@
 # Staging Network and Deployment Handoff
 
 **Date:** 2026-07-28  
-**Status:** Azure network preparation pending; staging apply not yet executed.
+**Status:** Current. Azure network preparation pending; staging apply not yet
+executed.
 
 ## Current Deployment Status
 
@@ -86,4 +87,3 @@ bypasses Application Gateway, WAF, and the trusted-proxy contract.
    redacted signed request returning `202 Accepted`.
 7. Only after the network path is ready, perform the controlled staging apply
    and return `TF_APPLY_MODE` to `plan` after verification.
-

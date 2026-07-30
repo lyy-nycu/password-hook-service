@@ -33,9 +33,20 @@
 
 ## Active Detailed Plans
 
-Slice 10 Infrastructure and Durable Sync Status is active: `active/2026-07-03-slice-10-infrastructure.md`. Slice 10A Service Bus Managed Identity is complete: `completed/2026-07-03-slice-10a-servicebus-managed-identity.md`; Slice 10 consumes its managed-identity path and provisions its RBAC.
+Slice 10 Infrastructure and Durable Sync Status is active:
+`active/2026-07-03-slice-10-infrastructure.md`. Slice 10A Service Bus Managed
+Identity is complete:
+`completed/2026-07-03-slice-10a-servicebus-managed-identity.md`; Slice 10
+consumes its managed-identity path and provisions its RBAC. The remaining
+Slice 10 work is the network-owner/on-premises validation and controlled
+staging-apply sequence in
+`docs/handoffs/2026-07-28-staging-network-and-deployment.md`.
 
-Slice 11 CI/CD and Security Gates is active: `active/2026-07-21-slice-11-ci-cd.md`, promoted from `drafts/` on 2026-07-22. Per the Slice 10→11 handoff (`docs/2026-07-21-slice-10-to-slice-11-handoff.md`), Slice 11 depends only on the "Infrastructure shape" already satisfied by Slice 10's merged Terraform, not on Slice 10's remaining on-premises/production validation gates.
+Slice 11 CI/CD and Security Gates is completed:
+`completed/2026-07-21-slice-11-ci-cd.md`. Required CI and branch protection,
+OIDC/RBAC, image build/scan/push, and a real CD-identity Terraform plan are
+verified. `TF_APPLY_MODE` intentionally remains `plan`; the first controlled
+staging apply belongs to Slice 10's remaining operational gates.
 
 ---
 
@@ -51,7 +62,12 @@ Slice 6 should isolate Microsoft Graph API behavior behind a client package and 
 
 Slices 10-12 should happen after the application behavior is stable enough that infrastructure and deployment work has concrete requirements to encode.
 
-Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to active, because earlier drafts assumed the old "every successful login" story and need refreshing once the event/sync-status semantics are confirmed. Slice 8, Slice 8A, Slice 9, and Slice 10A have been refreshed and completed. Slice 10 Infrastructure draft still needs refreshing before promotion, and should incorporate Slice 10A's Managed Identity outcome.
+Slice 7A had to land before Slice 8, 9, 10, 11, or 12 could be promoted
+because earlier drafts assumed the old "every successful login" story.
+Slices 8, 8A, 9, 10A, and 11 were refreshed and completed. Slice 10 was
+refreshed and remains active only for its live network/on-premises gates.
+Slice 12 must not be promoted until those gates and the controlled staging
+apply are complete.
 
 ---
 
@@ -76,5 +92,5 @@ Slice 7A must land before Slice 8, 9, 10, 11, or 12 are promoted from draft to a
 | 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
 | 10. Infrastructure | Active | `active/2026-07-03-slice-10-infrastructure.md` | Includes deployable Azure resources and Azure Managed Redis-backed shared sync-status storage. |
 | 10A. Service Bus Managed Identity | Done | `completed/2026-07-03-slice-10a-servicebus-managed-identity.md` | Application-side managed identity auth is complete: config/auth-mode validation, conditional Key Vault loading, producer/receiver/safe-DLQ namespace constructors, app wiring, docs, unit tests, `go vet`, and leak scans. Terraform, RBAC provisioning, and live Azure validation remain future work. |
-| 11. CI/CD and Security Gates | Active | `active/2026-07-21-slice-11-ci-cd.md` | Draft plan promoted 2026-07-22; not yet implemented. |
-| 12. Integration and Production Readiness | Not planned | Not created |  |
+| 11. CI/CD and Security Gates | Done | `completed/2026-07-21-slice-11-ci-cd.md` | Implemented in PR #16; ACR, Terraform-state, provider/state, and cross-resource-group RBAC corrections landed in PRs #18-#20. Six required checks and strict branch protection are verified; CD run `30207952430` completed through Terraform plan with `TF_APPLY_MODE=plan`. |
+| 12. Integration and Production Readiness | Blocked / Not planned | Not created | Wait for Slice 10's on-premises network path, approved-source `202 Accepted` validation, and controlled staging apply. |
