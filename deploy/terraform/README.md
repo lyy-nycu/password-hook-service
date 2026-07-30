@@ -132,9 +132,14 @@ To check the current mode:
 gh variable get TF_APPLY_MODE
 ```
 
-To switch from `plan` to `apply` (do this only after reviewing at least one
-clean `plan` run in the Actions log — expect "No changes." since staging's
-live state already matches `staging.tfvars`):
+To switch from `plan` to `apply`, first review a fresh plan from the exact
+`main` commit that will be dispatched. Before the first controlled CD apply,
+the accepted baseline is `1 add / 3 change / 1 destroy`: the image update,
+provider-normalized Container App and Service Bus values, and replacement of
+the Monitoring Metrics Publisher role assignment. No core application
+resource may be deleted or replaced. After that baseline has been applied,
+later plans should normally contain only the new image tag/digest. Stop on
+any unexplained deviation.
 
 ```bash
 gh variable set TF_APPLY_MODE --body "apply"
@@ -146,6 +151,10 @@ pipeline itself):
 ```bash
 gh variable set TF_APPLY_MODE --body "plan"
 ```
+
+Treat `apply` as a one-run maintenance switch, not a standing mode. Reset it
+to `plan` immediately after the controlled run finishes or fails, and verify
+the repository variable before allowing another push or manual dispatch.
 
 ### CD Identity
 

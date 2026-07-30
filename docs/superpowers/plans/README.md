@@ -23,12 +23,18 @@ This directory separates executable plans from historical references so agents d
 
 ## Current Active Plans
 
+- Slice 10 staging network readiness and controlled apply:
+  `active/2026-07-30-staging-network-readiness.md`. This is the current
+  executable sequence for resolving the network state owner, adding the
+  owner-managed hub-to-AGW peerings, completing the on-premises route/DNS
+  work, proving the real trust path, and performing the first controlled CD
+  apply.
 - Slice 10 Infrastructure and Durable Sync Status:
-  `active/2026-07-03-slice-10-infrastructure.md`. Engineering and Azure-side
-  staging validation are substantially complete; network-owner,
-  on-premises, and controlled-apply gates remain open. Use
-  `docs/handoffs/2026-07-28-staging-network-and-deployment.md` for the current
-  operational handoff.
+  `active/2026-07-03-slice-10-infrastructure.md`. Use it for the parent
+  requirements and completion criteria; do not bypass the focused readiness
+  plan above for the remaining live gates.
+- Current operational evidence and handoff:
+  `../../handoffs/2026-07-28-staging-network-and-deployment.md`.
 
 Slice 11 CI/CD and Security Gates is completed:
 `completed/2026-07-21-slice-11-ci-cd.md`.
