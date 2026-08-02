@@ -38,9 +38,11 @@ Slice 10 Infrastructure and Durable Sync Status is active:
 Identity is complete:
 `completed/2026-07-03-slice-10a-servicebus-managed-identity.md`; Slice 10
 consumes its managed-identity path and provisions its RBAC. The remaining
-Slice 10 work is the network-owner/on-premises validation and controlled
-staging-apply sequence in
-`docs/handoffs/2026-07-28-staging-network-and-deployment.md`.
+Slice 10 work must follow the focused network-owner/on-premises validation and
+controlled staging-apply plan:
+`active/2026-07-30-staging-network-readiness.md`. The current operational
+evidence is in
+`../../handoffs/2026-07-28-staging-network-and-deployment.md`.
 
 Slice 11 CI/CD and Security Gates is completed:
 `completed/2026-07-21-slice-11-ci-cd.md`. Required CI and branch protection,
@@ -90,7 +92,7 @@ apply are complete.
 | 8. Observability | Done | `completed/2026-07-08-slice-08-observability.md` | Backend-neutral recorder boundary, trace propagation, structured outcome logs, counters/durations, queue-depth probes, middleware/worker/Graph instrumentation, and README observability docs landed in PR #10. |
 | 8A. Azure Monitor Exporter | Done | `completed/2026-07-09-slice-08a-azure-monitor-exporter.md` | Azure Monitor config, custom metrics publication, OpenTelemetry lifecycle wiring, docs, and review feedback fixes landed in PR #11. |
 | 9. API Protection | Done | `completed/2026-07-09-slice-09-api-protection.md` | Portal source allowlist enforced with `401` for non-allowed sources and `429` for anomalous rate; `HOOK_MAX_BODY_BYTES` bounds HMAC-protected request bodies; behavior documented in README. Landed in PR #13 (`a738c76`); verified with full `go test ./...`, `go vet ./...`, and leak-focused `rg` scans. |
-| 10. Infrastructure | Active | `active/2026-07-03-slice-10-infrastructure.md` | Includes deployable Azure resources and Azure Managed Redis-backed shared sync-status storage. |
+| 10. Infrastructure | Active | `active/2026-07-03-slice-10-infrastructure.md`; focused closeout: `active/2026-07-30-staging-network-readiness.md` | Engineering and Azure-side staging validation are substantially complete. Network state ownership, hub-to-AGW routing, real on-premises trust-path validation, and the first controlled CD apply remain open. |
 | 10A. Service Bus Managed Identity | Done | `completed/2026-07-03-slice-10a-servicebus-managed-identity.md` | Application-side managed identity auth is complete: config/auth-mode validation, conditional Key Vault loading, producer/receiver/safe-DLQ namespace constructors, app wiring, docs, unit tests, `go vet`, and leak scans. Terraform, RBAC provisioning, and live Azure validation remain future work. |
 | 11. CI/CD and Security Gates | Done | `completed/2026-07-21-slice-11-ci-cd.md` | Implemented in PR #16; ACR, Terraform-state, provider/state, and cross-resource-group RBAC corrections landed in PRs #18-#20. Six required checks and strict branch protection are verified; CD run `30207952430` completed through Terraform plan with `TF_APPLY_MODE=plan`. |
 | 12. Integration and Production Readiness | Blocked / Not planned | Not created | Wait for Slice 10's on-premises network path, approved-source `202 Accepted` validation, and controlled staging apply. |

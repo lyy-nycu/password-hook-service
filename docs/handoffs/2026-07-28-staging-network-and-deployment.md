@@ -1,8 +1,13 @@
 # Staging Network and Deployment Handoff
 
 **Date:** 2026-07-28  
-**Status:** Current. Azure network preparation pending; staging apply not yet
-executed.
+**Status:** Current. The authoritative network repository now exists, but its
+remote state/pipeline and external-team change details are not yet established;
+staging apply has not been executed.
+
+Execute the remaining work through the focused
+[Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
+This handoff records current evidence; it does not authorize an Azure write.
 
 ## Current Deployment Status
 
@@ -14,6 +19,55 @@ executed.
   deletion: a Container App image update, provider-normalized Container App
   and Service Bus values, and replacement of the Monitoring Metrics Publisher
   role assignment. No core application resource is planned for deletion.
+
+## Read-Only Preflight Update (2026-07-30)
+
+- VPN connection `s2s-az-juniper-jp-001` is `Connected` with active traffic
+  counters. Its Local Network Gateway includes the staging portal network
+  `140.113.7.0/24`.
+- The hub/workload gateway-transit peerings and the AGW/workload backend
+  peerings are all `Connected`.
+- `vnet-ag-stg-jpe-001` still has only `agw-to-cae`; no hub-to-AGW peering
+  exists. The on-premises routing gap is therefore still present.
+- Application Gateway `agw-stg-jpe-001` is running. Private frontend
+  `10.0.8.62`, the password-hook HTTPS listener, listener-specific WAF,
+  priority-`120` rule, and backend pool are present; the backend reports
+  `Healthy`.
+- The AGW subnet is `10.0.8.0/26`, has no route table or delegation, and its
+  NSG permits required NYCU TCP 443 sources. The password-hook WAF remains the
+  narrower `140.113.7.17/32` boundary.
+- The deployed password-hook private-endpoint subnet is `10.0.4.96/27` and
+  contains the Key Vault, Service Bus, and Managed Redis private endpoints.
+- The `lyy-nycu/ldap-service` workflow owns the isolated password-hook
+  Application Gateway objects but does not define the required VNet
+  peerings. Repository search found no owner definition for those peerings,
+  and human activity-log writes do not prove long-term state ownership.
+
+No Azure resource or repository variable was changed during this preflight.
+Until the authoritative owner and pipeline for both peering sides are
+recorded, do not create peerings out of band and keep `TF_APPLY_MODE=plan`.
+
+## Network Ownership Decision (2026-07-30)
+
+- One dedicated shared-network IaC repository and state will own both the
+  hub-to-staging-AGW and staging-AGW-to-hub peering resources.
+- **Created 2026-08-02:** private repository
+  [`lyy-nycu/azure-shared-network-infra`](https://github.com/lyy-nycu/azure-shared-network-infra),
+  default branch `main`. It is the designated owner but does not authorize a
+  network write until its state and pipeline gates are ready.
+- `lyy-nycu` is the initial change/rollback operator and has confirmed Azure
+  network read/write access.
+- `lyy-nycu/ldap-service` continues to manage its existing isolated
+  Application Gateway listener/WAF/backend workflow, but will not manage VNet
+  peerings. Peering ownership must not depend on the lifecycle of the LDAP
+  query service.
+- `password-hook-service` consumes the resulting path and does not import the
+  shared VNets or peerings into its application Terraform state.
+
+This decision resolves the ownership seam and repository location, but it does
+not complete Task 0. The remote-state key, pipeline identity, branch and
+environment approval, technical-team owner, change window, and rollback
+procedure must be recorded before any network write.
 
 ## Verified Network Topology
 
