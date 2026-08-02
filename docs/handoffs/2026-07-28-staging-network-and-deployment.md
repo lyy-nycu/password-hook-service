@@ -1,9 +1,9 @@
 # Staging Network and Deployment Handoff
 
 **Date:** 2026-07-28  
-**Status:** Current. The network ownership model is approved, but its
-authoritative repository/state and external-team change details are not yet
-established; staging apply has not been executed.
+**Status:** Current. The authoritative network repository now exists, but its
+remote state/pipeline and external-team change details are not yet established;
+staging apply has not been executed.
 
 Execute the remaining work through the focused
 [Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
@@ -51,6 +51,10 @@ recorded, do not create peerings out of band and keep `TF_APPLY_MODE=plan`.
 
 - One dedicated shared-network IaC repository and state will own both the
   hub-to-staging-AGW and staging-AGW-to-hub peering resources.
+- **Created 2026-08-02:** private repository
+  [`lyy-nycu/azure-shared-network-infra`](https://github.com/lyy-nycu/azure-shared-network-infra),
+  default branch `main`. It is the designated owner but does not authorize a
+  network write until its state and pipeline gates are ready.
 - `lyy-nycu` is the initial change/rollback operator and has confirmed Azure
   network read/write access.
 - `lyy-nycu/ldap-service` continues to manage its existing isolated
@@ -60,10 +64,10 @@ recorded, do not create peerings out of band and keep `TF_APPLY_MODE=plan`.
 - `password-hook-service` consumes the resulting path and does not import the
   shared VNets or peerings into its application Terraform state.
 
-This decision resolves the ownership seam, but it does not complete Task 0.
-The exact repository, remote-state key, pipeline identity, environment
-approval, technical-team owner, change window, and rollback procedure must be
-recorded before any network write.
+This decision resolves the ownership seam and repository location, but it does
+not complete Task 0. The remote-state key, pipeline identity, branch and
+environment approval, technical-team owner, change window, and rollback
+procedure must be recorded before any network write.
 
 ## Verified Network Topology
 

@@ -63,6 +63,11 @@ and direct portal access to ACA are out of scope.
 
 - The owner approved one dedicated shared-network IaC repository and state as
   the authoritative owner of both staging hub-to-AGW peering resources.
+- **Created 2026-08-02:** the private repository
+  [`lyy-nycu/azure-shared-network-infra`](https://github.com/lyy-nycu/azure-shared-network-infra)
+  now exists with `main` as its default branch. It is the designated owner,
+  but is not operational until its remote state, pipeline, protection, and
+  approval gates are established.
 - `lyy-nycu` is the initial change operator and has confirmed Azure network
   read/write access. Permission to write is execution authority, not a
   substitute for the reviewed repository, state, pipeline, and rollback path.
@@ -86,9 +91,11 @@ and direct portal access to ACA are out of scope.
   from that responsibility.
 - [x] Record `lyy-nycu` as the initial change and rollback operator with
   confirmed Azure network read/write access.
-- [ ] Create and record the exact shared-network repository, remote state
-  backend/key, protected default branch, plan/apply pipeline, and environment
-  approval that will create and later remove both peering resources.
+- [x] Create and record the private shared-network repository:
+  `lyy-nycu/azure-shared-network-infra`, with `main` as its default branch.
+- [ ] Establish and record its remote state backend/key, protected default
+  branch, plan/apply pipeline, and environment approval that will create and
+  later remove both peering resources.
 - [ ] Give the pipeline identity only the network permissions required at the
   two VNet scopes, and prove a plan can read both VNets before enabling apply.
 - [ ] Record the named technical-team/Juniper owner for route,
