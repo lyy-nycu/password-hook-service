@@ -234,7 +234,7 @@ no direct ACA path and no public DNS regression.
   widen `TRUSTED_PROXY_CIDRS` or trust an unvalidated forwarded value.
 
 **Completion criterion:** The real portal host reaches only the private AGW
-listener with valid TLS, WAF observes the approved unsnat source, `/healthz`
+listener with valid TLS, WAF observes the approved no-SNATed source, `/healthz`
 returns `200`, direct ACA access is unavailable, and the trusted-proxy
 behavior is evidenced without logging sensitive headers.
 
