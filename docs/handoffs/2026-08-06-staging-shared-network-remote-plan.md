@@ -2,15 +2,17 @@
 
 **Date:** 2026-08-06 (last updated 2026-08-12)
 
-**Status:** Current. The shared-network Terraform stack and remote state are
-ready, and a formal remote-state plan has passed the exact-change gate, most
-recently re-verified fresh on 2026-08-12. No VNet peering or other Azure
-network change has been applied. The Network team has made a partial,
+**Status:** Current. The two owner-managed hub-to-Application-Gateway
+peerings (`hub-to-agw-stg-jpe`, `agw-stg-jpe-to-hub`) were applied and
+verified `Connected` on 2026-08-12 with no regression to the VPN, existing
+peerings, or AGW backend health; see *Shared-Network Peering Apply
+(2026-08-12)* below. The Network team has separately made a partial,
 standalone pre-change (S2S selector for `10.0.8.0/24`, confirmed no-SNAT,
 confirmed revocable) outside any formal ticket/window; see *Network-Team
-Juniper Selector Update (2026-08-12)* below. External network-team pre-check
-completion, an approved staging change window, a fresh baseline, and separate
-apply approval remain hard gates.
+Juniper Selector Update (2026-08-12)* below. The firewall permit rule,
+split-horizon DNS change, and the actual on-premises-to-AGW connectivity
+proof remain outstanding before the password-hook application's own
+controlled CD apply can proceed.
 
 Continue through the focused
 [Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
@@ -250,6 +252,43 @@ This satisfies gates 3 and 4 of *Apply and Rollback Gates* as of
 outstanding. Because this plan is only point-in-time evidence, re-run it
 again immediately before any actual approved apply window rather than
 reusing this result.
+
+## Shared-Network Peering Apply (2026-08-12)
+
+All five Apply and Rollback Gates were satisfied and the two owner-managed
+peerings were applied through a freshly cloned working copy of
+`lyy-nycu/azure-shared-network-infra` at `main` (`31cc2f0`):
+
+- Immediate pre-window baseline re-check: VPN connection `Connected`/
+  `Succeeded`; VPN gateway `Succeeded`; `vnet-ag-stg-jpe-001` still had only
+  its existing `agw-to-cae` peering; hub-side peerings matched the known
+  baseline (5 `Connected`, 2 already-`Disconnected`); AGW
+  `provisioningState=Succeeded`/`operationalState=Running`; all 6 AGW
+  backends `Healthy`.
+- A final `terraform init` + `terraform plan -var-file=staging.tfvars`
+  confirmed, one more time, exactly `2 to add, 0 to change, 0 to destroy`
+  (`hub_to_agw` / `agw_to_hub`), matching every prior verification.
+- `terraform apply` against that saved plan completed successfully:
+  `Apply complete! Resources: 2 added, 0 changed, 0 destroyed.`
+  - `hub-to-agw-stg-jpe` created on `vnet-hub-jp-001`
+    (`rg-vpngw-jp-001`).
+  - `agw-stg-jpe-to-hub` created on `vnet-ag-stg-jpe-001`
+    (`rg-spoke-paas`).
+- Post-apply verification: both new peerings report
+  `PeeringState=Connected`, `PeeringSyncLevel=FullyInSync`,
+  `ProvisioningState=Succeeded`. All pre-existing peerings on both VNets
+  (`agw-to-cae`, `spoke-pass-to-hub`, `spoke-api-to-hub`,
+  `proxy-agent-vnet-to-hub-jp-vnet`, `hub-to-stg-jpe`, `hub-to-prod-jpe`,
+  and the already-`Disconnected` `hub-to-vnet-pr` /
+  `hub-to-stg-jpe-01`) are unchanged — no regression. `s2s-az-juniper-jp-001`
+  remains `Connected`/`Succeeded`. All 6 AGW backends remain `Healthy`.
+- The temporary clone and plan file were deleted after the apply; nothing
+  was left on disk.
+
+This completes Task 2 of the staging-network-readiness plan. The Juniper
+route/firewall-rule confirmation, split-horizon DNS change, and the actual
+on-premises-to-`10.0.8.62` connectivity proof (Task 3 and Task 4) remain
+outstanding and are the next items to coordinate with the Network team.
 
 ## Next Actions
 

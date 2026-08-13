@@ -150,29 +150,40 @@ reviewed before the first network write.
 - Change only the confirmed network owner repository/pipeline.
 - Record the reviewed PR/run identifiers in this plan or the current handoff.
 
-- [ ] Immediately before execution, confirm Task 1's baseline still matches
-  live Azure state. Stop on any drift.
-- [ ] Through the approved owner pipeline, create the hub-to-staging-AGW
+- [x] Immediately before execution, confirm Task 1's baseline still matches
+  live Azure state. Stop on any drift. (2026-08-12: VPN `Connected`/
+  `Succeeded`; `vnet-ag-stg-jpe-001` had only `agw-to-cae`; hub peerings
+  matched known baseline; AGW `Succeeded`/`Running`; all 6 backends
+  `Healthy`. No drift.)
+- [x] Through the approved owner pipeline, create the hub-to-staging-AGW
   peering with virtual-network access, forwarded traffic, and gateway transit
-  enabled.
-- [ ] Through the same reviewed change package, create the staging-AGW-to-hub
+  enabled. (2026-08-12: `hub-to-agw-stg-jpe` created via `terraform apply`
+  in `lyy-nycu/azure-shared-network-infra`.)
+- [x] Through the same reviewed change package, create the staging-AGW-to-hub
   peering with virtual-network access, forwarded traffic, and remote-gateway
-  use enabled.
-- [ ] Wait for both new peerings to report `Connected`; do not treat a
-  submitted or provisioned write as completion.
-- [ ] Confirm `s2s-az-juniper-jp-001` remains `Connected` and continues to
-  transfer traffic.
-- [ ] Confirm `agw-to-cae`, `cae-to-agw`, `stg-jpe-to-hub`, and
+  use enabled. (2026-08-12: `agw-stg-jpe-to-hub` created in the same apply.)
+- [x] Wait for both new peerings to report `Connected`; do not treat a
+  submitted or provisioned write as completion. (2026-08-12: both confirmed
+  `PeeringState=Connected`, `PeeringSyncLevel=FullyInSync`,
+  `ProvisioningState=Succeeded`.)
+- [x] Confirm `s2s-az-juniper-jp-001` remains `Connected` and continues to
+  transfer traffic. (2026-08-12: confirmed `Connected`/`Succeeded`
+  post-apply.)
+- [x] Confirm `agw-to-cae`, `cae-to-agw`, `stg-jpe-to-hub`, and
   `hub-to-stg-jpe` retain their original flags and `Connected` state.
-- [ ] Confirm `agw-stg-jpe-001` remains running, its password-hook backend
+  (2026-08-12: confirmed unchanged, including the two already-known
+  `Disconnected` peerings `hub-to-vnet-pr` and `hub-to-stg-jpe-01`.)
+- [x] Confirm `agw-stg-jpe-001` remains running, its password-hook backend
   remains `Healthy`, and the unrelated public LDAP synthetic check has not
-  regressed.
+  regressed. (2026-08-12: AGW `Succeeded`/`Running`; all 6 backends
+  including password-hook and LDAP staging `Healthy`.)
 - [ ] If either side fails or a regression appears, run the reviewed rollback
-  during the same window and attach only sanitized results.
+  during the same window and attach only sanitized results. (Not needed —
+  no regression observed.)
 
 **Completion criterion:** The two new peerings are `Connected`, the VPN and
 existing peerings are unchanged, and both password-hook backend health and the
-unrelated public route pass their regression checks.
+unrelated public route pass their regression checks. **Met on 2026-08-12.**
 
 ### Task 3: Complete the Juniper Route, No-SNAT, and Split-Horizon DNS Change
 
