@@ -5,7 +5,7 @@
 > **Created:** 2026-07-30
 >
 > **Source of truth:** Start with
-> `docs/handoffs/2026-07-28-staging-network-and-deployment.md`, then use
+> `docs/handoffs/2026-08-06-staging-shared-network-remote-plan.md`, then use
 > `docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md` and
 > `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md`
 > for the remaining Slice 10 gates.
@@ -181,24 +181,34 @@ unrelated public route pass their regression checks.
 - Record the approved change ticket/window and sanitized outcome in the
   current handoff.
 
-- [ ] Give the network team the Azure destination `10.0.8.0/24`, private
+- [x] Give the network team the Azure destination `10.0.8.0/24`, private
   frontend `10.0.8.62`, TCP port `443`, hostname
   `api.test.nycu.edu.tw`, and expected portal source `140.113.7.17`.
-- [ ] Have the network team update the policy-based VPN selector/route so the
+- [x] Have the network team update the policy-based VPN selector/route so the
   portal host can reach `10.0.8.0/24` over the existing tunnel. Do not change
-  the established VPN gateway or create a second tunnel.
-- [ ] Confirm the portal request is not source-NATed. The Application Gateway
+  the established VPN gateway or create a second tunnel. **2026-08-12:**
+  Network team added the `10.0.8.0/24` selector as a standalone pre-change
+  (not yet inside a formally scheduled ticket/window); see the current
+  handoff's *Network-Team Juniper Selector Update (2026-08-12)* section.
+- [x] Confirm the portal request is not source-NATed. The Application Gateway
   WAF must observe `140.113.7.17`; any other source will be rejected.
+  **2026-08-12:** Network team confirmed no source-NAT.
 - [ ] Limit the on-premises firewall change to the required portal source and
   `10.0.8.62:443`. Do not permit portal access to ACA `10.0.4.55`, the ACA
-  VNet, private endpoints, or other AGW addresses.
+  VNet, private endpoints, or other AGW addresses. **Not yet confirmed** as
+  of 2026-08-12; the selector change alone does not prove this scoping rule
+  exists.
 - [ ] Add the on-premises split-horizon DNS answer
   `api.test.nycu.edu.tw -> 10.0.8.62`. Do not change public authoritative DNS
-  or the existing public LDAP/ACME path.
+  or the existing public LDAP/ACME path. Intentionally deferred until the
+  network path itself is proven, per the First-Window Validation Decisions.
 - [ ] Verify the portal resolver returns only the private frontend while an
   external/public resolver continues to return the existing public answer.
-- [ ] Confirm the technical team can roll back the selector/route/firewall and
-  private DNS record within the approved window.
+- [x] Confirm the technical team can roll back the selector/route/firewall and
+  private DNS record within the approved window. **2026-08-12:** Network
+  team confirmed the `10.0.8.0/24` selector can be revoked at any time.
+  Firewall-rule and DNS-record rollback remain unconfirmed since those
+  changes have not been made yet.
 
 **Completion criterion:** The approved portal host has a private DNS answer
 and a narrowly scoped, no-SNAT TCP 443 route to the AGW private frontend, with
@@ -321,7 +331,7 @@ healthy, and rollback remains proven and available.
 ### Task 7: Reconcile Evidence, Close Slice 10, and Prepare the Next Handoff
 
 **Files:**
-- Update `docs/handoffs/2026-07-28-staging-network-and-deployment.md`.
+- Update the current file indexed by `docs/handoffs/README.md`.
 - Update `docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md`.
 - Update
   `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md`.

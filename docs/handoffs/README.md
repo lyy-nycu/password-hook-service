@@ -6,12 +6,16 @@ observed state.
 
 ## Current
 
-- [`2026-07-28-staging-network-and-deployment.md`](./2026-07-28-staging-network-and-deployment.md)
-  — current staging network, CD plan, and deployment handoff. Azure network
-  preparation and the controlled staging apply remain outstanding.
+- [`2026-08-06-staging-shared-network-remote-plan.md`](./2026-08-06-staging-shared-network-remote-plan.md)
+  — current shared-network remote-plan evidence, external Network-team gate,
+  controlled apply boundary, and on-premises test sequence. No Azure network
+  apply has occurred.
 
 ## Historical
 
+- [`2026-07-28-staging-network-and-deployment.md`](./2026-07-28-staging-network-and-deployment.md)
+  — superseded by the 2026-08-06 remote-plan handoff after the authoritative
+  shared-network stack and remote state were established.
 - [`2026-07-21-slice-10-to-slice-11.md`](./2026-07-21-slice-10-to-slice-11.md)
   — Slice 10-to-11 transition context. Superseded after Slice 11 CI/CD was
   implemented and merged.
