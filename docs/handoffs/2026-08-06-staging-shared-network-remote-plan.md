@@ -290,6 +290,127 @@ route/firewall-rule confirmation, split-horizon DNS change, and the actual
 on-premises-to-`10.0.8.62` connectivity proof (Task 3 and Task 4) remain
 outstanding and are the next items to coordinate with the Network team.
 
+## On-Premises Return-Path Diagnostic Evidence (2026-08-13)
+
+The Network team reported the `140.113.7.17/32 -> 10.0.8.62:443` firewall
+permit rule as applied. A colleague on the portal host `140.113.7.17`
+attempted the Task 4 proof using a DNS-override request (no hosts-file
+change; `curl.exe --resolve` only), which failed at the TCP layer before any
+TLS negotiation:
+
+```
+curl.exe -vk https://api.test.nycu.edu.tw/healthz --resolve api.test.nycu.edu.tw:443:10.0.8.62 -o NUL -w "HTTP_STATUS:%{http_code}"
+* Added api.test.nycu.edu.tw:443:10.0.8.62 to DNS cache
+*   Trying 10.0.8.62:443...
+* connect to 10.0.8.62 port 443 from 0.0.0.0 port 51279 failed: Timed out
+* Failed to connect to api.test.nycu.edu.tw port 443 after 21012 ms: Could not connect to server
+HTTP_STATUS:000
+```
+
+The DNS-resolution override itself worked correctly (confirmed in the
+verbose log); the failure is a genuine TCP-layer timeout, not a
+resolution/config issue on the requesting side.
+
+**Hypotheses tested (ranked), using read-only Azure evidence and one
+existing, purpose-built, previously-deallocated hub test VM
+(`vm-s2stest-jp-001`, `192.168.10.4` in `snet-hub-jp-001`, no new resources
+created):**
+
+- H1 — NSG inbound on `agw-subnet` blocks the on-premises source. **Refuted.**
+  `nsg-agw-stg-jpe-001` rule `Allow-NYCU-HTTPS` (priority 180) explicitly
+  allows `140.113.0.0/16` (covers `140.113.7.17`) and `10.0.0.0/16` to
+  `443/Tcp`, evaluated before the generic `Allow-HTTPS-In: Deny
+  src=Internet` rule (priority 210).
+- H4 — a custom route table on `agw-subnet` overrides routing. **Refuted.**
+  No route table is associated with `agw-subnet`.
+- H5 — an Azure Firewall/NVA sits in the path. **Refuted.** No
+  `Microsoft.Network/azureFirewalls` resource exists in the subscription.
+- H2 — the policy-based VPN connection (`usePolicyBasedTrafficSelectors:
+  true`) has not renegotiated its IPsec traffic selectors to include the
+  newly peered `10.0.8.0/24`. **Deprioritized by direct evidence below**,
+  though not something the Azure side alone can fully rule out.
+- H6 (new) — the on-premises target itself (firewall silent-drop policy, or
+  the destination host not configured/available to respond) is the
+  blocker. **Currently the leading explanation**, based on the tests below.
+
+**Test A — hub VM (`192.168.10.4`) to the AGW private frontend
+(`10.0.8.62:443`), entirely inside Azure, independent of the VPN/on-premises
+path:**
+
+```
+SSL connection using TLSv1.3 / TLS_AES_256_GCM_SHA384 / X25519 / RSASSA-PSS
+Server certificate: subject: CN=api.test.nycu.edu.tw
+                     issuer: C=US; O=Let's Encrypt; CN=YR2
+                     valid: Aug 13 2026 - Nov 11 2026
+< HTTP/1.1 404 Not Found
+< Server: Microsoft-Azure-Application-Gateway/v2
+HTTP_STATUS:404
+```
+
+Success. TLS handshake completes with the correct certificate; the `404` is
+expected because the probe used `GET /` rather than the configured
+`/healthz` path. This independently confirms the new peering, the AGW
+listener, and TLS are all functioning correctly.
+
+**Test B — hub VM to on-premises `140.113.7.17` (an existing,
+already-configured Local Network Gateway prefix, unrelated to the new AGW
+peering):**
+
+```
+ping: 4 packets transmitted, 0 received, 100% packet loss
+curl 443: Failed to connect to 140.113.7.17 port 443 after 6002 ms: Timeout was reached (HTTP_STATUS:000)
+traceroute: no reply at any hop
+```
+
+Failure — the same TCP-timeout symptom as the portal host's own test,
+reproduced from a host that does not depend on the new peering at all.
+
+**Test C — hub VM to on-premises `10.113.82.1` (also an existing,
+already-configured Local Network Gateway prefix):**
+
+```
+ping: 100% packet loss
+TCP 443/80/22/3389: all closed/filtered/timeout
+traceroute: no reply at any hop
+```
+
+Failure, more complete than Test B (no port responded at all).
+
+**VPN connection byte counters, immediately before and after Tests B and C
+(`s2s-az-juniper-jp-001`, status `Connected` throughout):**
+
+| | Before | After | Delta |
+|---|---|---|---|
+| `egressBytesTransferred` | 900,333,077 | 900,337,141 | **+4,064 bytes** |
+| `ingressBytesTransferred` | 34,253,144,027 | 34,253,144,027 | **+0 bytes** |
+
+The small, non-zero egress increase is consistent with the volume of test
+traffic (ICMP echo requests, TCP SYN retries, traceroute probes) sent
+during Tests B and C, and confirms the Azure-side VPN gateway did transmit
+this traffic into the tunnel toward the on-premises device. The ingress
+counter did not move at all, meaning **no response traffic of any kind came
+back from on-premises for either destination** during the test window. This
+evidence does not prove on-premises delivery or processing — only that
+Azure's side of the tunnel successfully sent the traffic.
+
+**Working conclusion:** The Azure-side network path (peering, NSG, routing,
+AGW, TLS) is independently verified functional via Test A. The on-premises
+return path is unproven and currently unresponsive for two different,
+already-established on-premises prefixes (not just the new AGW subnet),
+which points away from an Azure-side selector/routing problem and toward
+either (a) a Juniper firewall policy silently dropping this traffic (DROP
+rather than REJECT would produce exactly this symptom), or (b) the target
+hosts themselves not being available/configured to respond. **Recommend the
+Network team verify, with this evidence:** whether the firewall permit rule
+covers the Azure-to-on-premises return direction (not only on-premises to
+Azure), and whether `140.113.7.17:443` and `10.113.82.1` actually have a
+listening service and correct internal return routing. Resetting the
+Azure-side VPN connection was considered (to force IPsec traffic-selector
+renegotiation for H2) but was not performed: it would briefly interrupt the
+entire shared S2S tunnel for all existing on-premises prefixes, and the
+byte-counter evidence above already weighs against an Azure-side selector
+explanation.
+
 ## Next Actions
 
 1. The service owner sends the Network-team pre-check/change-window request.

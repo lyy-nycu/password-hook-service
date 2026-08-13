@@ -204,15 +204,21 @@ unrelated public route pass their regression checks. **Met on 2026-08-12.**
 - [x] Confirm the portal request is not source-NATed. The Application Gateway
   WAF must observe `140.113.7.17`; any other source will be rejected.
   **2026-08-12:** Network team confirmed no source-NAT.
-- [ ] Limit the on-premises firewall change to the required portal source and
+- [x] Limit the on-premises firewall change to the required portal source and
   `10.0.8.62:443`. Do not permit portal access to ACA `10.0.4.55`, the ACA
-  VNet, private endpoints, or other AGW addresses. **Not yet confirmed** as
-  of 2026-08-12; the selector change alone does not prove this scoping rule
-  exists.
+  VNet, private endpoints, or other AGW addresses. **2026-08-13:** Network
+  team confirmed the `140.113.7.17/32 -> 10.0.8.62:443` permit rule is
+  applied.
 - [ ] Add the on-premises split-horizon DNS answer
   `api.test.nycu.edu.tw -> 10.0.8.62`. Do not change public authoritative DNS
   or the existing public LDAP/ACME path. Intentionally deferred until the
   network path itself is proven, per the First-Window Validation Decisions.
+  **2026-08-13:** As an interim, narrower-scoped substitute for proving the
+  path before the formal split-horizon DNS change, a temporary hosts-file
+  override (`10.0.8.62 api.test.nycu.edu.tw`) will be added on the portal
+  host `140.113.7.17` itself for the Task 4 test, then reverted afterward.
+  This is a single-host test measure only and does not constitute the
+  on-premises split-horizon DNS record.
 - [ ] Verify the portal resolver returns only the private frontend while an
   external/public resolver continues to return the existing public answer.
 - [x] Confirm the technical team can roll back the selector/route/firewall and
@@ -233,9 +239,18 @@ no direct ACA path and no public DNS regression.
 
 - [ ] From the real staging portal host, resolve
   `api.test.nycu.edu.tw` and confirm the answer is `10.0.8.62`.
+  **2026-08-13:** Attempted via `curl --resolve` (no hosts-file change) from
+  the portal host; resolution override worked but the TCP connection to
+  `10.0.8.62:443` timed out. See *On-Premises Return-Path Diagnostic
+  Evidence (2026-08-13)* in the current handoff. Blocked pending Network
+  team follow-up.
 - [ ] From that host, prove TCP 443 reachability and a successful TLS
   handshake using `api.test.nycu.edu.tw` as SNI; verify the presented chain
-  against the portal host's trust store.
+  against the portal host's trust store. **2026-08-13:** Not yet achieved
+  from on-premises; however, an Azure-side hub test VM independently proved
+  the AGW/TLS/listener path itself is functional (Test A in the diagnostic
+  evidence section), isolating the open problem to the on-premises return
+  path.
 - [ ] Call `GET /healthz` through the private hostname and record only the
   HTTP status; require `200`.
 - [ ] In sanitized AGW/WAF evidence, confirm the observed source is exactly
