@@ -1,6 +1,6 @@
 # Staging Shared Network Remote-Plan Handoff
 
-**Date:** 2026-08-06 (last updated 2026-08-12)
+**Date:** 2026-08-06 (last updated 2026-08-26)
 
 **Status:** Current. The two owner-managed hub-to-Application-Gateway
 peerings (`hub-to-agw-stg-jpe`, `agw-stg-jpe-to-hub`) were applied and
@@ -11,8 +11,12 @@ standalone pre-change (S2S selector for `10.0.8.0/24`, confirmed no-SNAT,
 confirmed revocable) outside any formal ticket/window; see *Network-Team
 Juniper Selector Update (2026-08-12)* below. The firewall permit rule,
 split-horizon DNS change, and the actual on-premises-to-AGW connectivity
-proof remain outstanding before the password-hook application's own
-controlled CD apply can proceed.
+proof remain separate acceptance gates. An Azure-side password-hook E2E
+preflight and diagnostic attempt ran on 2026-08-25; the network and
+Application Gateway path was reachable, but the request was stopped by the
+application trusted-proxy/source-address boundary. The application CD
+remains unapplied (`TF_APPLY_MODE=plan`); see *Azure-Side E2E and
+Trusted-Proxy Diagnostic (2026-08-25/26)* below.
 
 Continue through the focused
 [Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
@@ -411,24 +415,114 @@ entire shared S2S tunnel for all existing on-premises prefixes, and the
 byte-counter evidence above already weighs against an Azure-side selector
 explanation.
 
+## Azure-Side E2E and Trusted-Proxy Diagnostic (2026-08-25/26)
+
+This section records the current application-side E2E state and supersedes
+earlier statements that an Azure-side password-hook request had not yet been
+attempted. It records evidence and decisions only; it does not authorize an
+application deployment or an Azure write.
+
+### Preflight and cleanup
+
+- Existing VM `vm-s2stest-jp-001` (`192.168.10.4`) was started for the
+  diagnostic and deallocated afterward. No new VM or network resource was
+  created.
+- The VM's system-assigned identity temporarily received `Key Vault Secrets
+  User` only for the staging HMAC secret `hook-hmac-secret`. The value was
+  never output; the role assignment was removed and verified absent.
+- Candidate UPN
+  `e2e-20260825-201759@nycumis.onmicrosoft.com` was checked read-only through
+  Microsoft Graph and returned `NotFound`. No Entra account was created or
+  modified.
+- The VM reached the AGW private frontend `10.0.8.62` with the expected TLS
+  hostname/SNI, and the health path responded successfully.
+- Temporary AGW WAF and application source allowlist entries for the VM were
+  restored to the approved portal source `140.113.7.17/32`. Both Service Bus
+  queues remain empty, and no worker or Graph side effect was observed.
+
+### Diagnostic results
+
+| Probe | Result | Interpretation |
+|---|---|---|
+| First signed request using a Python scripting User-Agent | `403` from WAF | OWASP managed rule `913101` rejected the User-Agent before the application. |
+| Retry using a standard browser User-Agent | `401 source ip is not allowed` | WAF passed, but the application rejected the resolved source before HMAC/handler processing. |
+| Empty/invalid-body source diagnostic | Same source-address rejection | Confirmed the diagnostic path has no Service Bus or Graph side effect. |
+
+The application log showed a forwarded chain with two hops, but the
+pre-existing log shape did not expose the normalized `RemoteAddr` or the
+resolved client address. Do not treat any individual forwarded hop as proof
+of the application's immediate TCP peer.
+
+The active staging revision at the time of this handoff is
+`ca-pwdhook-stg-mvxfna--restore201759`, image
+`password-hook-service:stg-3f76564`, `Provisioned/Running`, with 100% traffic.
+The deployed values remain:
+
+```text
+PORTAL_ALLOWED_CIDRS=140.113.7.17/32
+TRUSTED_PROXY_CIDRS=10.0.8.0/26
+DIRECT_CLIENT_MODE=false
+```
+
+Because the request never reached `202 Accepted`, there is no evidence of
+Service Bus enqueue/consume, worker processing, Graph lookup, or sync-status
+transition. The candidate UPN remains absent.
+
+### Source-resolution instrumentation prepared locally
+
+To measure the missing runtime boundary without exposing secrets, the local
+working tree now contains:
+
+- `internal/middleware/ratelimit.go`: source-IP rejection events include
+  normalized `peerIp`, `peerTrusted`, forwarded header/hop counts,
+  `sourceResolution`, and `resolvedClientIp` when available.
+- `internal/middleware/observability.go`: middleware events accept these
+  additional structured attributes.
+- `internal/middleware/ratelimit_test.go`: regression coverage proves the
+  raw `X-Forwarded-For` value is not logged.
+- `deploy/terraform/README.md`: documents the sanitized fields and their
+  source-address validation use.
+
+These changes are uncommitted and have not been deployed. The current
+repository/CD state remains plan-only; do not use `az containerapp update` or
+another ad-hoc image/configuration change to bypass the owner pipeline.
+
+### Required continuation
+
+1. Review the uncommitted instrumentation diff.
+2. Deploy it through the approved staging CD path and verify the new revision
+   is healthy.
+3. Send one empty-body `POST /api/v1/hook/password` diagnostic request through
+   the same AGW path. It must be rejected before HMAC/handler processing and
+   must not contain a password, secret, token, signature, nonce, or real
+   request body.
+4. Read only the sanitized `source_ip_not_allowed` fields to identify the
+   actual immediate peer and forwarded-chain shape.
+5. Update `trusted_proxy_cidrs` only with the verified proxy CIDR through
+   Terraform/CD; never use the portal CIDR, the VM/client IP, an entire
+   unverified subnet, or an unrestricted network.
+6. Re-run the read-only identity preflight and the approved E2E sequence only
+   after the trust boundary is verified. Repeat cleanup immediately afterward.
+
 ## Next Actions
 
-1. The service owner sends the Network-team pre-check/change-window request.
-2. Record the ticket, scheduled window, Network-team operator, and rollback
-   operator in this handoff or its successor without including sensitive
-   configuration.
-3. At the start of the approved window, capture a fresh sanitized Azure and
-   public-LDAP baseline and stop on drift.
-4. Generate and review a fresh remote-state plan.
-5. Request separate apply approval; only then create the two peerings through
-   Terraform.
-6. Verify both peerings `Connected` and prove no VPN, existing-peering, AGW,
-   or public-LDAP regression.
-7. Have the Network team complete its conditional route/selector/firewall
-   change, then run the no-DNS smoke and synthetic signed tests.
-8. Keep `TF_APPLY_MODE=plan`. The password-hook application's first
-   controlled CD apply remains a later gate after the real portal trust path
-   is proven.
+1. Review the uncommitted source-resolution instrumentation patch and keep
+   `TF_APPLY_MODE=plan`; do not use an ad-hoc Container App update.
+2. Through the approved staging CD path, deploy the instrumentation and verify
+   the new revision is healthy.
+3. Send one empty-body source diagnostic through the same AGW path and collect
+   only the sanitized `source_ip_not_allowed` fields.
+4. Confirm the actual ACA immediate peer and forwarded-chain shape, then
+   update `trusted_proxy_cidrs` through Terraform/CD only when the evidence is
+   unambiguous.
+5. Re-run the read-only identity preflight and the approved synthetic signed
+   request only after the trust boundary is verified; validate `202`, queue,
+   worker, Graph, sync-status, and DLQ outcomes.
+6. Have the Network team complete or document the remaining on-premises
+   route/selector/firewall/DNS gates, then run the real portal-source
+   acceptance test from `140.113.7.17`.
+7. Restore all temporary WAF/application allowlists and test permissions,
+   deallocate any test VM, and return deployment controls to plan-only mode.
 
 Production and Slice 12 remain blocked. This handoff authorizes neither the
 shared-network apply nor the application CD apply.

@@ -314,6 +314,49 @@ func TestRateLimiterRecordsSourceAllowlistRejection(t *testing.T) {
 	}
 }
 
+func TestRateLimiterLogsSanitizedSourceResolutionOnRejection(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	limiter := NewRateLimiter(RateLimitConfig{
+		AllowedCIDRs:      []string{"140.113.7.17/32"},
+		TrustedProxyCIDRs: []string{"10.0.8.0/26"},
+		LimitPerIP:        500,
+		Window:            time.Second,
+		ProblemBase:       "https://nycu.edu.tw/problems",
+		Logger:            slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "10.0.9.10:443"
+	req.Header.Set("X-Forwarded-For", "192.168.10.4:38156, 10.0.8.6")
+
+	limiter.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("next handler should not be called")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	logged := logs.String()
+	for _, want := range []string{
+		`"peerIp":"10.0.9.10"`,
+		`"peerTrusted":false`,
+		`"forwardedHeaderCount":1`,
+		`"forwardedHopCount":2`,
+		`"sourceResolution":"direct_peer"`,
+		`"resolvedClientIp":"10.0.9.10"`,
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("logs = %s, missing %s", logged, want)
+		}
+	}
+	if strings.Contains(logged, "192.168.10.4") || strings.Contains(logged, "X-Forwarded-For") {
+		t.Fatalf("logs exposed forwarded header data: %s", logged)
+	}
+}
+
 func TestRateLimiterRecordsThresholdRejection(t *testing.T) {
 	t.Parallel()
 

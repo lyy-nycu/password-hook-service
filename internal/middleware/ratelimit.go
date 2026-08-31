@@ -42,6 +42,15 @@ type rateWindow struct {
 	count int
 }
 
+type sourceIPResolution struct {
+	peerIP               net.IP
+	resolvedClientIP     net.IP
+	peerTrusted          bool
+	forwardedHeaderCount int
+	forwardedHopCount    int
+	sourceResolution     string
+}
+
 func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 	if cfg.LimitPerIP <= 0 {
 		cfg.LimitPerIP = 500
@@ -70,9 +79,20 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 
 func (l *RateLimiter) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sourceIP := l.sourceIP(r)
+		resolution := l.resolveSourceIP(r)
+		sourceIP := resolution.resolvedClientIP
 		if !l.sourceAllowed(sourceIP) {
-			recordMiddlewareOutcome(r.Context(), l.logger, l.recorder, requestid.From(r.Context()), "ratelimit", http.StatusUnauthorized, "unauthorized", "source_ip_not_allowed")
+			recordMiddlewareOutcome(
+				r.Context(),
+				l.logger,
+				l.recorder,
+				requestid.From(r.Context()),
+				"ratelimit",
+				http.StatusUnauthorized,
+				"unauthorized",
+				"source_ip_not_allowed",
+				sourceIPResolutionAttrs(resolution)...,
+			)
 			problem.Write(w, problem.Unauthorized(l.problemBase, r.URL.Path, requestid.From(r.Context()), "source ip is not allowed"))
 			return
 		}
@@ -95,33 +115,71 @@ func (l *RateLimiter) sourceAllowed(sourceIP net.IP) bool {
 // sourceIP resolves a forwarded caller only across an explicitly trusted proxy
 // boundary. An empty trusted-proxy set is direct-client mode.
 func (l *RateLimiter) sourceIP(r *http.Request) net.IP {
+	return l.resolveSourceIP(r).resolvedClientIP
+}
+
+func (l *RateLimiter) resolveSourceIP(r *http.Request) sourceIPResolution {
+	resolution := sourceIPResolution{
+		sourceResolution: "invalid_peer",
+	}
 	peer, ok := parseIPWithOptionalPort(r.RemoteAddr)
 	if !ok {
-		return nil
+		return resolution
+	}
+	resolution.peerIP = peer
+	values := r.Header.Values("X-Forwarded-For")
+	resolution.forwardedHeaderCount = len(values)
+	if len(values) == 1 && strings.TrimSpace(values[0]) != "" {
+		resolution.forwardedHopCount = len(strings.Split(values[0], ","))
 	}
 	if len(l.trustedProxyCIDRs) == 0 || !containsIP(l.trustedProxyCIDRs, peer) {
-		return peer
+		resolution.sourceResolution = "direct_peer"
+		resolution.resolvedClientIP = peer
+		return resolution
 	}
+	resolution.peerTrusted = true
+	resolution.sourceResolution = "trusted_forwarded"
 
-	values := r.Header.Values("X-Forwarded-For")
 	if len(values) != 1 || strings.TrimSpace(values[0]) == "" {
-		return nil
+		resolution.sourceResolution = "invalid_forwarded_chain"
+		return resolution
 	}
 	hopValues := strings.Split(values[0], ",")
 	hops := make([]net.IP, len(hopValues))
 	for i, value := range hopValues {
 		hop, valid := parseIPWithOptionalPort(value)
 		if !valid {
-			return nil
+			resolution.sourceResolution = "invalid_forwarded_chain"
+			return resolution
 		}
 		hops[i] = hop
 	}
 	for i := len(hops) - 1; i >= 0; i-- {
 		if !containsIP(l.trustedProxyCIDRs, hops[i]) {
-			return hops[i]
+			resolution.resolvedClientIP = hops[i]
+			return resolution
 		}
 	}
-	return nil
+	resolution.sourceResolution = "invalid_forwarded_chain"
+	return resolution
+}
+
+// These fields describe the trust-boundary decision without recording the raw
+// forwarded header, which may contain untrusted caller-controlled data.
+func sourceIPResolutionAttrs(resolution sourceIPResolution) []slog.Attr {
+	attrs := []slog.Attr{
+		slog.Bool("peerTrusted", resolution.peerTrusted),
+		slog.Int("forwardedHeaderCount", resolution.forwardedHeaderCount),
+		slog.Int("forwardedHopCount", resolution.forwardedHopCount),
+		slog.String("sourceResolution", resolution.sourceResolution),
+	}
+	if resolution.peerIP != nil {
+		attrs = append(attrs, slog.String("peerIp", resolution.peerIP.String()))
+	}
+	if resolution.resolvedClientIP != nil {
+		attrs = append(attrs, slog.String("resolvedClientIp", resolution.resolvedClientIP.String()))
+	}
+	return attrs
 }
 
 func (l *RateLimiter) rateKey(sourceIP net.IP) string {

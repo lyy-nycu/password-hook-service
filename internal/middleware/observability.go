@@ -8,7 +8,7 @@ import (
 	"github.com/nycu/password-hook-service/internal/observability"
 )
 
-func recordMiddlewareOutcome(ctx context.Context, logger *slog.Logger, recorder observability.Recorder, traceID string, middlewareName string, status int, outcome string, reason string) {
+func recordMiddlewareOutcome(ctx context.Context, logger *slog.Logger, recorder observability.Recorder, traceID string, middlewareName string, status int, outcome string, reason string, extra ...slog.Attr) {
 	if recorder == nil {
 		recorder = observability.NoopRecorder{}
 	}
@@ -38,5 +38,6 @@ func recordMiddlewareOutcome(ctx context.Context, logger *slog.Logger, recorder 
 	if reason != "" {
 		attrs = append(attrs, slog.String("reason", reason))
 	}
+	attrs = append(attrs, extra...)
 	logger.LogAttrs(ctx, slog.LevelInfo, action, attrs...)
 }
