@@ -34,7 +34,7 @@ This directory separates executable plans from historical references so agents d
   requirements and completion criteria; do not bypass the focused readiness
   plan above for the remaining live gates.
 - Current operational evidence and handoff:
-  `../../handoffs/2026-07-28-staging-network-and-deployment.md`.
+  `../../handoffs/2026-08-06-staging-shared-network-remote-plan.md`.
 
 Slice 11 CI/CD and Security Gates is completed:
 `completed/2026-07-21-slice-11-ci-cd.md`.

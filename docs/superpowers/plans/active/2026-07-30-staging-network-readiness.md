@@ -5,7 +5,7 @@
 > **Created:** 2026-07-30
 >
 > **Source of truth:** Start with
-> `docs/handoffs/2026-07-28-staging-network-and-deployment.md`, then use
+> `docs/handoffs/2026-08-06-staging-shared-network-remote-plan.md`, then use
 > `docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md` and
 > `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md`
 > for the remaining Slice 10 gates.
@@ -150,29 +150,40 @@ reviewed before the first network write.
 - Change only the confirmed network owner repository/pipeline.
 - Record the reviewed PR/run identifiers in this plan or the current handoff.
 
-- [ ] Immediately before execution, confirm Task 1's baseline still matches
-  live Azure state. Stop on any drift.
-- [ ] Through the approved owner pipeline, create the hub-to-staging-AGW
+- [x] Immediately before execution, confirm Task 1's baseline still matches
+  live Azure state. Stop on any drift. (2026-08-12: VPN `Connected`/
+  `Succeeded`; `vnet-ag-stg-jpe-001` had only `agw-to-cae`; hub peerings
+  matched known baseline; AGW `Succeeded`/`Running`; all 6 backends
+  `Healthy`. No drift.)
+- [x] Through the approved owner pipeline, create the hub-to-staging-AGW
   peering with virtual-network access, forwarded traffic, and gateway transit
-  enabled.
-- [ ] Through the same reviewed change package, create the staging-AGW-to-hub
+  enabled. (2026-08-12: `hub-to-agw-stg-jpe` created via `terraform apply`
+  in `lyy-nycu/azure-shared-network-infra`.)
+- [x] Through the same reviewed change package, create the staging-AGW-to-hub
   peering with virtual-network access, forwarded traffic, and remote-gateway
-  use enabled.
-- [ ] Wait for both new peerings to report `Connected`; do not treat a
-  submitted or provisioned write as completion.
-- [ ] Confirm `s2s-az-juniper-jp-001` remains `Connected` and continues to
-  transfer traffic.
-- [ ] Confirm `agw-to-cae`, `cae-to-agw`, `stg-jpe-to-hub`, and
+  use enabled. (2026-08-12: `agw-stg-jpe-to-hub` created in the same apply.)
+- [x] Wait for both new peerings to report `Connected`; do not treat a
+  submitted or provisioned write as completion. (2026-08-12: both confirmed
+  `PeeringState=Connected`, `PeeringSyncLevel=FullyInSync`,
+  `ProvisioningState=Succeeded`.)
+- [x] Confirm `s2s-az-juniper-jp-001` remains `Connected` and continues to
+  transfer traffic. (2026-08-12: confirmed `Connected`/`Succeeded`
+  post-apply.)
+- [x] Confirm `agw-to-cae`, `cae-to-agw`, `stg-jpe-to-hub`, and
   `hub-to-stg-jpe` retain their original flags and `Connected` state.
-- [ ] Confirm `agw-stg-jpe-001` remains running, its password-hook backend
+  (2026-08-12: confirmed unchanged, including the two already-known
+  `Disconnected` peerings `hub-to-vnet-pr` and `hub-to-stg-jpe-01`.)
+- [x] Confirm `agw-stg-jpe-001` remains running, its password-hook backend
   remains `Healthy`, and the unrelated public LDAP synthetic check has not
-  regressed.
+  regressed. (2026-08-12: AGW `Succeeded`/`Running`; all 6 backends
+  including password-hook and LDAP staging `Healthy`.)
 - [ ] If either side fails or a regression appears, run the reviewed rollback
-  during the same window and attach only sanitized results.
+  during the same window and attach only sanitized results. (Not needed —
+  no regression observed.)
 
 **Completion criterion:** The two new peerings are `Connected`, the VPN and
 existing peerings are unchanged, and both password-hook backend health and the
-unrelated public route pass their regression checks.
+unrelated public route pass their regression checks. **Met on 2026-08-12.**
 
 ### Task 3: Complete the Juniper Route, No-SNAT, and Split-Horizon DNS Change
 
@@ -181,24 +192,40 @@ unrelated public route pass their regression checks.
 - Record the approved change ticket/window and sanitized outcome in the
   current handoff.
 
-- [ ] Give the network team the Azure destination `10.0.8.0/24`, private
+- [x] Give the network team the Azure destination `10.0.8.0/24`, private
   frontend `10.0.8.62`, TCP port `443`, hostname
   `api.test.nycu.edu.tw`, and expected portal source `140.113.7.17`.
-- [ ] Have the network team update the policy-based VPN selector/route so the
+- [x] Have the network team update the policy-based VPN selector/route so the
   portal host can reach `10.0.8.0/24` over the existing tunnel. Do not change
-  the established VPN gateway or create a second tunnel.
-- [ ] Confirm the portal request is not source-NATed. The Application Gateway
+  the established VPN gateway or create a second tunnel. **2026-08-12:**
+  Network team added the `10.0.8.0/24` selector as a standalone pre-change
+  (not yet inside a formally scheduled ticket/window); see the current
+  handoff's *Network-Team Juniper Selector Update (2026-08-12)* section.
+- [x] Confirm the portal request is not source-NATed. The Application Gateway
   WAF must observe `140.113.7.17`; any other source will be rejected.
-- [ ] Limit the on-premises firewall change to the required portal source and
+  **2026-08-12:** Network team confirmed no source-NAT.
+- [x] Limit the on-premises firewall change to the required portal source and
   `10.0.8.62:443`. Do not permit portal access to ACA `10.0.4.55`, the ACA
-  VNet, private endpoints, or other AGW addresses.
+  VNet, private endpoints, or other AGW addresses. **2026-08-13:** Network
+  team confirmed the `140.113.7.17/32 -> 10.0.8.62:443` permit rule is
+  applied.
 - [ ] Add the on-premises split-horizon DNS answer
   `api.test.nycu.edu.tw -> 10.0.8.62`. Do not change public authoritative DNS
-  or the existing public LDAP/ACME path.
+  or the existing public LDAP/ACME path. Intentionally deferred until the
+  network path itself is proven, per the First-Window Validation Decisions.
+  **2026-08-13:** As an interim, narrower-scoped substitute for proving the
+  path before the formal split-horizon DNS change, a temporary hosts-file
+  override (`10.0.8.62 api.test.nycu.edu.tw`) will be added on the portal
+  host `140.113.7.17` itself for the Task 4 test, then reverted afterward.
+  This is a single-host test measure only and does not constitute the
+  on-premises split-horizon DNS record.
 - [ ] Verify the portal resolver returns only the private frontend while an
   external/public resolver continues to return the existing public answer.
-- [ ] Confirm the technical team can roll back the selector/route/firewall and
-  private DNS record within the approved window.
+- [x] Confirm the technical team can roll back the selector/route/firewall and
+  private DNS record within the approved window. **2026-08-12:** Network
+  team confirmed the `10.0.8.0/24` selector can be revoked at any time.
+  Firewall-rule and DNS-record rollback remain unconfirmed since those
+  changes have not been made yet.
 
 **Completion criterion:** The approved portal host has a private DNS answer
 and a narrowly scoped, no-SNAT TCP 443 route to the AGW private frontend, with
@@ -212,9 +239,18 @@ no direct ACA path and no public DNS regression.
 
 - [ ] From the real staging portal host, resolve
   `api.test.nycu.edu.tw` and confirm the answer is `10.0.8.62`.
+  **2026-08-13:** Attempted via `curl --resolve` (no hosts-file change) from
+  the portal host; resolution override worked but the TCP connection to
+  `10.0.8.62:443` timed out. See *On-Premises Return-Path Diagnostic
+  Evidence (2026-08-13)* in the current handoff. Blocked pending Network
+  team follow-up.
 - [ ] From that host, prove TCP 443 reachability and a successful TLS
   handshake using `api.test.nycu.edu.tw` as SNI; verify the presented chain
-  against the portal host's trust store.
+  against the portal host's trust store. **2026-08-13:** Not yet achieved
+  from on-premises; however, an Azure-side hub test VM independently proved
+  the AGW/TLS/listener path itself is functional (Test A in the diagnostic
+  evidence section), isolating the open problem to the on-premises return
+  path.
 - [ ] Call `GET /healthz` through the private hostname and record only the
   HTTP status; require `200`.
 - [ ] In sanitized AGW/WAF evidence, confirm the observed source is exactly
@@ -321,7 +357,7 @@ healthy, and rollback remains proven and available.
 ### Task 7: Reconcile Evidence, Close Slice 10, and Prepare the Next Handoff
 
 **Files:**
-- Update `docs/handoffs/2026-07-28-staging-network-and-deployment.md`.
+- Update the current file indexed by `docs/handoffs/README.md`.
 - Update `docs/superpowers/plans/active/2026-07-03-slice-10-infrastructure.md`.
 - Update
   `docs/superpowers/plans/active/2026-07-03-slice-10-private-network-decisions.md`.

@@ -42,7 +42,7 @@ Slice 10 work must follow the focused network-owner/on-premises validation and
 controlled staging-apply plan:
 `active/2026-07-30-staging-network-readiness.md`. The current operational
 evidence is in
-`../../handoffs/2026-07-28-staging-network-and-deployment.md`.
+`../../handoffs/2026-08-06-staging-shared-network-remote-plan.md`.
 
 Slice 11 CI/CD and Security Gates is completed:
 `completed/2026-07-21-slice-11-ci-cd.md`. Required CI and branch protection,
