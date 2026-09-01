@@ -1,4 +1,4 @@
-GO_IMAGE ?= golang:1.26.5
+GO_IMAGE ?= golang:1.26.7
 HOST_UID ?= $(shell id -u)
 HOST_GID ?= $(shell id -g)
 DOCKER_RUN = docker run --rm --user "$(HOST_UID):$(HOST_GID)" -e HOME=/tmp -e GOCACHE=/tmp/go-build -e GOMODCACHE=/tmp/go/pkg/mod -v "$(CURDIR):/src" -w /src $(GO_IMAGE)
