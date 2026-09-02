@@ -1,6 +1,6 @@
 # Staging Shared Network Remote-Plan Handoff
 
-**Date:** 2026-08-06 (last updated 2026-08-26)
+**Date:** 2026-08-06 (last updated 2026-09-02)
 
 **Status:** Current. The two owner-managed hub-to-Application-Gateway
 peerings (`hub-to-agw-stg-jpe`, `agw-stg-jpe-to-hub`) were applied and
@@ -12,11 +12,16 @@ confirmed revocable) outside any formal ticket/window; see *Network-Team
 Juniper Selector Update (2026-08-12)* below. The firewall permit rule,
 split-horizon DNS change, and the actual on-premises-to-AGW connectivity
 proof remain separate acceptance gates. An Azure-side password-hook E2E
-preflight and diagnostic attempt ran on 2026-08-25; the network and
-Application Gateway path was reachable, but the request was stopped by the
-application trusted-proxy/source-address boundary. The application CD
-remains unapplied (`TF_APPLY_MODE=plan`); see *Azure-Side E2E and
-Trusted-Proxy Diagnostic (2026-08-25/26)* below.
+preflight ran on 2026-08-25 and was initially stopped by the application
+trusted-proxy/source-address boundary; a follow-up session on 2026-09-01/02
+deployed the diagnosed fix, corrected `trusted_proxy_cidrs`, and completed a
+full staging API/E2E validation (all endpoints, a synthetic signed request
+through to Graph/worker/sync-status, and a safety finding about Graph
+upsert-creating a real user) from the existing hub test VM — see *Staging
+API E2E Validation and Graph Upsert-Creates-User Finding (2026-09-01/02)*
+below. The application CD remains plan-only outside deliberate apply
+windows (`TF_APPLY_MODE=plan`). The real on-premises portal-source
+acceptance test has still not been performed.
 
 Continue through the focused
 [Staging Network Readiness and Controlled Apply Plan](../superpowers/plans/active/2026-07-30-staging-network-readiness.md).
@@ -504,25 +509,152 @@ another ad-hoc image/configuration change to bypass the owner pipeline.
 6. Re-run the read-only identity preflight and the approved E2E sequence only
    after the trust boundary is verified. Repeat cleanup immediately afterward.
 
+## Staging API E2E Validation and Graph Upsert-Creates-User Finding (2026-09-01/02)
+
+This section completes the Required Continuation above and records a full,
+successful staging API/E2E validation, plus one important safety finding for
+any future synthetic test on this service. It records evidence and decisions
+only; the shared-network apply and the real on-premises portal-source
+acceptance test remain separately gated (see Next Actions below).
+
+### Application CD apply
+
+The source-resolution instrumentation (previously uncommitted) and the
+`trusted_proxy_cidrs` fix below were each deployed through the approved
+staging CD path: `TF_APPLY_MODE` was set to `apply` for exactly one
+`workflow_dispatch` run, the run was verified to build, push the image, and
+reach `Terraform apply` / `Verify Container App revision health`
+successfully, and `TF_APPLY_MODE` was returned to `plan` immediately
+afterward each time. No ad-hoc `az containerapp update` was used. One
+first apply attempt failed with `LinkedAuthorizationFailed` (the CD OIDC
+identity had `Contributor` on `rg-password-hook-stg-jpe-001` but not
+`Microsoft.App/managedEnvironments/join/action` on the shared managed
+environment `cae-stg-jpe-001` in `rg-cae-stg-jpe-001`, which is required to
+update a Container App attached to a managed environment in a different
+resource group). Fixed by granting the CD identity the built-in
+**Container Apps Operator** role (read-only plus `.../join/action`, no
+write/delete) scoped to exactly the `cae-stg-jpe-001` resource, not the
+resource group — this environment is shared by roughly 15 other apps across
+several teams, so the grant was deliberately scoped as narrowly as possible.
+The retry then succeeded.
+
+### `trusted_proxy_cidrs` correction
+
+The empty-body diagnostic from the Required Continuation was run from the
+existing hub test VM (`vm-s2stest-jp-001`, started and later deallocated;
+no new resource created) through the real AGW private frontend. With the
+new instrumentation, the `source_ip_not_allowed` log for that request showed:
+
+```
+peerTrusted=false forwardedHeaderCount=1 forwardedHopCount=2
+sourceResolution=direct_peer peerIp=100.100.0.170 resolvedClientIp=100.100.0.170
+```
+
+Repeated 4 more times with a consistent `100.100.0.x` peer each time.
+`100.100.0.0/16` is Microsoft's documented platform-reserved range for
+Azure Container Apps' own internal ingress
+(https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks) —
+not assignable to any customer VNet/subnet and not reachable or spoofable
+from outside the ACA platform. The Container App's own ingress layer
+re-sources every inbound connection (including ones AGW forwards) from this
+range, so it — not the AGW subnet (`10.0.8.0/26`, the prior untested
+assumption) — is the correct trust boundary. `trusted_proxy_cidrs` was
+updated to `["100.100.0.0/16"]` via Terraform/CD and re-verified: a follow-up
+empty-body diagnostic showed `peerTrusted=true sourceResolution=trusted_forwarded
+resolvedClientIp=10.0.8.4` (the hub-VM test path's AGW-side address, not the
+real portal address — expected, since this test still did not originate from
+the real on-premises portal). This value is a **permanent** fix and was kept.
+
+### Full API and synthetic E2E validation
+
+All three HTTP endpoints were exercised through the real AGW private
+frontend from the hub test VM (`--resolve api.test.nycu.edu.tw:443:10.0.8.62`,
+a browser User-Agent to pass the WAF's OWASP scanner-detection rule):
+
+| Endpoint | Result | Latency (3 samples) |
+|---|---|---|
+| `GET /healthz` | `200 {"status":"ok"}` | 38ms, 26ms, 16ms |
+| `GET /version` | `200` (`version`/`commit`/`buildTime` all `"unknown"`/`"dev"` — build-info stamping gap, not investigated further) | 17ms, 21ms, 20ms |
+| `POST /api/v1/hook/password` (empty body) | `401 source_ip_not_allowed` (expected; proves the diagnostic path has no side effect) | 17-34ms |
+
+For the signed path, the AGW WAF policy (`waf-policy-password-hook-stg`,
+dedicated to this app only — not shared with other tenants) and
+`portal_allowed_cidrs` were both temporarily widened by exactly one `/32`
+each (the hub VM's WAF-observed address `192.168.10.4/32`, and the
+AGW-resolved test-path address `10.0.8.4/32`) through the same
+Terraform/CD-and-revert pattern, matching the temporary-allow-then-restore
+precedent from the 2026-08-13 diagnostic. The HMAC secret was fetched only
+from within the VM (Key Vault private-endpoint IP `10.0.4.100`, reachable
+via the pre-existing `hub-to-stg-jpe` peering; the VM's system-assigned
+identity was granted `Key Vault Secrets User` scoped to exactly the
+`hook-hmac-secret` secret, never the whole vault) and was never logged or
+displayed — only its length was ever printed. One synthetic identity was
+used throughout (`cn=e2e-20260901-152000`, UPN
+`e2e-20260901-152000@nycumis.onmicrosoft.com`, verified absent via Graph
+before the test), consistent across all four signed requests, varying only
+`eventType`/nonce/timestamp per request:
+
+| Attempt | eventType | Result | Latency | Outcome |
+|---|---|---|---|---|
+| 1 | `password_change` | `202` | 836ms | `graph_password_upsert` **created a new Entra user** (see finding below); `worker_password_sync_completed` outcome `synced` |
+| 2 | `password_change` (repeat) | `202` | 32ms | Graph `permanent_error` (user now exists, second `createUser` conflicted); `worker_password_sync_failed` outcome `sync_failed`, routed to `password-sync-safe-dlq` |
+| 3 | `password_recovery` | `202` | 32ms | Graph `transient_error` then retried to `permanent_error`; `worker_password_sync_failed` after 2 attempts, routed to `password-sync-safe-dlq` |
+| 4 | `login_bootstrap` | `202` | 21ms | `hook_password_sync_skipped` (`reason=sync_pending`) — correctly deduplicated against attempt 1's very recent sync, never reached Graph/worker |
+
+Post-test: the main `password-sync` queue was empty (0 active, 0
+dead-letter); `password-sync-safe-dlq` held 2 messages from attempts 2 and 3
+(both confirmed to contain no plaintext password — `RecordPasswordSyncFailure`
+zeros the password field before writing).
+
+### Safety finding: `UpsertUserPassword` creates a real Entra user on 404
+
+`internal/graphclient/client.go`'s `UpsertUserPassword` does a `GET` lookup
+first; on `404` it calls `createUser` (`POST /v1.0/users`), i.e. it is a
+genuine upsert by design (this is the service's real migration/onboarding
+behavior, not a bug). **A previously-verified-nonexistent UPN is therefore
+not a side-effect-free target for `password_change`/`password_recovery`
+testing** — attempt 1 above created a real, `accountEnabled: true` Entra
+user with the test's password at `2026-09-02T05:01:26Z`, confirmed via
+Graph immediately afterward. This directly contradicts the assumption in
+the 2026-08-25/26 section above ("expected safe outcome is ... an
+understood Graph failure ... not a real password update") — that session
+never actually reached the Graph/worker stage to observe this. The created
+account was deleted and then permanently purged from
+`directory/deletedItems` within minutes of creation; a follow-up Graph
+check confirmed it no longer exists in either state. **Any future synthetic
+test against this endpoint must either use a CN that fails classification
+before reaching Graph (e.g. clearly invalid), accept that a real Entra user
+will be created and plan to delete/purge it immediately afterward exactly as
+done here, or use `login_bootstrap` only** (which, per `internal/migration/service.go`,
+still reaches Graph/creates a user unless a very recent sync-status record
+already exists for that UPN — it is not inherently side-effect-free either).
+
+### Cleanup performed
+
+All temporary grants and allowances from this session were reverted and
+verified absent immediately after use: the WAF custom rule back to only
+`140.113.7.17/32`; `portal_allowed_cidrs` back to only `["140.113.7.17/32"]`
+via Terraform/CD; the Key Vault `Key Vault Secrets User` role assignment on
+`hook-hmac-secret` deleted; the hub test VM deallocated; `TF_APPLY_MODE`
+returned to `plan`. The `Container Apps Operator` grant on `cae-stg-jpe-001`
+for the CD identity was **kept** (it is a permanent least-privilege fix
+required for any future CD apply that touches the Container App resource,
+not a test-only grant).
+
 ## Next Actions
 
-1. Review the uncommitted source-resolution instrumentation patch and keep
-   `TF_APPLY_MODE=plan`; do not use an ad-hoc Container App update.
-2. Through the approved staging CD path, deploy the instrumentation and verify
-   the new revision is healthy.
-3. Send one empty-body source diagnostic through the same AGW path and collect
-   only the sanitized `source_ip_not_allowed` fields.
-4. Confirm the actual ACA immediate peer and forwarded-chain shape, then
-   update `trusted_proxy_cidrs` through Terraform/CD only when the evidence is
-   unambiguous.
-5. Re-run the read-only identity preflight and the approved synthetic signed
-   request only after the trust boundary is verified; validate `202`, queue,
-   worker, Graph, sync-status, and DLQ outcomes.
-6. Have the Network team complete or document the remaining on-premises
+1. Have the Network team complete or document the remaining on-premises
    route/selector/firewall/DNS gates, then run the real portal-source
-   acceptance test from `140.113.7.17`.
-7. Restore all temporary WAF/application allowlists and test permissions,
-   deallocate any test VM, and return deployment controls to plan-only mode.
+   acceptance test from `140.113.7.17` (not yet performed — everything above
+   was validated from the hub test VM via the AGW private frontend, which
+   proves the Azure-side path and the application pipeline end-to-end, but
+   is not a substitute for a real on-premises-originated request).
+2. Before any further synthetic Graph-reaching test, read the safety finding
+   above and choose a strategy that avoids or accounts for real Entra user
+   creation.
+3. Continue keeping `TF_APPLY_MODE=plan` between deliberate, approved apply
+   windows.
 
-Production and Slice 12 remain blocked. This handoff authorizes neither the
-shared-network apply nor the application CD apply.
+Production and Slice 12 remain blocked pending the real on-premises
+acceptance test. This handoff authorizes neither the shared-network apply
+nor further application CD applies beyond what is recorded above.
