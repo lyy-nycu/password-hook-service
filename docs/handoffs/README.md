@@ -8,8 +8,10 @@ observed state.
 
 - [`2026-08-06-staging-shared-network-remote-plan.md`](./2026-08-06-staging-shared-network-remote-plan.md)
   — current shared-network remote-plan evidence, external Network-team gate,
-  controlled apply boundary, and on-premises test sequence. No Azure network
-  apply has occurred.
+  and on-premises test sequence. The shared-network peering apply (2026-08-12)
+  and the application CD apply (2026-09-01/02, source-IP trust-boundary fix
+  plus full staging API/E2E validation) have both occurred; the real
+  on-premises portal-source acceptance test has not.
 
 ## Historical
 
