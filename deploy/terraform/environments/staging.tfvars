@@ -88,7 +88,7 @@ application_insights_retention_days = 90
 # Portal source-address and rate limits
 ########################################
 
-portal_allowed_cidrs = ["140.113.7.17/32", "10.0.8.4/32"]
+portal_allowed_cidrs = ["140.113.7.17/32"]
 trusted_proxy_cidrs  = ["100.100.0.0/16"]
 
 rate_limit_per_ip = 10
