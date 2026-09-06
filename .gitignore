@@ -18,3 +18,6 @@
 !deploy/terraform/environments/staging.tfvars
 
 .DS_Store
+
+# Synthetic E2E test identity (manual-testing credentials) — never commit.
+e2e-test-credentials.txt
