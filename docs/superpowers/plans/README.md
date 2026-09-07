@@ -39,6 +39,17 @@ This directory separates executable plans from historical references so agents d
 Slice 11 CI/CD and Security Gates is completed:
 `completed/2026-07-21-slice-11-ci-cd.md`.
 
+Portal-backend password-hook-service integration (Slice 12 on-prem side) is
+completed: `completed/2026-09-07-portal-backend-hook-integration.md`. Every
+file it touched lives in a different repository (`NYCUITSC/portal-backend`,
+local at `~/dev/nycu/portal/portal-backend`); PR
+[NYCUITSC/portal-backend#415](https://github.com/NYCUITSC/portal-backend/pull/415)
+is open with CI passing. This closes the "API call" portion of Slice 12's
+"PHP portal integration guide is verified" criterion — the rest of Slice 12
+(alerts, dashboard, DLQ review, rollback, secret rotation runbooks, and the
+real on-premises network acceptance test tracked in the Slice 10 readiness
+plan above) is still open.
+
 ## Status Labels
 
 Use these labels at the top of detailed plan files:
